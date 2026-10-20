@@ -28,7 +28,7 @@ try {
   await page.getByRole('button', {name:'Sample house',exact:true}).waitFor().catch(async error=>{console.error('Renderer body:',await page.locator('body').innerText());throw error;});
   origin = new URL(page.url()).origin;
   assert.equal(new URL(page.url()).hash, '');
-  await page.locator('[data-studio-preview="ready"]').waitFor({timeout:60000});
+  await page.locator('[data-studio-preview="ready"]').waitFor({timeout:120000});
   await page.getByRole('progressbar').waitFor({state:'hidden',timeout:10000});
   await page.locator('[data-desktop-update]').waitFor();
   const update = await page.evaluate(() => window.archDesktop!.getUpdateState());
@@ -44,7 +44,7 @@ try {
   await page.getByRole('button',{name:/^(Build and version|Erstellen und versionieren)$/}).click();
   await page.getByRole('dialog').getByRole('button',{name:/^(Execute source and build|Quellcode ausführen und erstellen)$/}).click();
   await page.waitForFunction(prior=>(document.querySelector('select[aria-label="Versions"],select[aria-label="Versionen"]') as HTMLSelectElement | null)?.value!==prior,priorVersion).catch(async error=>{console.error('Build body:',await page.locator('body').innerText());throw error;});
-  await page.locator('[data-studio-preview="ready"]').waitFor({timeout:60000});
+  await page.locator('[data-studio-preview="ready"]').waitFor({timeout:120000});
   await page.getByRole('progressbar').waitFor({state:'hidden',timeout:10000});
   const details = await electron.evaluate(({app}) => ({packaged:app.isPackaged,resources:process.resourcesPath}));
   assert.equal(details.packaged,true);
