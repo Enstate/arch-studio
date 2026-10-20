@@ -49,6 +49,13 @@ follow its printed prerequisites and stop processes you start. Keep captures in
 ignored `evidence/`. Run builds and broad checks through the workstation's shared
 verification guard when it is installed. CI runs exhaustive public checks.
 
+For macOS shell changes, build Studio, create a local `--preview` app with
+`bun scripts/desktop-package.ts --preview --version 0.0.0 --phase app`, then run
+`bun scripts/verify-desktop-sidebar.ts`. This harness pairs a native Electron
+window with its own temporary synthetic store, checks its sidebar and IPC
+boundaries, saves loaded evidence, and closes its app and server. Use the shared
+verification guard for these commands. A local preview is never a public release.
+
 The hosted platform consumes archives from GitHub Releases. Update package source
 here, verify the packed consumer, then release and update the private lockfile.
 Never patch a second copy of a public package in the private application.

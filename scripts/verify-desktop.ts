@@ -35,15 +35,15 @@ try {
   assert.equal(update.currentVersion, await electron.evaluate(({app}) => app.getVersion()));
   assert.notEqual(update.status, 'disabled', 'Signed release must include its update feed');
   assert.equal(await page.locator('[data-viewer] canvas').count(), 1);
-  const versions=page.getByLabel(/^(Versions|Versionen)$/);
-  const priorVersion=await versions.inputValue();
+  const versions=page.locator('[data-studio-version]');
+  const priorVersion=await versions.getAttribute('data-studio-version');
   const planPath=path.join(home,'examples/sample-house/assets/plan.json');
   const plan=JSON.parse(await readFile(planPath,'utf8'));
   plan.name='Sample house desktop verification';
   await writeFile(planPath,JSON.stringify(plan));
-  await page.getByRole('button',{name:/^(Build and version|Erstellen und versionieren)$/}).click();
+  await page.getByRole('button',{name:/^(Build|Erstellen)$/}).click();
   await page.getByRole('dialog').getByRole('button',{name:/^(Execute source and build|Quellcode ausführen und erstellen)$/}).click();
-  await page.waitForFunction(prior=>(document.querySelector('select[aria-label="Versions"],select[aria-label="Versionen"]') as HTMLSelectElement | null)?.value!==prior,priorVersion).catch(async error=>{console.error('Build body:',await page.locator('body').innerText());throw error;});
+  await page.waitForFunction(prior=>(document.querySelector('[data-studio-version]'))?.getAttribute('data-studio-version')!==prior,priorVersion).catch(async error=>{console.error('Build body:',await page.locator('body').innerText());throw error;});
   await page.locator('[data-studio-preview="ready"]').waitFor({timeout:120000});
   await page.getByRole('progressbar').waitFor({state:'hidden',timeout:10000});
   const details = await electron.evaluate(({app}) => ({packaged:app.isPackaged,resources:process.resourcesPath}));
@@ -57,7 +57,7 @@ try {
   assert.equal(png.readUInt32BE(16),Math.round(viewport.width*scaling));
   console.log(JSON.stringify({nativeUiScale:scaling,captureWidth:png.readUInt32BE(16),captureHeight:png.readUInt32BE(20)}));
   await page.getByRole('button',{name:/^(Projektinformationen und Werkzeuge|Project details and tools)$/}).click();
-  await page.getByRole('menuitem',{name:/^(Dateien|Files)$/}).click();
+  await page.getByRole('menuitemradio',{name:/^(Dateien|Files)$/}).click();
   await electron.evaluate(({session}) => { session.defaultSession.on('will-download', (_event,item)=>item.setSavePath(`${process.env.ARCH_HOME}/desktop-reference.json`)); });
   await page.getByRole('link',{name:'sample-house.json',exact:true}).click();
   const download=path.join(home,'desktop-reference.json');
