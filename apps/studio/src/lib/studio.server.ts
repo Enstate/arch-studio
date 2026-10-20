@@ -73,6 +73,22 @@ function attachSource(catalog: StudioCatalog, projectId: string, source: Awaited
   project.sourceId = source.manifest.id;
   return source;
 }
+export async function openProjectFolder({ data }: { data: { directory: string } }): Promise<{ clientId: string; projectId: string }> {
+  requireStudio();
+  const source = await changeCatalog(async catalog => {
+    const inspected = await inspectSource(data.directory);
+    const bound = catalog.projects.find(project => project.sourceId === inspected.manifest.id);
+    if (bound) requireSourceIdentity(bound, inspected);
+    const registered = await registerProject(data.directory);
+    if (bound) requireSourceIdentity(bound, registered);
+    return registered;
+  });
+  const catalog = await localCatalog();
+  const project = catalog.projects.find(project => project.sourceId === source.manifest.id);
+  if (!project) throw new Error("The source was not imported into Studio.");
+  requireSourceIdentity(project, source);
+  return { clientId: project.clientId, projectId: project.id };
+}
 export async function registerSource({ data }: { data: { directory: string; projectId: string } }) {
   requireStudio();
   return changeCatalog(async catalog => {

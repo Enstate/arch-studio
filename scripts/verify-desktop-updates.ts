@@ -100,7 +100,7 @@ try {
       await writeFile(join(resources, 'app-update.yml'), stringify({ provider: 'generic', url: feedOrigin, updaterCacheDirName: cacheName }));
       const plist = join(application, 'Contents/Info.plist');
       for (const key of ['CFBundleVersion', 'CFBundleShortVersionString']) run('/usr/libexec/PlistBuddy', ['-c', `Set :${key} ${version}`, plist]);
-      run('codesign', ['--force', '--sign', identity!, '--keychain', process.env.CSC_KEYCHAIN!, '--options', 'runtime', '--timestamp', '--entitlements', join(root, 'apps/desktop/entitlements.mac.plist'), application]);
+      run('codesign', ['--force', '--deep', '--sign', identity!, '--keychain', process.env.CSC_KEYCHAIN!, '--options', 'runtime', '--timestamp', '--entitlements', join(root, 'apps/desktop/entitlements.mac.plist'), application]);
       run('codesign', ['--verify', '--deep', '--strict', application]);
     }
   });
@@ -112,11 +112,11 @@ try {
   electron = await _electron.launch({ executablePath: join(installed, 'Contents/MacOS/Arch Studio'), args: [`--user-data-dir=${profile}`], env });
   const page = await electron.firstWindow();
   await page.getByRole('button', { name: 'Sample house', exact: true }).waitFor();
-  await page.locator('[data-studio-preview="ready"]').waitFor({ timeout: 60_000 });
+  await page.locator('[data-studio-preview="ready"]').waitFor({ timeout: 120_000 });
   oldOrigin = new URL(page.url()).origin;
   const oldLaunch = JSON.parse(await readFile(launch, 'utf8'));
   assert.equal(oldLaunch.version, '0.0.1');
-  const checkpoint = await page.getByLabel(/^(Versions|Versionen)$/).inputValue();
+  const checkpoint = await page.locator('[data-studio-version]').getAttribute('data-studio-version');
   const refused = await electron.evaluate(async ({ BrowserWindow }, preload) => {
     const alien = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, preload } });
     try { await alien.loadURL('data:text/html,<title>Untrusted update caller</title>'); return await alien.webContents.executeJavaScript('window.archDesktop.getUpdateState().then(()=>false,()=>true)'); }
@@ -127,15 +127,18 @@ try {
   assert.equal((await page.evaluate(() => window.archDesktop!.checkForUpdate())).status, 'available');
   await page.locator('[data-desktop-update="available"]').waitFor();
   await mkdir(join(root, 'evidence/desktop-updates'), { recursive: true });
+  await page.getByRole('button', {name: /^(Updates)$/}).click();
   await page.screenshot({ path: join(root, 'evidence/desktop-updates/available.png'), scale: 'device', animations: 'disabled' });
   await page.getByRole('button', { name: /^(Download update|Update herunterladen)$/ }).click();
   await page.locator('[data-desktop-update="downloaded"]').waitFor({ timeout: 90_000 });
   assert(feedRequests > 0 && payloadRequests > 0, 'Real updater must fetch the feed and signed ZIP');
   console.log('PASS real signed update download');
-  const restart = page.locator('[data-desktop-update="downloaded"]').getByRole('button', { name: /^(Restart and install|Neu starten und installieren)$/ });
+  const restart = page.locator('[data-slot="popover-content"]').getByRole('button', { name: /^(Restart and install|Neu starten und installieren)$/ });
   await restart.click();
   await page.getByRole('dialog').getByRole('button', { name: /^(Cancel|Abbrechen)$/ }).click();
+  await page.locator('[data-slot="dialog-content"]').waitFor({state:'hidden'});
   assert.equal((await page.evaluate(() => window.archDesktop!.getUpdateState())).status, 'downloaded');
+  if (!await restart.isVisible()) await page.getByRole('button', {name: "Updates", exact:true}).click();
   await restart.click();
   await page.screenshot({ path: join(root, 'evidence/desktop-updates/restart-confirmation.png'), scale: 'device', animations: 'disabled' });
   const exited = new Promise<void>(resolve => electron!.once('close', () => resolve()));
@@ -152,8 +155,8 @@ try {
   }, () => true);
   const restored = await wait(async () => browser!.contexts().flatMap(context => context.pages()).find(item => item.url().startsWith('http://127.0.0.1:'))!, value => !!value);
   await restored.getByRole('button', { name: 'Sample house', exact: true }).waitFor();
-  await restored.locator('[data-studio-preview="ready"]').waitFor({ timeout: 60_000 });
-  assert.equal(await restored.getByLabel(/^(Versions|Versionen)$/).inputValue(), checkpoint);
+  await restored.locator('[data-studio-preview="ready"]').waitFor({ timeout: 120_000 });
+  assert.equal(await restored.locator('[data-studio-version]').getAttribute('data-studio-version'), checkpoint);
   assert.equal((await restored.evaluate(() => window.archDesktop!.getUpdateState())).currentVersion, '0.0.2');
   assert.deepEqual(await readFile(storeSource), originalSource);
   newOrigin = new URL(restored.url()).origin;

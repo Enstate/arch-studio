@@ -8,6 +8,7 @@ export type DesktopUpdate = {
 };
 
 export interface DesktopBridge {
+  chooseProjectDirectory(): Promise<string | null>;
   getUpdateState(): Promise<DesktopUpdate>;
   checkForUpdate(): Promise<DesktopUpdate>;
   downloadUpdate(): Promise<DesktopUpdate>;

@@ -1,6 +1,8 @@
 import { Button } from "@arch/ui/components/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@arch/ui/components/dialog";
-import { DownloadIcon, RefreshCwIcon } from "lucide-react";
+import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@arch/ui/components/popover";
+import { projectIconButton } from "@arch/ui/components/project-layout";
+import { AlertCircleIcon, DownloadIcon, RefreshCwIcon, RotateCwIcon } from "lucide-react";
 import { useState, useSyncExternalStore } from "react";
 import { desktopUpdateServerSnapshot, desktopUpdateSnapshot, subscribeDesktopUpdates } from "../lib/desktop-updates";
 import type { studioText } from "../lib/messages";
@@ -16,17 +18,27 @@ export function DesktopUpdates({ t }: { t: typeof studioText.de }) {
     try { await window.archDesktop?.[name](); } catch { setRequestFailed(true); }
   }
   const label = update.status === "available" ? t.updateAvailable : update.status === "downloaded" ? t.updateReady : update.status === "downloading" ? t.updateDownloading : update.status === "checking" ? t.updateChecking : update.status === "installing" ? t.updateInstalling : update.status === "up-to-date" ? t.updateCurrent : t.checkUpdates;
-  return <div className="grid gap-2 px-2 pb-2 text-xs" data-desktop-update={update.status}>
-    <p className="text-muted-foreground">Arch Studio {update.currentVersion}</p>
-    {update.status === "disabled" ? <p className="text-muted-foreground">{t.updateDisabled}</p> : <>
-      <p role="status">{label}{update.version ? ` · ${update.version}` : ""}</p>
-      {update.status === "downloading" && <progress aria-label={t.updateDownloading} max={100} value={update.percent ?? 0} className="h-1 w-full" />}
-      {(update.message || requestFailed) && <p role="alert" className="text-destructive">{update.operation === "install" ? t.updateInstallFailed : t.updateFailed}</p>}
-      <Button size="sm" variant="outline" disabled={busy} onClick={() => update.status === "downloaded" ? setConfirm(true) : void action(update.status === "available" ? "downloadUpdate" : "checkForUpdate")}>
-        {update.status === "available" ? <DownloadIcon /> : <RefreshCwIcon />}
-        {update.status === "downloaded" ? t.updateInstall : update.status === "available" ? t.updateDownload : t.checkUpdates}
-      </Button>
-    </>}
+  const failed = update.status !== "disabled" && (!!update.message || requestFailed);
+  const attention = update.status === "available" || update.status === "downloaded" || failed;
+  const Icon = failed ? AlertCircleIcon : update.status === "available" || update.status === "downloading" ? DownloadIcon : update.status === "downloaded" ? RotateCwIcon : RefreshCwIcon;
+  return <>
+    <Popover><PopoverTrigger className={`${projectIconButton} relative`} aria-label={t.updates} title={update.status === "disabled" ? t.updateDisabled : label} data-desktop-update={update.status}>
+      <Icon className={update.status === "checking" || update.status === "installing" ? "motion-safe:animate-spin" : undefined} />
+      {attention && <span aria-hidden="true" className={`absolute top-1 right-1 size-1.5 rounded-full ${failed ? "bg-destructive" : "bg-primary"}`} />}
+      {update.status === "downloading" && <span aria-hidden="true" className="absolute right-0 bottom-0 left-0 h-0.5 overflow-hidden rounded-full bg-muted"><span className="block h-full bg-primary" style={{width: `${update.percent ?? 0}%`}} /></span>}
+      <span className="sr-only" role="status">{update.status === "disabled" ? t.updateDisabled : label}</span>
+    </PopoverTrigger><PopoverContent side="top" align="end" className="gap-3 p-3">
+      <PopoverTitle>Arch Studio {update.currentVersion}</PopoverTitle>
+      {update.status === "disabled" ? <p className="text-xs text-muted-foreground">{t.updateDisabled}</p> : <>
+        <p role="status" className="text-xs text-muted-foreground">{label}{update.version ? ` · ${update.version}` : ""}</p>
+        {update.status === "downloading" && <progress aria-label={t.updateDownloading} max={100} value={update.percent ?? 0} className="h-1 w-full" />}
+        {failed && <p role="alert" className="text-xs text-destructive">{update.operation === "install" ? t.updateInstallFailed : t.updateFailed}</p>}
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => update.status === "downloaded" ? setConfirm(true) : void action(update.status === "available" ? "downloadUpdate" : "checkForUpdate")}>
+          {update.status === "available" ? <DownloadIcon /> : <RefreshCwIcon />}
+          {update.status === "downloaded" ? t.updateInstall : update.status === "available" ? t.updateDownload : t.checkUpdates}
+        </Button>
+      </>}
+    </PopoverContent></Popover>
     <Dialog open={confirm} onOpenChange={setConfirm}><DialogContent><DialogHeader><DialogTitle>{t.updateInstall}</DialogTitle><DialogDescription>{t.updateRestartWarning}</DialogDescription></DialogHeader><div className="flex justify-end gap-2"><Button variant="ghost" onClick={() => setConfirm(false)}>{t.cancel}</Button><Button disabled={update.status !== "downloaded"} onClick={() => { setConfirm(false); void action("installUpdate"); }}>{t.updateInstall}</Button></div></DialogContent></Dialog>
-  </div>;
+  </>;
 }

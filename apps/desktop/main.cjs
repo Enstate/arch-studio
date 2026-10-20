@@ -1,4 +1,4 @@
-const { app, BrowserWindow, session, shell, ipcMain, Menu } = require('electron');
+const { app, BrowserWindow, session, shell, ipcMain, Menu, dialog, nativeTheme } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const { createDesktopUpdates } = require('./updates.cjs');
@@ -54,11 +54,42 @@ app.whenReady().then(async () => {
   const bootstrapUrl = dev || await startServer();
   if (!validBootstrapUrl(bootstrapUrl)) throw new Error('Invalid local Studio bootstrap URL');
   let origin = new URL(bootstrapUrl).origin;
-  const window = new BrowserWindow({ width: 1440, height: 960, webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs') } });
+  const backgroundColor = () => nativeTheme.shouldUseDarkColors ? '#121212' : '#ffffff';
+  const window = new BrowserWindow({
+    width: 1440, height: 960, backgroundColor: backgroundColor(),
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 19 } } : {}),
+    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs') },
+  });
   const trustedFrame = event => {
     try { return event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && new URL(event.senderFrame.url).origin === origin; }
     catch { return false; }
   };
+  const windowState = () => ({ fullscreen: window.isFullScreen() });
+  ipcMain.handle('desktop:window-state', event => {
+    if (!trustedFrame(event)) throw new Error('Window state requires the local Studio main frame');
+    return windowState();
+  });
+  ipcMain.handle('desktop:choose-project-directory', async (event, ...args) => {
+    if (!trustedFrame(event) || args.length) throw new Error('Directory selection requires the local Studio main frame and no arguments');
+    const selection = await dialog.showOpenDialog(window, { properties: ['openDirectory'] });
+    if (!trustedFrame(event)) throw new Error('Directory selection requires the local Studio main frame');
+    return selection.canceled ? null : selection.filePaths[0] ?? null;
+  });
+  const publishWindowState = () => {
+    if (window.isDestroyed()) return;
+    try {
+      if (new URL(window.webContents.mainFrame.url).origin === origin) window.webContents.send('desktop:window-state', windowState());
+    } catch {}
+  };
+  window.on('enter-full-screen', publishWindowState);
+  window.on('leave-full-screen', () => {
+    if (window.isDestroyed()) return;
+    if (process.platform === 'darwin') window.setWindowButtonPosition({ x: 16, y: 19 });
+    publishWindowState();
+  });
+  const syncAppearance = () => { if (!window.isDestroyed()) window.setBackgroundColor(backgroundColor()); };
+  nativeTheme.on('updated', syncAppearance);
+  window.once('closed', () => nativeTheme.removeListener('updated', syncAppearance));
   const { autoUpdater } = require('electron-updater');
   updates = createDesktopUpdates({
     app, updater: autoUpdater,

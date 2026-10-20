@@ -8,6 +8,7 @@ import { createRootRouteWithContext, HeadContent, Outlet, Scripts, ScriptOnce } 
 import { session } from "../lib/server";
 import { rememberStudioSession } from "../lib/browser-session";
 import css from "../index.css?url";
+import { useStudioLocale } from "../lib/locale";
 
 export const Route = createRootRouteWithContext<{queryClient: QueryClient}>()({
   ssr: false,
@@ -24,7 +25,8 @@ export const Route = createRootRouteWithContext<{queryClient: QueryClient}>()({
   errorComponent: StudioAccess,
 });
 function Document({children}: {children: ReactNode}) {
-  return <html lang="de" suppressHydrationWarning><head><ScriptOnce>{themeScript}</ScriptOnce><HeadContent /></head><body><TooltipProvider>{children}<Toaster /></TooltipProvider><Scripts /></body></html>;
+  const {locale} = useStudioLocale();
+  return <html lang={locale} suppressHydrationWarning><head><ScriptOnce>{themeScript}</ScriptOnce><HeadContent /></head><body><TooltipProvider>{children}<Toaster /></TooltipProvider><Scripts /></body></html>;
 }
 
 function StudioAccess() {

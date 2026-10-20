@@ -38,7 +38,7 @@ project and never supplies references for a customer's work.
 For a new project, create a client and project in Studio, then choose **Start
 from documents**. Give the new project folder to T3 Code, Claude Code, Codex or
 your preferred agent. Its `AGENTS.md`, `BUILDERS.md`, source and context travel
-with the project. Inspect the source before using **Build and version**. A build
+with the project. Inspect the source before using **Build**. A build
 executes code locally with your permissions; its time limit is not a sandbox.
 
 Existing projects can be opened from their folders. Projects registered through
@@ -53,9 +53,11 @@ local review notes and agent context travel together. Restoring preserves the
 checkpoint; building a change creates a child version.
 
 For scripts and agents, `bun run arch --help` lists the same local operations.
-Use an absolute `ARCH_HOME` to choose a different store. Otherwise Studio and
-the CLI share the platform's application-data directory. They never put private
-work in Git. Existing checkout-local `.arch` stores can be opened explicitly with
+Use an absolute `ARCH_HOME` to choose a different store. Otherwise the browser
+app, installed desktop app and CLI share the platform's application-data directory.
+`bun run dev:desktop` uses this checkout's `.arch/dev-store` and
+`.arch/desktop-profile` by default. Set `ARCH_HOME` explicitly when using the CLI
+with that development app. Private work stays outside Git. Existing checkout-local `.arch` stores can be opened explicitly with
 `ARCH_HOME=/absolute/path/to/.arch` or transferred through checkpoint export.
 
 ## Hosting

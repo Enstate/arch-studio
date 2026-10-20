@@ -1,7 +1,7 @@
 /** Real local Studio smoke test. Requires built Studio, Bun and Chrome; never uses an existing store. */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import path from "node:path";
@@ -78,7 +78,7 @@ async function context(origin: string, viewport = { width: 1440, height: 1000 })
 }
 async function section(page: Page, name: string) {
   await page.getByRole("button", { name: "Project details and tools", exact: true }).click();
-  await page.getByRole("menuitem", { name, exact: true }).click();
+  await page.getByRole("menuitemradio", { name, exact: true }).click();
 }
 async function viewer(page: Page) {
   await page.locator("[data-viewer] canvas").waitFor({ state: "visible", timeout: 60000 });
@@ -181,11 +181,14 @@ try {
   const corners = [[0, 0], [6, 0], [6, 4], [0, 4]];
   const plan = { version: 1, name: "Standalone room", defaults: { wallHeight: 2.6, floor: "blue", interiorFinish: "white", exteriorFinish: "white", ceiling: "white" }, materials: { blue: { color: "#648fa8", roughness: 0.9 }, white: { color: "#efeae1", roughness: 0.9 } }, walls: corners.map((a, i) => ({ id: `wall-${i}`, a, b: corners[(i + 1) % 4], exterior: true })), rooms: [{ id: "studio", name: "Synthetic studio", polygon: corners, floor: "blue", wallFinish: "white" }] };
   await writeFile(path.join(source, "assets/plan.json"), JSON.stringify(plan));
-  await page.getByRole("button", { name: "Build and version", exact: true }).click();
+  await page.getByRole("button", { name: "Build", exact: true }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Execute source and build", exact: true }).click();
   await viewer(page);
-  const checkpoint = await page.getByLabel("Versions", { exact: true }).inputValue();
+  const checkpoint = await page.locator("[data-studio-version]").getAttribute("data-studio-version");
+  assert.ok(checkpoint);
   assert.match(checkpoint, /^[a-f0-9]{64}$/);
+  assert.ok((await page.locator("[data-studio-version]").innerText()).includes(checkpoint.slice(0,7)));
+  assert.ok((await page.locator("[data-studio-version]").getAttribute("aria-label"))!.includes(checkpoint.slice(0,7)));
   await page.screenshot({ path: path.join(evidence, "desktop.png") });
   const narrowContext = await context(running.origin, { width: 390, height: 844 });
   const narrow = await narrowContext.newPage();
@@ -236,10 +239,50 @@ try {
   await session.close(); await stop(running.child); running = await server(home);
   session = await context(running.origin); page = await session.newPage();
   await page.goto(running.bootstrapUrl); await viewer(page);
-  assert.equal(await page.getByLabel("Versions", { exact: true }).inputValue(), checkpoint);
+  assert.equal(await page.locator("[data-studio-version]").getAttribute("data-studio-version"), checkpoint);
   await section(page, "Review notes"); await page.getByText(note, { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Standalone room", exact: true }).count(), 1);
   passed("restart preserves project, selected immutable version and private note");
+  // Open a separate source while Notes is selected. It must open its own preview,
+  // preserve its client, and register without evaluating source code.
+  const openedSource = path.join(temporary, "opened-folder");
+  await cp(source, openedSource, {recursive: true});
+  const openedManifest = JSON.parse(await readFile(path.join(openedSource, "arch.project.json"), "utf8"));
+  openedManifest.id = "opened-folder"; openedManifest.name = "Opened folder";
+  await writeFile(path.join(openedSource, "arch.project.json"), JSON.stringify(openedManifest));
+  const executionMarker = path.join(openedSource, "outputs", "unexpected-execution.txt");
+  await writeFile(path.join(openedSource, "source/generate.ts"), `await Bun.write(${JSON.stringify(executionMarker)}, "unexpected source execution"); throw new Error("Opening a folder must never run this.");`);
+  await page.getByRole("button", {name: "Open project folder", exact:true}).click();
+  let folderDialog = page.getByRole("dialog");
+  await folderDialog.getByLabel("Project folder", {exact:true}).fill(openedSource);
+  await folderDialog.getByRole("button", {name:"Open",exact:true}).click();
+  await folderDialog.waitFor({state:"hidden"});
+  await page.getByRole("heading", {name:"Opened folder",exact:true}).waitFor();
+  await page.getByRole("heading", {name:"Local source",exact:true}).waitFor();
+  assert.equal(await access(executionMarker).then(()=>true,()=>false),false);
+  await page.getByRole("button", {name:"Filter projects",exact:true}).click();
+  const filterItem = page.getByRole("menuitem", {name:"Without local source",exact:true});
+  await filterItem.waitFor();
+  assert.equal(await filterItem.evaluate(element=>getComputedStyle(element).whiteSpace),"nowrap");
+  await filterItem.click();
+  await page.getByText("No matching projects.",{exact:true}).waitFor();
+  await page.getByRole("button", {name:"Filter projects",exact:true}).click();
+  await page.getByRole("menuitem", {name:"All projects",exact:true}).click();
+  await page.getByRole("button", {name:"Opened folder",exact:true}).waitFor();
+  // A changed client binding is rejected before the registry is rewritten.
+  openedManifest.client = {id:"different-client",name:"Different client"};
+  await writeFile(path.join(openedSource,"arch.project.json"),JSON.stringify(openedManifest));
+  const beforeRejectedOpen = await cli(home,"list");
+  await page.getByRole("button", {name:"Open project folder",exact:true}).click();
+  folderDialog=page.getByRole("dialog");
+  await folderDialog.getByLabel("Project folder",{exact:true}).fill(openedSource);
+  await folderDialog.getByRole("button", {name:"Open",exact:true}).click();
+  await folderDialog.getByRole("alert").filter({hasText:"source client ID"}).waitFor();
+  assert.equal(await cli(home,"list"),beforeRejectedOpen,"Rejected folder must not rewrite its registered source");
+  await page.keyboard.press("Escape");
+  await page.getByRole("dialog").waitFor({state:"hidden"});
+  assert.equal(await page.getByRole("alert").count(),0,"Closing the folder dialog must clear its error");
+  passed("folder button submits, selects the source preview, never executes source, preserves client binding, and filters without wrapping");
   assert.deepEqual([...offMachine], [], "App attempted off-machine network access");
   passed("zero off-machine app requests");
   await writeFile(path.join(evidence, "checks.json"), JSON.stringify({ ok: true, checks, screenshots: ["desktop.png", "narrow.png"] }, null, 2));
