@@ -136,7 +136,7 @@ try {
   const restart = page.locator('[data-slot="popover-content"]').getByRole('button', { name: /^(Restart and install|Neu starten und installieren)$/ });
   await restart.click();
   await page.getByRole('dialog').getByRole('button', { name: /^(Cancel|Abbrechen)$/ }).click();
-  await page.getByRole('dialog').waitFor({state:'hidden'});
+  await page.locator('[data-slot="dialog-content"]').waitFor({state:'hidden'});
   assert.equal((await page.evaluate(() => window.archDesktop!.getUpdateState())).status, 'downloaded');
   if (!await restart.isVisible()) await page.getByRole('button', {name: "Updates", exact:true}).click();
   await restart.click();
