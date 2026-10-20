@@ -343,8 +343,22 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     for (const d of doors.values()) if (d.t === 0 && d.target === 0) doorBoxes.push(d.closedBox);
     return doorBoxes;
   };
-  // Lamp cube maps render with full walls (see Stage.invalidateShadows), so they refresh once the cut is off.
-  let lampShadowsStale = false;
+  // Lamp cube maps keep full walls in every mode, so each room keeps its own light in the cutaway.
+  // Their shadow passes see the clip plane above the house; three projects the plane before it
+  // draws a pass, and only the uniform values change, so no pipeline is added.
+  const lamps = house.lights.children.filter((o): o is THREE.PointLight => (o as THREE.PointLight).isPointLight && o.castShadow);
+  const lampCams = new Set<THREE.Camera>(lamps.map((l) => l.shadow.camera));
+  let heldCut: number | null = null;
+  stage.scene.onBeforeRender = (_r, _s, camera) => {
+    if (!lampCams.has(camera)) return;
+    heldCut = house.clipPlane.constant;
+    house.clipPlane.constant = NO_CUT;
+  };
+  stage.scene.onAfterRender = (_r, _s, camera) => {
+    if (heldCut === null || !lampCams.has(camera)) return;
+    house.clipPlane.constant = heldCut;
+    heldCut = null;
+  };
   let doorsMoving = false;
   const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
   function setDoor(d: Door, open: boolean) {
@@ -369,17 +383,13 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     }
     if (settled) {
       stage.invalidateShadows();
-      lampShadowsStale = true;
+      refreshLampShadows();
     }
     stage.requestRender();
   }
+  /** Lamps outside the current light set render their maps once they are drawn again. */
   function refreshLampShadows() {
-    if (!lampShadowsStale || house.clipPlane.constant !== NO_CUT) return;
-    lampShadowsStale = false;
-    for (const o of house.lights.children) {
-      const l = o as THREE.PointLight;
-      if (l.isPointLight && l.castShadow) l.shadow.needsUpdate = true;
-    }
+    for (const l of lamps) l.shadow.needsUpdate = true;
     stage.requestRender();
   }
   function openAllDoors() {
@@ -389,7 +399,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       poseDoor(d, 1);
     }
     stage.invalidateShadows();
-    lampShadowsStale = true;
+    refreshLampShadows();
     setState({ closedDoors: [] });
   }
 
@@ -1022,7 +1032,6 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       planControls.update();
     }
     stepDoors(dt);
-    refreshLampShadows();
     frames++;
     if (stage.renderIfNeeded(now)) fpsFrames++;
     if (now - fpsStart >= 1000) {
@@ -1103,9 +1112,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       house.looseFurniture.visible = visible;
       walker.setWorld(visible ? house.colliders : house.collidersFixed);
       stage.invalidateShadows();
-      lampShadowsStale = true;
       refreshLampShadows();
-      stage.requestRender();
       setState({ furniture: visible });
     },
     setGrid(on) {
