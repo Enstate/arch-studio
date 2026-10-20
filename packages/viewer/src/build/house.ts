@@ -157,6 +157,29 @@ function junctions(plan: Plan, w: Wall) {
   return out.sort((x, y) => x - y);
 }
 
+/** An extended end covered by another solid wall has no exposed end face. */
+function coveredWallEnd(plan: Plan, wall: Wall, end: 0 | 1, extension: number, extensions: Map<Wall, [number, number]>) {
+  if (!extension) return false;
+  const direction = wallDir(wall), point = end ? wall.b : wall.a;
+  const thickness = wallThickness(plan, wall), sign = end ? 1 : -1;
+  const corners = [-1, 1].map(side => [
+    point[0] + sign * direction[0] * extension - side * direction[1] * thickness / 2,
+    point[1] + sign * direction[1] * extension + side * direction[0] * thickness / 2,
+  ] as Vec2);
+  return plan.walls.some(other => {
+    if (other === wall || wallHeight(plan, other) < wallHeight(plan, wall) - EPS) return false;
+    const along = wallDir(other), length = wallLength(other), half = wallThickness(plan, other) / 2;
+    const [start, finish] = extensions.get(other)!;
+    const projected = corners.map(corner => {
+      const x = corner[0] - other.a[0], z = corner[1] - other.a[1];
+      return { u: x * along[0] + z * along[1], v: -x * along[1] + z * along[0] };
+    });
+    if (projected.some(p => p.u < -start - EPS || p.u > length + finish + EPS || Math.abs(p.v) > half + EPS)) return false;
+    const low = Math.min(...projected.map(p => p.u)), high = Math.max(...projected.map(p => p.u));
+    return !(plan.openings ?? []).some(opening => opening.wall === other.id && high > opening.offset - opening.width / 2 + EPS && low < opening.offset + opening.width / 2 - EPS);
+  });
+}
+
 function buildWalls(plan: Plan, lib: MaterialLibrary, clipLib: (k: string) => THREE.Material) {
   const walls = new THREE.Group();
   walls.name = 'walls';
@@ -166,12 +189,15 @@ function buildWalls(plan: Plan, lib: MaterialLibrary, clipLib: (k: string) => TH
   const topKey = 'wall-top';
   const top = clipLib(topKey);
   const skirting = clipLib('skirting');
+  const extensions = new Map(plan.walls.map(wall => [wall, wallEndExtensions(plan, wall)]));
   void lib;
   for (const w of plan.walls) {
     const t = wallThickness(plan, w);
     const m = wallMatrix(w);
     const openings = (plan.openings ?? []).filter((o) => o.wall === w.id);
     const L = wallLength(w);
+    const [e0, e1] = extensions.get(w)!;
+    const coveredStart = coveredWallEnd(plan, w, 0, e0, extensions), coveredEnd = coveredWallEnd(plan, w, 1, e1, extensions);
     const cuts = junctions(plan, w);
     const pieces = wallPieces(plan, w, openings).flatMap((p) => {
       const inside = cuts.filter((u) => u > p.x0 + 1e-3 && u < p.x1 - 1e-3);
@@ -184,7 +210,14 @@ function buildWalls(plan: Plan, lib: MaterialLibrary, clipLib: (k: string) => TH
       // BoxGeometry face order: +x, −x, +y, −y, +z (right), −z (left).
       const mats = [top, top, top, top, clipLib(faceFinish(plan, w, 1, u)), clipLib(faceFinish(plan, w, -1, u))];
       const roomSides = ([1, -1] as const).filter((side) => roomBeside(plan, w, side, u));
-      const mesh = new THREE.Mesh(wallBox(p.x0, p.x1, p.y0, p.y1, -t / 2, t / 2), mats);
+      const geometry = wallBox(p.x0, p.x1, p.y0, p.y1, -t / 2, t / 2);
+      // Keep the collider's closed volume, but omit render faces coplanar with the
+      // neighbouring wall. Depth offsets merely hide the overlap from some angles.
+      geometry.groups = geometry.groups.filter(face => !(
+        (face.materialIndex === 1 && coveredStart && Math.abs(p.x0 + e0) < EPS) ||
+        (face.materialIndex === 0 && coveredEnd && Math.abs(p.x1 - L - e1) < EPS)
+      ));
+      const mesh = new THREE.Mesh(geometry, mats);
       mesh.applyMatrix4(m);
       mesh.castShadow = mesh.receiveShadow = true;
       mesh.userData.collide = true;
@@ -246,6 +279,8 @@ function buildFloorsAndCeilings(plan: Plan, lib: MaterialLibrary) {
     // 1 cm below the wall tops, so the ceiling tucks into the walls and no seam can open.
     ceil.position.y = (r.ceilingHeight ?? d.wallHeight) - 0.01;
     ceil.receiveShadow = true;
+    // Downward winding blocks the head without becoming upward-facing step support.
+    ceil.userData.collide = true;
     ceil.userData.kind = 'ceiling';
     ceilings.add(ceil);
   }
@@ -473,6 +508,7 @@ export async function buildHouse(
   // Bottom sits 5 mm into the wall tops so there is no slot between walls and roof.
   roof.position.set(b.cx, d.wallHeight + 0.145, b.cy);
   roof.castShadow = true;
+  roof.userData.collide = true;
   ceilings.add(roof);
   const slab = new THREE.Mesh(new THREE.BoxGeometry(b.w + pad * 2, 0.3, b.h + pad * 2), lib.get('slab'));
   slab.position.set(b.cx, -0.151, b.cy);

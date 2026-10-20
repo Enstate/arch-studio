@@ -527,7 +527,13 @@ async function loadModel(gltf: GLTFLoader, cache: Map<string, Promise<THREE.Grou
   const c = bb2.getCenter(new THREE.Vector3());
   turn.position.set(-c.x, -bb2.min.y, -c.z);
   obj.traverse((o) => {
-    if ((o as THREE.Mesh).isMesh) o.castShadow = o.receiveShadow = true;
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    // Alpha-tested foliage casts its silhouette; clear glass must not cast an
+    // opaque panel, since the standard shadow pass does not transmit light.
+    mesh.castShadow = materials.some(material => !(material.transparent && material.opacity < 1 && material.alphaTest === 0) && !('transmission' in material && Number(material.transmission) > 0));
+    mesh.receiveShadow = true;
   });
   const g = new THREE.Group();
   g.add(turn);
