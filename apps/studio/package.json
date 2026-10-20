@@ -1,0 +1,36 @@
+{
+  "name": "@arch/studio",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "check-types": "bun --check --tsconfig-override tsconfig.json",
+    "serve": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@arch/ui": "workspace:*",
+    "@arch/viewer": "workspace:*",
+    "@tailwindcss/vite": "^4.3.3",
+    "@tanstack/react-query": "^5.104.2",
+    "@tanstack/react-router": "^1.170.44",
+    "@tanstack/react-router-ssr-query": "^1.167.3",
+    "@tanstack/react-start": "^1.169.1",
+    "lucide-react": "^1.56.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tailwindcss": "catalog:",
+    "zod": "catalog:",
+    "@arch/project": "workspace:*",
+    "@arch/project-tools": "workspace:*",
+    "@arch/viewer-ui": "workspace:*"
+  },
+  "devDependencies": {
+    "@arch/config": "workspace:*",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.4"
+  }
+}

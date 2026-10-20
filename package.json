@@ -1,0 +1,59 @@
+{
+  "name": "arch-studio",
+  "private": true,
+  "workspaces": {
+    "packages": [
+      "apps/*",
+      "packages/*"
+    ],
+    "catalog": {
+      "zod": "^4.5.4",
+      "@types/node": "^26.4.1",
+      "varlock": "1.18.0",
+      "next-themes": "^0.4.6",
+      "sonner": "^2.0.8",
+      "tailwindcss": "^4.3.3",
+      "convex": "^1.45.0",
+      "better-auth": "1.6.17",
+      "@convex-dev/better-auth": "^0.12.5",
+      "@tanstack/react-form": "^1.33.5",
+      "@better-auth/expo": "1.6.17"
+    }
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --cwd apps/studio dev",
+    "build:studio": "bun run --cwd apps/studio build",
+    "arch": "bun packages/project-tools/src/cli.ts",
+    "fetch-assets": "bun packages/viewer/scripts/fetch-assets.ts",
+    "check-types": "bun scripts/check-types.ts",
+    "lint": "biome lint .",
+    "release:packages": "bun scripts/release-packages.ts",
+    "verify:standalone": "bun scripts/verify-standalone.ts",
+    "demo": "bun scripts/demo.ts",
+    "dev:desktop": "bun scripts/desktop-dev.ts",
+    "package:desktop": "bun scripts/desktop-package.ts"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@arch/config": "workspace:*",
+    "@biomejs/biome": "^2.5.15",
+    "@types/node": "catalog:",
+    "typescript": "^6.0.3",
+    "@arch/project-tools": "workspace:*",
+    "playwright-core": "1.64.1"
+  },
+  "packageManager": "bun@1.4.3",
+  "version": "0.1.0",
+  "description": "Local architectural visualization Studio and portable project tools",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Enstate/arch-studio.git"
+  },
+  "trustedDependencies": [
+    "electron"
+  ]
+}

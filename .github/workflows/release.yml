@@ -1,0 +1,38 @@
+name: Release packages
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: package-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  archives:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - name: Prepare archives from the tagged commit
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: bun scripts/release-packages.ts --tag "$RELEASE_TAG"
+      - name: Verify provenance and publish immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          directory=".arch/releases/$RELEASE_TAG"
+          test "$(jq -r .commit "$directory/release.json")" = "$GITHUB_SHA"
+          test "$(jq -r .tag "$directory/release.json")" = "$RELEASE_TAG"
+          (cd "$directory" && sha256sum --check SHA256SUMS)
+          gh release create "$RELEASE_TAG" "$directory"/*.tgz "$directory/SHA256SUMS" "$directory/release.json" --verify-tag --title "$RELEASE_TAG" --notes "Public source packages from commit $GITHUB_SHA. Archive hashes and provenance are attached."

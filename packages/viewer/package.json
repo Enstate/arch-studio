@@ -1,0 +1,44 @@
+{
+  "name": "@arch/viewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./react": "./src/react.tsx",
+    "./capabilities": "./src/capabilities.ts",
+    "./preload": "./src/preload.ts",
+    "./vite": "./src/vite.ts",
+    "./plan/*": "./src/plan/*.ts",
+    "./plans/*": "./plans/*"
+  },
+  "scripts": {
+    "check-types": "bun --check --tsconfig-override tsconfig.json",
+    "fetch-assets": "bun scripts/fetch-assets.ts"
+  },
+  "dependencies": {
+    "three": "0.186.1"
+  },
+  "peerDependencies": {
+    "react": "^19.2.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@arch/config": "workspace:*",
+    "@gltf-transform/core": "^4.5.1",
+    "@gltf-transform/extensions": "^4.5.1",
+    "@gltf-transform/functions": "^4.5.1",
+    "@types/node": "catalog:",
+    "@types/react": "^19.3.0",
+    "@types/three": "^0.186.0",
+    "meshoptimizer": "^1.3.0",
+    "react": "^19.3.0",
+    "sharp": "^0.35.5",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.4"
+  }
+}

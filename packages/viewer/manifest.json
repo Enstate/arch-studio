@@ -1,0 +1,94 @@
+{
+  "$comment": "Assets fetched from Poly Haven (CC0) by `bun run fetch-assets` into apps/web/public/viewer/library. Binaries are gitignored; this list is the source of truth.",
+  "textures": {
+    "laminate_floor_02": {
+      "res": "4k",
+      "use": "light oak plank floor"
+    },
+    "herringbone_parquet": {
+      "res": "4k",
+      "use": "herringbone parquet"
+    },
+    "marble_01": {
+      "res": "2k",
+      "use": "large warm marble tiles, bathroom"
+    },
+    "granite_tile_03": {
+      "res": "2k",
+      "use": "dark grey stone tiles, hall"
+    },
+    "white_stucco": {
+      "res": "2k",
+      "use": "fine plaster relief under wall paint"
+    },
+    "white_plaster_02": {
+      "res": "2k",
+      "use": "exterior render"
+    },
+    "oak_veneer_01": {
+      "res": "2k",
+      "use": "oak veneer: cabinets, tables"
+    },
+    "walnut_veneer": {
+      "res": "2k",
+      "use": "walnut veneer: furniture"
+    },
+    "poly_wool_herringbone": {
+      "res": "2k",
+      "use": "sofa upholstery"
+    },
+    "rough_linen": {
+      "res": "2k",
+      "use": "bed linen weave"
+    },
+    "velour_velvet": {
+      "res": "2k",
+      "use": "chair upholstery"
+    },
+    "curly_teddy_natural": {
+      "res": "2k",
+      "use": "rug pile"
+    }
+  },
+  "hdris": {
+    "suburban_garden": {
+      "res": "4k",
+      "use": "sky and garden seen through the windows, reflections"
+    }
+  },
+  "models": {
+    "mid_century_lounge_chair": {
+      "res": "1k"
+    },
+    "modern_arm_chair_01": {
+      "res": "1k"
+    },
+    "modern_coffee_table_01": {
+      "res": "1k"
+    },
+    "modern_wooden_cabinet": {
+      "res": "1k"
+    },
+    "dining_chair_02": {
+      "res": "1k"
+    },
+    "side_table_01": {
+      "res": "1k"
+    },
+    "wooden_display_shelves_01": {
+      "res": "1k"
+    },
+    "potted_plant_02": {
+      "res": "1k"
+    },
+    "potted_plant_04": {
+      "res": "1k"
+    },
+    "desk_lamp_arm_01": {
+      "res": "1k"
+    },
+    "modern_ceiling_lamp_01": {
+      "res": "1k"
+    }
+  }
+}

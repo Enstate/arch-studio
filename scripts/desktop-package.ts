@@ -1,0 +1,42 @@
+import { cp, mkdir, readFile, rm, writeFile, access } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const root = fileURLToPath(new URL('..', import.meta.url));
+if (!['darwin', 'linux'].includes(process.platform)) throw new Error('Packaging is implemented for the current macOS or Linux host only');
+const require = createRequire(join(root, 'apps/desktop/package.json'));
+const vendor = join(dirname(require.resolve('electron/package.json')), 'dist');
+const output = resolve(root, 'artifacts', `arch-studio-${process.platform}-${process.arch}`);
+await access(join(root, 'apps/studio/dist/server/server.js'));
+await access(join(root, 'apps/studio/dist/client'));
+await rm(output, { recursive: true, force: true });
+await mkdir(output, { recursive: true });
+const mac = process.platform === 'darwin';
+const application = mac ? join(output, 'Arch Studio.app') : join(output, 'Arch Studio');
+await cp(mac ? join(vendor, 'Electron.app') : vendor, application, { recursive: true });
+const resources = mac ? join(application, 'Contents/Resources') : join(application, 'resources');
+await rm(join(resources, 'default_app.asar'), { force: true });
+await mkdir(join(resources, 'app'), { recursive: true });
+for (const name of ['main.cjs', 'preload.cjs', 'package.json']) await cp(join(root, 'apps/desktop', name), join(resources, 'app', name));
+await cp(join(root, 'apps/studio/dist/client'), join(resources, 'client'), { recursive: true });
+await mkdir(join(resources, 'viewer'), { recursive: true });
+await cp(join(root, 'packages/viewer/src'), join(resources, 'viewer/src'), { recursive: true });
+await cp(join(root, 'packages/viewer/package.json'), join(resources, 'viewer/package.json'));
+await cp(process.execPath, join(resources, 'bun'));
+const compiled = spawnSync(process.execPath, ['build', '--compile', './scripts/serve.mjs', '--outfile', join(resources, 'arch-server')], { cwd: root, stdio: 'inherit' });
+if (compiled.status !== 0) throw new Error('Standalone server compilation failed. No distributable was verified.');
+if (mac) {
+  const plist = join(application, 'Contents/Info.plist');
+  const content = await readFile(plist, 'utf8');
+  await writeFile(plist, content.replaceAll('com.github.Electron', 'local.arch.studio').replaceAll('<string>Electron</string>', '<string>Arch Studio</string>'));
+  // Keep CFBundleExecutable and the vendor executable paired.
+  const executable = join(application, 'Contents/MacOS/Electron');
+  await cp(executable, join(application, 'Contents/MacOS/Arch Studio'));
+  await rm(executable);
+  const signed = spawnSync('codesign', ['--force', '--deep', '--sign', '-', application], { stdio: 'inherit' });
+  if (signed.status !== 0) throw new Error('Local ad-hoc signature failed');
+  const zipped = spawnSync('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', application, `${application}.zip`], { stdio: 'inherit' });
+  if (zipped.status !== 0) throw new Error('ZIP creation failed');
+}
+console.log(`Packaged for local testing: ${application}. This package is not notarized or signed with a distribution identity. Run it and verify project creation/build before distribution.`);

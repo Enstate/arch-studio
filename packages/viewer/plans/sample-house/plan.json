@@ -1,0 +1,1135 @@
+{
+ "version": 1,
+ "name": "Musterbungalow",
+ "description": "Hand-authored 12 \u00d7 9 m single-storey test house. Not traced from a source image.",
+ "defaults": {
+  "wallHeight": 2.6,
+  "exteriorThickness": 0.3,
+  "interiorThickness": 0.12,
+  "ceiling": "ceiling-white"
+ },
+ "materials": {
+  "oak": {
+   "color": "#ffffff",
+   "pbr": "laminate_floor_02",
+   "roughness": 0.9,
+   "clearcoat": 0.35,
+   "clearcoatRoughness": 0.25
+  },
+  "oak-herringbone": {
+   "color": "#ffffff",
+   "pbr": "herringbone_parquet",
+   "roughness": 0.9,
+   "clearcoat": 0.35,
+   "clearcoatRoughness": 0.25
+  },
+  "tile-bath": {
+   "color": "#ffffff",
+   "pbr": "marble_01",
+   "roughness": 0.8,
+   "clearcoat": 0.6,
+   "clearcoatRoughness": 0.08
+  },
+  "tile-hall": {
+   "color": "#ffffff",
+   "pbr": "granite_tile_03",
+   "roughness": 1
+  },
+  "paint-white": {
+   "color": "#f2efe9",
+   "pbr": "white_stucco",
+   "pbrColor": false,
+   "normalScale": 0.12,
+   "roughness": 1,
+   "specularIntensity": 0.25
+  },
+  "paint-warm": {
+   "color": "#ebe3d6",
+   "pbr": "white_stucco",
+   "pbrColor": false,
+   "normalScale": 0.12,
+   "roughness": 1,
+   "specularIntensity": 0.25
+  },
+  "paint-sage": {
+   "color": "#c7cdbb",
+   "pbr": "white_stucco",
+   "pbrColor": false,
+   "normalScale": 0.12,
+   "roughness": 1,
+   "specularIntensity": 0.25
+  },
+  "paint-clay": {
+   "color": "#d9c3ae",
+   "pbr": "white_stucco",
+   "pbrColor": false,
+   "normalScale": 0.12,
+   "roughness": 1,
+   "specularIntensity": 0.25
+  },
+  "render-white": {
+   "color": "#efebe4",
+   "pbr": "white_plaster_02",
+   "pbrColor": false,
+   "normalScale": 0.8,
+   "roughness": 1
+  },
+  "cab-white": {
+   "color": "#ebe7df",
+   "roughness": 0.45,
+   "clearcoat": 0.5,
+   "clearcoatRoughness": 0.2
+  },
+  "cab-oak": {
+   "color": "#ffffff",
+   "pbr": "oak_veneer_01",
+   "roughness": 0.8
+  },
+  "worktop": {
+   "color": "#2f2d2a",
+   "roughness": 0.28,
+   "clearcoat": 0.8,
+   "clearcoatRoughness": 0.05
+  },
+  "fabric-sofa": {
+   "color": "#ffffff",
+   "pbr": "poly_wool_herringbone",
+   "roughness": 1,
+   "sheen": 1,
+   "sheenRoughness": 0.55,
+   "normalScale": 1.6,
+   "specularIntensity": 0.12,
+   "sheenColor": "#d9d6cf"
+  },
+  "fabric-chair": {
+   "color": "#b5714b",
+   "pbr": "velour_velvet",
+   "pbrColor": false,
+   "roughness": 1,
+   "sheen": 1,
+   "sheenRoughness": 0.35,
+   "sheenColor": "#e3a17c",
+   "specularIntensity": 0.12
+  },
+  "linen": {
+   "color": "#ece7de",
+   "pbr": "rough_linen",
+   "pbrColor": false,
+   "roughness": 1,
+   "sheen": 0.8,
+   "sheenRoughness": 0.6,
+   "normalScale": 1.2,
+   "specularIntensity": 0.15,
+   "sheenColor": "#ffffff"
+  },
+  "walnut": {
+   "color": "#ffffff",
+   "pbr": "walnut_veneer",
+   "roughness": 0.75
+  },
+  "black-steel": {
+   "color": "#1d1d1d",
+   "roughness": 0.4,
+   "metalness": 0.6
+  },
+  "chrome": {
+   "color": "#dadada",
+   "roughness": 0.15,
+   "metalness": 1
+  },
+  "wool-rug": {
+   "color": "#ffffff",
+   "pbr": "curly_teddy_natural",
+   "roughness": 1,
+   "sheen": 0.5,
+   "sheenRoughness": 0.8,
+   "specularIntensity": 0.1,
+   "normalScale": 1.5
+  },
+  "oak-veneer": {
+   "color": "#ffffff",
+   "pbr": "oak_veneer_01",
+   "roughness": 0.75
+  },
+  "ceiling-white": {
+   "color": "#f4f2ee",
+   "roughness": 0.95,
+   "specularIntensity": 0.25
+  }
+ },
+ "walls": [
+  {
+   "id": "e1",
+   "a": [
+    0,
+    0
+   ],
+   "b": [
+    12,
+    0
+   ],
+   "exterior": true
+  },
+  {
+   "id": "e2",
+   "a": [
+    12,
+    0
+   ],
+   "b": [
+    12,
+    9
+   ],
+   "exterior": true
+  },
+  {
+   "id": "e3",
+   "a": [
+    12,
+    9
+   ],
+   "b": [
+    0,
+    9
+   ],
+   "exterior": true
+  },
+  {
+   "id": "e4",
+   "a": [
+    0,
+    9
+   ],
+   "b": [
+    0,
+    0
+   ],
+   "exterior": true
+  },
+  {
+   "id": "i1",
+   "a": [
+    0,
+    4.5
+   ],
+   "b": [
+    12,
+    4.5
+   ]
+  },
+  {
+   "id": "i2",
+   "a": [
+    7.5,
+    0
+   ],
+   "b": [
+    7.5,
+    4.5
+   ]
+  },
+  {
+   "id": "i3",
+   "a": [
+    3.4,
+    4.5
+   ],
+   "b": [
+    3.4,
+    9
+   ]
+  },
+  {
+   "id": "i4",
+   "a": [
+    5.4,
+    5.7
+   ],
+   "b": [
+    5.4,
+    9
+   ]
+  },
+  {
+   "id": "i5",
+   "a": [
+    5.4,
+    5.7
+   ],
+   "b": [
+    12,
+    5.7
+   ]
+  },
+  {
+   "id": "i6",
+   "a": [
+    8.6,
+    5.7
+   ],
+   "b": [
+    8.6,
+    9
+   ]
+  }
+ ],
+ "openings": [
+  {
+   "id": "w-kitchen",
+   "wall": "e1",
+   "type": "window",
+   "offset": 1.8,
+   "width": 1.2,
+   "sill": 1.05,
+   "height": 1.1
+  },
+  {
+   "id": "d-garden",
+   "wall": "e1",
+   "type": "sliding-door",
+   "offset": 5.2,
+   "width": 2.4,
+   "height": 2.25
+  },
+  {
+   "id": "w-master",
+   "wall": "e1",
+   "type": "window",
+   "offset": 9.75,
+   "width": 1.6
+  },
+  {
+   "id": "w-office",
+   "wall": "e2",
+   "type": "window",
+   "offset": 7.35,
+   "width": 1.4
+  },
+  {
+   "id": "w-bath",
+   "wall": "e3",
+   "type": "window",
+   "offset": 5.0,
+   "width": 0.9,
+   "sill": 1.4,
+   "height": 0.8
+  },
+  {
+   "id": "d-front",
+   "wall": "e3",
+   "type": "door",
+   "offset": 7.6,
+   "width": 1.0,
+   "hinge": "start",
+   "swing": "right",
+   "openAngle": 60
+  },
+  {
+   "id": "w-bed2",
+   "wall": "e3",
+   "type": "window",
+   "offset": 10.3,
+   "width": 1.4
+  },
+  {
+   "id": "w-dining",
+   "wall": "e4",
+   "type": "window",
+   "offset": 6.4,
+   "width": 1.2
+  },
+  {
+   "id": "o-living",
+   "wall": "i1",
+   "type": "opening",
+   "offset": 4.4,
+   "width": 1.4,
+   "height": 2.3
+  },
+  {
+   "id": "d-master",
+   "wall": "i1",
+   "type": "door",
+   "offset": 9.0,
+   "width": 0.9,
+   "hinge": "start",
+   "swing": "left"
+  },
+  {
+   "id": "d-bed2",
+   "wall": "i3",
+   "type": "door",
+   "offset": 1.1,
+   "width": 0.85,
+   "hinge": "start",
+   "swing": "right"
+  },
+  {
+   "id": "d-bath",
+   "wall": "i5",
+   "type": "door",
+   "offset": 1.6,
+   "width": 0.8,
+   "hinge": "end",
+   "swing": "right"
+  },
+  {
+   "id": "d-bed3",
+   "wall": "i5",
+   "type": "door",
+   "offset": 4.9,
+   "width": 0.85,
+   "hinge": "end",
+   "swing": "right",
+   "openAngle": 95
+  }
+ ],
+ "rooms": [
+  {
+   "id": "living",
+   "name": "Wohnen / Küche",
+   "polygon": [
+    [
+     0,
+     0
+    ],
+    [
+     7.5,
+     0
+    ],
+    [
+     7.5,
+     4.5
+    ],
+    [
+     0,
+     4.5
+    ]
+   ],
+   "floor": "oak",
+   "wallFinish": "paint-white",
+   "areaLabel": 31.3,
+   "lightK": 2900
+  },
+  {
+   "id": "master",
+   "name": "Schlafzimmer 1",
+   "polygon": [
+    [
+     7.5,
+     0
+    ],
+    [
+     12,
+     0
+    ],
+    [
+     12,
+     4.5
+    ],
+    [
+     7.5,
+     4.5
+    ]
+   ],
+   "floor": "oak-herringbone",
+   "wallFinish": "paint-clay",
+   "areaLabel": 18.2,
+   "lightK": 2700
+  },
+  {
+   "id": "bed2",
+   "name": "Schlafzimmer 2",
+   "polygon": [
+    [
+     0,
+     4.5
+    ],
+    [
+     3.4,
+     4.5
+    ],
+    [
+     3.4,
+     9
+    ],
+    [
+     0,
+     9
+    ]
+   ],
+   "floor": "oak",
+   "wallFinish": "paint-sage",
+   "areaLabel": 13.6,
+   "lightK": 2700
+  },
+  {
+   "id": "hall",
+   "name": "Flur",
+   "polygon": [
+    [
+     3.4,
+     4.5
+    ],
+    [
+     12,
+     4.5
+    ],
+    [
+     12,
+     5.7
+    ],
+    [
+     5.4,
+     5.7
+    ],
+    [
+     5.4,
+     9
+    ],
+    [
+     3.4,
+     9
+    ]
+   ],
+   "floor": "tile-hall",
+   "wallFinish": "paint-warm",
+   "areaLabel": 15.2,
+   "lightK": 3000
+  },
+  {
+   "id": "bath",
+   "name": "Bad",
+   "polygon": [
+    [
+     5.4,
+     5.7
+    ],
+    [
+     8.6,
+     5.7
+    ],
+    [
+     8.6,
+     9
+    ],
+    [
+     5.4,
+     9
+    ]
+   ],
+   "floor": "tile-bath",
+   "wallFinish": "paint-white",
+   "areaLabel": 9.5,
+   "lightK": 3500
+  },
+  {
+   "id": "bed3",
+   "name": "Arbeitszimmer",
+   "polygon": [
+    [
+     8.6,
+     5.7
+    ],
+    [
+     12,
+     5.7
+    ],
+    [
+     12,
+     9
+    ],
+    [
+     8.6,
+     9
+    ]
+   ],
+   "floor": "oak",
+   "wallFinish": "paint-warm",
+   "areaLabel": 9.9,
+   "lightK": 3000
+  }
+ ],
+ "furniture": [
+  {
+   "id": "k-run",
+   "type": "kitchen-base",
+   "room": "living",
+   "position": [
+    1.75,
+    0.45
+   ],
+   "size": [
+    3.2,
+    0.6,
+    0.9
+   ],
+   "material": "cab-white",
+   "accent": "worktop"
+  },
+  {
+   "id": "k-sink",
+   "type": "sink",
+   "room": "living",
+   "position": [
+    1.8,
+    0.42
+   ],
+   "accent": "chrome"
+  },
+  {
+   "id": "k-hob",
+   "type": "hob",
+   "room": "living",
+   "position": [
+    2.85,
+    0.45
+   ]
+  },
+  {
+   "id": "k-tall",
+   "type": "kitchen-tall",
+   "room": "living",
+   "position": [
+    0.45,
+    1.25
+   ],
+   "rotation": 270,
+   "size": [
+    1.0,
+    0.6,
+    2.2
+   ],
+   "material": "cab-oak"
+  },
+  {
+   "id": "dining",
+   "type": "dining-table",
+   "room": "living",
+   "position": [
+    1.9,
+    2.4
+   ],
+   "size": [
+    1.8,
+    0.9,
+    0.75
+   ],
+   "material": "oak-veneer",
+   "accent": "black-steel"
+  },
+  {
+   "id": "ch1",
+   "type": "chair",
+   "room": "living",
+   "position": [
+    1.45,
+    1.78
+   ],
+   "material": "walnut",
+   "accent": "fabric-chair",
+   "model": "@lib/models/dining_chair_02.glb"
+  },
+  {
+   "id": "ch2",
+   "type": "chair",
+   "room": "living",
+   "position": [
+    2.35,
+    1.78
+   ],
+   "material": "walnut",
+   "accent": "fabric-chair",
+   "model": "@lib/models/dining_chair_02.glb"
+  },
+  {
+   "id": "ch3",
+   "type": "chair",
+   "room": "living",
+   "position": [
+    1.45,
+    3.02
+   ],
+   "rotation": 180,
+   "material": "walnut",
+   "accent": "fabric-chair",
+   "model": "@lib/models/dining_chair_02.glb"
+  },
+  {
+   "id": "ch4",
+   "type": "chair",
+   "room": "living",
+   "position": [
+    2.35,
+    3.02
+   ],
+   "rotation": 180,
+   "material": "walnut",
+   "accent": "fabric-chair",
+   "model": "@lib/models/dining_chair_02.glb"
+  },
+  {
+   "id": "sofa",
+   "type": "sofa",
+   "room": "living",
+   "position": [
+    4.65,
+    2.4
+   ],
+   "rotation": 270,
+   "material": "fabric-sofa",
+   "accent": "walnut"
+  },
+  {
+   "id": "rug-living",
+   "type": "rug",
+   "room": "living",
+   "position": [
+    5.85,
+    2.4
+   ],
+   "rotation": 90,
+   "size": [
+    2.6,
+    2.0,
+    0.01
+   ],
+   "material": "wool-rug"
+  },
+  {
+   "id": "coffee",
+   "type": "coffee-table",
+   "room": "living",
+   "position": [
+    5.85,
+    2.4
+   ],
+   "rotation": 0,
+   "material": "walnut",
+   "model": "@lib/models/modern_coffee_table_01.glb"
+  },
+  {
+   "id": "tv",
+   "type": "tv-unit",
+   "room": "living",
+   "position": [
+    7.17,
+    2.4
+   ],
+   "rotation": 90,
+   "material": "walnut",
+   "model": "@lib/models/modern_wooden_cabinet.glb"
+  },
+  {
+   "id": "tv-screen",
+   "type": "tv",
+   "room": "living",
+   "position": [
+    7.32,
+    2.4
+   ],
+   "rotation": 90,
+   "elevation": 0.68,
+   "size": [
+    1.4,
+    0.12,
+    0.85
+   ]
+  },
+  {
+   "id": "armchair",
+   "type": "armchair",
+   "room": "living",
+   "position": [
+    6.45,
+    3.7
+   ],
+   "rotation": 135,
+   "material": "fabric-chair",
+   "accent": "walnut",
+   "model": "@lib/models/mid_century_lounge_chair.glb"
+  },
+  {
+   "id": "lamp",
+   "type": "floor-lamp",
+   "room": "living",
+   "position": [
+    4.45,
+    0.8
+   ]
+  },
+  {
+   "id": "plant-l",
+   "type": "plant",
+   "room": "living",
+   "position": [
+    6.95,
+    0.62
+   ],
+   "model": "@lib/models/potted_plant_02.glb"
+  },
+  {
+   "id": "bed1",
+   "type": "bed",
+   "room": "master",
+   "position": [
+    10.8,
+    2.3
+   ],
+   "rotation": 90,
+   "size": [
+    1.8,
+    2.1,
+    1.0
+   ],
+   "material": "linen",
+   "accent": "oak-veneer"
+  },
+  {
+   "id": "ns1",
+   "type": "nightstand",
+   "room": "master",
+   "position": [
+    11.55,
+    0.95
+   ],
+   "rotation": 90,
+   "material": "walnut",
+   "model": "@lib/models/side_table_01.glb"
+  },
+  {
+   "id": "ns2",
+   "type": "nightstand",
+   "room": "master",
+   "position": [
+    11.55,
+    3.65
+   ],
+   "rotation": 90,
+   "material": "walnut",
+   "model": "@lib/models/side_table_01.glb"
+  },
+  {
+   "id": "wardrobe1",
+   "type": "wardrobe",
+   "room": "master",
+   "position": [
+    7.87,
+    2.0
+   ],
+   "rotation": 270,
+   "size": [
+    2.4,
+    0.6,
+    2.25
+   ],
+   "material": "cab-white"
+  },
+  {
+   "id": "rug-master",
+   "type": "rug",
+   "room": "master",
+   "position": [
+    9.6,
+    2.3
+   ],
+   "rotation": 90,
+   "size": [
+    2.0,
+    1.4,
+    0.01
+   ],
+   "material": "wool-rug"
+  },
+  {
+   "id": "bed2-bed",
+   "type": "bed",
+   "room": "bed2",
+   "position": [
+    1.17,
+    6.95
+   ],
+   "rotation": 270,
+   "size": [
+    1.4,
+    2.0,
+    0.95
+   ],
+   "material": "linen",
+   "accent": "oak-veneer"
+  },
+  {
+   "id": "bed2-ns",
+   "type": "nightstand",
+   "room": "bed2",
+   "position": [
+    0.45,
+    5.95
+   ],
+   "rotation": 270,
+   "material": "oak-veneer",
+   "model": "@lib/models/side_table_01.glb"
+  },
+  {
+   "id": "bed2-desk",
+   "type": "desk",
+   "room": "bed2",
+   "position": [
+    1.0,
+    4.88
+   ],
+   "size": [
+    1.2,
+    0.6,
+    0.75
+   ],
+   "material": "oak-veneer",
+   "accent": "black-steel"
+  },
+  {
+   "id": "bed2-chair",
+   "type": "office-chair",
+   "room": "bed2",
+   "position": [
+    1.0,
+    5.45
+   ],
+   "rotation": 180
+  },
+  {
+   "id": "bed2-wardrobe",
+   "type": "wardrobe",
+   "room": "bed2",
+   "position": [
+    3.04,
+    7.9
+   ],
+   "rotation": 90,
+   "size": [
+    1.6,
+    0.6,
+    2.2
+   ],
+   "material": "cab-white"
+  },
+  {
+   "id": "hall-plant",
+   "type": "plant",
+   "room": "hall",
+   "position": [
+    4.95,
+    8.45
+   ],
+   "model": "@lib/models/potted_plant_02.glb"
+  },
+  {
+   "id": "tub",
+   "type": "bathtub",
+   "room": "bath",
+   "position": [
+    6.32,
+    8.47
+   ],
+   "rotation": 180,
+   "size": [
+    1.7,
+    0.75,
+    0.58
+   ]
+  },
+  {
+   "id": "shower",
+   "type": "shower",
+   "room": "bath",
+   "position": [
+    8.09,
+    8.4
+   ]
+  },
+  {
+   "id": "wc",
+   "type": "toilet",
+   "room": "bath",
+   "position": [
+    8.24,
+    6.7
+   ],
+   "rotation": 90
+  },
+  {
+   "id": "vanity",
+   "type": "vanity",
+   "room": "bath",
+   "position": [
+    5.71,
+    6.75
+   ],
+   "rotation": 270,
+   "material": "cab-oak",
+   "accent": "#f4f2ee"
+  },
+  {
+   "id": "study-desk",
+   "type": "desk",
+   "room": "bed3",
+   "position": [
+    11.5,
+    7.35
+   ],
+   "rotation": 90,
+   "material": "oak-veneer",
+   "accent": "black-steel"
+  },
+  {
+   "id": "study-chair",
+   "type": "office-chair",
+   "room": "bed3",
+   "position": [
+    10.8,
+    7.35
+   ],
+   "rotation": 270
+  },
+  {
+   "id": "study-shelf",
+   "type": "bookshelf",
+   "room": "bed3",
+   "position": [
+    8.87,
+    6.65
+   ],
+   "rotation": 270,
+   "material": "walnut",
+   "model": "@lib/models/wooden_display_shelves_01.glb"
+  },
+  {
+   "id": "study-bed",
+   "type": "bed",
+   "room": "bed3",
+   "position": [
+    9.9,
+    8.35
+   ],
+   "rotation": 270,
+   "size": [
+    0.9,
+    2.0,
+    0.6
+   ],
+   "material": "linen",
+   "accent": "oak-veneer"
+  },
+  {
+   "id": "pendant",
+   "type": "box",
+   "room": "living",
+   "position": [
+    1.9,
+    2.4
+   ],
+   "model": "@lib/models/modern_ceiling_lamp_01.glb",
+   "elevation": 1.64
+  },
+  {
+   "id": "desk-lamp",
+   "type": "box",
+   "room": "bed3",
+   "position": [
+    11.6,
+    7.85
+   ],
+   "rotation": 90,
+   "model": "@lib/models/desk_lamp_arm_01.glb",
+   "elevation": 0.75
+  },
+  {
+   "id": "succulent",
+   "type": "box",
+   "room": "living",
+   "position": [
+    1.5,
+    2.3
+   ],
+   "model": "@lib/models/potted_plant_04.glb",
+   "elevation": 0.75
+  },
+  {
+   "id": "succulent-2",
+   "type": "box",
+   "room": "bed3",
+   "position": [
+    11.55,
+    6.85
+   ],
+   "model": "@lib/models/potted_plant_04.glb",
+   "elevation": 0.75
+  }
+ ],
+ "cameras": [
+  {
+   "id": "cam-living",
+   "room": "living",
+   "position": [
+    1.0,
+    4.1
+   ],
+   "lookAt": [
+    6.8,
+    1.2
+   ],
+   "note": "Dining table in front, sofa and garden doors behind."
+  },
+  {
+   "id": "cam-kitchen",
+   "room": "living",
+   "position": [
+    5.6,
+    3.9
+   ],
+   "lookAt": [
+    1.2,
+    0.6
+   ]
+  },
+  {
+   "id": "cam-master",
+   "room": "master",
+   "position": [
+    8.4,
+    3.3
+   ],
+   "lookAt": [
+    11.6,
+    1.0
+   ]
+  },
+  {
+   "id": "cam-bath",
+   "room": "bath",
+   "position": [
+    6.3,
+    6.15
+   ],
+   "lookAt": [
+    7.7,
+    8.7
+   ],
+   "fov": 70
+  },
+  {
+   "id": "cam-study",
+   "room": "bed3",
+   "position": [
+    9.2,
+    6.25
+   ],
+   "lookAt": [
+    11.7,
+    7.5
+   ],
+   "fov": 70
+  }
+ ],
+ "environment": "suburban_garden",
+ "north": 180
+}

@@ -1,0 +1,29 @@
+{
+  "name": "@arch/viewer-ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./model": "./src/viewer-model.ts",
+    "./controls": "./src/viewer-controls.tsx",
+    "./loader": "./src/viewer-loader.tsx",
+    "./messages/*": "./src/messages/*.ts",
+    "./stage": "./src/viewer-stage.tsx",
+    "./styles.css": "./src/styles.css"
+  },
+  "dependencies": {
+    "@arch/ui": "workspace:*",
+    "@arch/viewer": "workspace:*",
+    "lucide-react": "^1.56.0"
+  },
+  "peerDependencies": {
+    "react": "^19.3.0"
+  },
+  "devDependencies": {
+    "@arch/config": "workspace:*",
+    "@types/react": "^19.3.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.4"
+  }
+}

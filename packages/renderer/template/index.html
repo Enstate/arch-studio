@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Arch project · walkthrough</title>
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1714; font-family: Georgia, 'Iowan Old Style', serif; }
+  canvas { display: block; }
+  #ui { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(27, 23, 20, 0.55); color: #f4ede2; }
+  #ui.hidden { display: none; }
+  .card { max-width: 420px; padding: 28px 32px; background: rgba(36, 30, 26, 0.92); border: 1px solid #6d5a48; border-radius: 6px; }
+  h1 { margin: 0 0 6px; font-weight: normal; font-size: 26px; letter-spacing: 0.02em; }
+  p { margin: 0 0 14px; line-height: 1.5; font-size: 15px; color: #d9cdbd; }
+  button:disabled { opacity: 0.6; cursor: wait; }
+  button, select { font: inherit; font-size: 15px; padding: 8px 14px; border-radius: 4px; border: 1px solid #a7896a; background: #b8673f; color: #fff; cursor: pointer; }
+  select { background: #2c2520; color: #f4ede2; margin-left: 8px; }
+  kbd { background: #3a312a; padding: 1px 6px; border-radius: 3px; font-family: ui-monospace, monospace; font-size: 13px; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "./node_modules/three/build/three.module.js",
+  "three/addons/": "./node_modules/three/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="ui"><div class="card">
+  <h1>Arch project</h1>
+  <p>Loading project presentation.</p>
+  <p><kbd>W A S D</kbd> walk · <kbd>Shift</kbd> faster · mouse to look · <kbd>Esc</kbd> pause</p>
+  <p><button id="enter" type="button" disabled>Loading the project…</button><select id="goto"><option value="">Jump to a room…</option></select></p>
+</div></div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
