@@ -10,6 +10,15 @@ provide model credits or run agents on Enstate servers.
 
 ## Start
 
+On macOS, download the Apple Silicon (`arm64`) or Intel (`x64`) DMG from
+[GitHub Releases](https://github.com/Enstate/arch-studio/releases), then drag
+Arch Studio into Applications. Installed desktop releases show update status in
+the sidebar and under **Arch Studio → Check for Updates**. Choose when to
+download and restart; saved projects and checkpoints stay on your machine.
+The older v0.1.0–v0.1.2 releases contain source packages only.
+
+To run from source:
+
 Install [Bun 1.4.3 or newer](https://bun.sh), then:
 
 ```sh

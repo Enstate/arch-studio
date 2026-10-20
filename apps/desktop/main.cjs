@@ -1,9 +1,11 @@
-const { app, BrowserWindow, session, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, session, shell, ipcMain, Menu } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
+const { createDesktopUpdates } = require('./updates.cjs');
 app.setName('Arch Studio');
 let server;
 let quitting = false;
+let updates;
 function stopServer() {
   if (!server) return;
   try { process.kill(-server.pid, 'SIGTERM'); } catch {}
@@ -26,7 +28,8 @@ function startServer() {
     const timer = setTimeout(() => reject(new Error('Studio server startup timed out')), 30000);
     const fail = error => { clearTimeout(timer); reject(error); };
     server.once('error', fail);
-    server.once('exit', code => { if (!quitting) { fail(new Error(`Studio server exited (${code})`)); app.quit(); } });
+    const child = server;
+    server.once('exit', code => { if (server === child && !quitting) { fail(new Error(`Studio server exited (${code})`)); app.quit(); } });
     server.stderr.on('data', data => process.stderr.write(data));
     server.stdout.on('data', data => {
       pending += data.toString();
@@ -42,7 +45,7 @@ function startServer() {
     });
   });
 }
-app.on('before-quit', () => { quitting = true; stopServer(); });
+app.on('before-quit', () => { quitting = true; updates?.dispose(); stopServer(); });
 app.on('window-all-closed', () => app.quit());
 app.whenReady().then(async () => {
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -50,8 +53,47 @@ app.whenReady().then(async () => {
   const dev = !app.isPackaged && process.env.ARCH_STUDIO_DEV_URL;
   const bootstrapUrl = dev || await startServer();
   if (!validBootstrapUrl(bootstrapUrl)) throw new Error('Invalid local Studio bootstrap URL');
-  const origin = new URL(bootstrapUrl).origin;
+  let origin = new URL(bootstrapUrl).origin;
   const window = new BrowserWindow({ width: 1440, height: 960, webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs') } });
+  const trustedFrame = event => {
+    try { return event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && new URL(event.senderFrame.url).origin === origin; }
+    catch { return false; }
+  };
+  const { autoUpdater } = require('electron-updater');
+  updates = createDesktopUpdates({
+    app, updater: autoUpdater,
+    publish: state => { if (!window.isDestroyed()) window.webContents.send('desktop:update-state', state); },
+    beforeInstall: () => {
+      // Keep ownership of the loopback port until Squirrel actually quits us.
+      // Block renderer commands while native installation is being prepared.
+      origin = undefined;
+      window.setEnabled(false);
+    },
+    recoverInstall: async () => {
+      origin = new URL(bootstrapUrl).origin;
+      window.setEnabled(true);
+    },
+  });
+  for (const [name, method] of [['state', 'getState'], ['check', 'check'], ['download', 'download'], ['install', 'install']]) {
+    ipcMain.handle(`desktop:update-${name}`, event => {
+      if (!trustedFrame(event)) throw new Error('Update request requires the local Studio main frame');
+      return updates[method]();
+    });
+  }
+  const appMenu = [
+    { label: 'About Arch Studio', role: 'about' },
+    { label: 'Check for Updates…', click: () => { void updates.check(); } },
+    { type: 'separator' },
+    { role: 'services' },
+    { type: 'separator' },
+    { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' },
+    { type: 'separator' },
+    { role: 'quit' },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { label: 'Arch Studio', submenu: appMenu },
+    { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
+  ]));
   window.webContents.on('will-navigate', (event, url) => { if (new URL(url).origin !== origin) event.preventDefault(); });
   window.webContents.on('will-redirect', (event, url) => { if (new URL(url).origin !== origin) event.preventDefault(); });
   window.webContents.setWindowOpenHandler(({url}) => {
@@ -62,7 +104,7 @@ app.whenReady().then(async () => {
     return { action: 'deny' };
   });
   ipcMain.on('open-external-link', (event, url) => {
-    if (event.sender !== window.webContents || !event.senderFrame || new URL(event.senderFrame.url).origin !== origin) return;
+    if (!trustedFrame(event)) return;
     try { if (new URL(url).protocol === 'https:') void shell.openExternal(url); } catch {}
   });
   window.webContents.on('will-frame-navigate', event => { if (new URL(event.url).origin !== origin) event.preventDefault(); });
@@ -70,4 +112,5 @@ app.whenReady().then(async () => {
     if (new URL(url).protocol === 'https:') { event.preventDefault(); }
   });
   await window.loadURL(bootstrapUrl);
+  void updates.start();
 }).catch(error => { console.error(error.message); stopServer(); app.quit(); });

@@ -10,8 +10,6 @@ concurrency:
 jobs:
   archives:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,11 +21,9 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: bun scripts/release-packages.ts --tag "$RELEASE_TAG"
-      - name: Verify provenance and publish immutable release
+      - name: Verify immutable source provenance
         env:
-          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
-          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
@@ -35,4 +31,87 @@ jobs:
           test "$(jq -r .commit "$directory/release.json")" = "$GITHUB_SHA"
           test "$(jq -r .tag "$directory/release.json")" = "$RELEASE_TAG"
           (cd "$directory" && sha256sum --check SHA256SUMS)
-          gh release create "$RELEASE_TAG" "$directory"/*.tgz "$directory/SHA256SUMS" "$directory/release.json" --verify-tag --title "$RELEASE_TAG" --notes "Public source packages from commit $GITHUB_SHA. Archive hashes and provenance are attached."
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source-packages
+          path: .arch/releases/${{ github.ref_name }}/*
+          if-no-files-found: error
+  mac:
+    if: vars.MACOS_RELEASE_CI_ENABLED == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile
+      - name: Verify native architecture
+        run: test "$(bun -p process.arch)" = "${{ matrix.arch }}"
+      - name: Sign, notarize and package native macOS app
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          # The packager imports this base64 P12 into its own temporary keychain.
+          CSC_LINK: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          CSC_NAME: 'Matias Mora (3T885JB4UJ)'
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: '3T885JB4UJ'
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: bun run package:desktop:release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.arch }}
+          path: |
+            artifacts/arch-studio-darwin-${{ matrix.arch }}/*.dmg
+            artifacts/arch-studio-darwin-${{ matrix.arch }}/*.zip
+            artifacts/arch-studio-darwin-${{ matrix.arch }}/*.blockmap
+            artifacts/arch-studio-darwin-${{ matrix.arch }}/latest-mac.yml
+            artifacts/arch-studio-darwin-${{ matrix.arch }}/desktop-${{ matrix.arch }}.json
+          if-no-files-found: error
+  publish:
+    needs: [archives, mac]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: source-packages
+          path: release/source
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-arm64
+          path: release/arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-x64
+          path: release/x64
+      - run: bun scripts/desktop-update-manifest.ts release
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+      - name: Reconcile verified draft assets and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: bun scripts/publish-desktop-release.ts release

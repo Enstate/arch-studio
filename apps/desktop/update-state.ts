@@ -1,0 +1,20 @@
+export type DesktopUpdate = {
+  currentVersion: string;
+  status: "disabled" | "idle" | "checking" | "available" | "up-to-date" | "downloading" | "downloaded" | "installing" | "error";
+  version?: string;
+  percent?: number;
+  message?: string;
+  operation?: "check" | "download" | "install";
+};
+
+export interface DesktopBridge {
+  getUpdateState(): Promise<DesktopUpdate>;
+  checkForUpdate(): Promise<DesktopUpdate>;
+  downloadUpdate(): Promise<DesktopUpdate>;
+  installUpdate(): Promise<DesktopUpdate>;
+  onUpdateState(listener: (state: DesktopUpdate) => void): () => void;
+}
+
+declare global {
+  interface Window { archDesktop?: DesktopBridge }
+}

@@ -1,7 +1,12 @@
 {
   "name": "@arch/desktop",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "private": true,
   "main": "main.cjs",
-  "devDependencies": { "electron": "44.9.1" }
+  "devDependencies": {
+    "electron": "44.9.1"
+  },
+  "dependencies": {
+    "electron-updater": "6.6.2"
+  }
 }
