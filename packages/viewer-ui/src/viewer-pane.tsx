@@ -125,7 +125,7 @@ export function ViewerSurface({
   return (
     <div
       data-viewer=""
-      data-labels={labelsHidden ? "off" : undefined}
+      data-labels={viewer && labelsHidden ? "off" : undefined}
       className={cn(
         "@container relative size-full min-h-0 overflow-hidden bg-muted",
         // `.arch-room-label` is the class @arch/viewer gives each room label button.
