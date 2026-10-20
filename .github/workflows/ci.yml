@@ -18,7 +18,7 @@ jobs:
           bun-version: 1.4.3
       - run: bun install --frozen-lockfile
       - run: bun run check-types
-      - run: bun test packages/project/tests packages/project-tools/tests
+      - run: bun test packages/project/tests packages/project-tools/tests packages/ui/tests
       - run: bun test apps/studio/src/lib/local-catalog.test.ts
       - run: bun run lint
       - run: bun run build:studio

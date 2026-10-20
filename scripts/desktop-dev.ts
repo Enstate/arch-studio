@@ -29,7 +29,9 @@ try {
     await new Promise(resolve => setTimeout(resolve, 250));
   }
   const require = createRequire(resolve(root, 'apps/desktop/package.json'));
-  const electron = spawn(require('electron'), [resolve(root, 'apps/desktop')], { cwd: root, env: { ...process.env, ARCH_STUDIO_DEV_URL: bootstrapUrl }, stdio: 'inherit', detached: true });
+  const electronEnvironment: NodeJS.ProcessEnv = { ...process.env, ARCH_STUDIO_DEV_URL: bootstrapUrl };
+  delete electronEnvironment.ELECTRON_RUN_AS_NODE;
+  const electron = spawn(require('electron'), [resolve(root, 'apps/desktop')], { cwd: root, env: electronEnvironment, stdio: 'inherit', detached: true });
   children.push(electron);
   await new Promise<void>((done, reject) => { electron.once('exit', () => done()); electron.once('error', reject); });
 } finally { cleanup(); }

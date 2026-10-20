@@ -1,5 +1,7 @@
 import { Button } from "@arch/ui/components/button";
+import { Field, FieldLabel } from "@arch/ui/components/field";
 import { Input } from "@arch/ui/components/input";
+import { useForm } from "@tanstack/react-form";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { initializeSource, registerSource } from "../lib/server";
@@ -10,16 +12,20 @@ export function SourceSetup({projectId, attached, t}: {projectId: string; attach
   const [creating, setCreating] = useState(false);
   const initialize = creating && !attached;
   const setup = useMutation({
-    mutationFn: async ({fields, initialize}: {fields: FormData; initialize: boolean}) => initialize
-      ? initializeSource({data: {projectId, inputsDirectory: String(fields.get("inputsDirectory")), directory: String(fields.get("directory"))}})
-      : registerSource({data: {projectId, directory: String(fields.get("directory"))}}),
+    mutationFn: async ({values, initialize}: {values: {inputsDirectory: string; directory: string}; initialize: boolean}) => initialize
+      ? initializeSource({data: {projectId, inputsDirectory: values.inputsDirectory, directory: values.directory}})
+      : registerSource({data: {projectId, directory: values.directory}}),
     onSuccess: () => client.invalidateQueries(),
   });
+  const form = useForm({
+    defaultValues: {inputsDirectory: "", directory: ""},
+    onSubmit: ({value}) => {if (!setup.isPending) setup.mutate({values: value, initialize});},
+  });
   return <div className="grid gap-2">
-    {!attached && <div className="flex gap-1"><Button size="sm" variant={creating ? "ghost" : "secondary"} onClick={() => {setup.reset(); setCreating(false);}}>{t.existingSource}</Button><Button size="sm" variant={creating ? "secondary" : "ghost"} onClick={() => {setup.reset(); setCreating(true);}}>{t.newSource}</Button></div>}
-    <form className="grid gap-2" onSubmit={event => {event.preventDefault(); setup.mutate({fields: new FormData(event.currentTarget), initialize});}}>
-      {initialize && <label htmlFor="source-inputs" className="grid gap-2 text-xs text-muted-foreground">{t.inputFolder}<Input id="source-inputs" name="inputsDirectory" required /></label>}
-      <label htmlFor="source-destination" className="grid gap-2 text-xs text-muted-foreground">{initialize ? t.destination : t.folder}<Input id="source-destination" name="directory" required /></label>
+    {!attached && <div className="flex gap-1"><Button size="sm" variant={creating ? "ghost" : "secondary"} onClick={() => {setup.reset(); form.resetField("inputsDirectory"); setCreating(false);}}>{t.existingSource}</Button><Button size="sm" variant={creating ? "secondary" : "ghost"} onClick={() => {setup.reset(); setCreating(true);}}>{t.newSource}</Button></div>}
+    <form autoComplete="off" className="grid gap-2" onSubmit={event => {event.preventDefault(); void form.handleSubmit();}}>
+      {initialize && <form.Field name="inputsDirectory">{field => <Field className="gap-2"><FieldLabel htmlFor="source-inputs" className="text-xs font-normal text-muted-foreground">{t.inputFolder}</FieldLabel><Input id="source-inputs" name={field.name} value={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.value)} autoComplete="off" required disabled={setup.isPending} /></Field>}</form.Field>}
+      <form.Field name="directory">{field => <Field className="gap-2"><FieldLabel htmlFor="source-destination" className="text-xs font-normal text-muted-foreground">{initialize ? t.destination : t.folder}</FieldLabel><Input id="source-destination" name={field.name} value={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.value)} autoComplete="off" required disabled={setup.isPending} /></Field>}</form.Field>
       <Button size="sm" type="submit" variant="outline" disabled={setup.isPending}>{setup.isPending ? t.loading : initialize ? t.initialize : t.register}</Button>
     </form>
     <p className="text-xs text-muted-foreground">{initialize ? t.intakeHint : t.inspectSource}</p>

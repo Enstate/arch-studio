@@ -23,7 +23,8 @@
     "zod": "catalog:",
     "@arch/project": "workspace:*",
     "@arch/project-tools": "workspace:*",
-    "@arch/viewer-ui": "workspace:*"
+    "@arch/viewer-ui": "workspace:*",
+    "@tanstack/react-form": "catalog:"
   },
   "devDependencies": {
     "@arch/config": "workspace:*",
