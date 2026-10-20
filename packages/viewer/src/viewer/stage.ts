@@ -623,6 +623,26 @@ export class Stage {
     return true;
   }
 
+  /**
+   * Compiles the scene pass's pipelines without drawing, so the first frame finds them ready.
+   * The pass's target and MRT are bound because they are part of each pipeline's cache key.
+   */
+  async compile() {
+    const r = this.renderer;
+    this.syncViewCam();
+    r.lighting = this.lightings[this.preset];
+    const target = r.getRenderTarget();
+    const mrt = r.getMRT();
+    r.setRenderTarget(this.scenePass.renderTarget);
+    r.setMRT(this.scenePass.getMRT());
+    try {
+      await r.compileAsync(this.scene, this.viewCam);
+    } finally {
+      r.setRenderTarget(target);
+      r.setMRT(mrt);
+    }
+  }
+
   render(now = performance.now()) {
     if (this.outputKey === 'real') this.adaptResolution(now);
     else this.lastFrame = 0;

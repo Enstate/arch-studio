@@ -20,6 +20,8 @@ export class Walker {
   private capsule = new Capsule(new THREE.Vector3(0, RADIUS, 0), new THREE.Vector3(0, EYE - 0.1, 0), RADIUS);
   private velocity = new THREE.Vector3();
   private onFloor = false;
+  /** Last plan point (x, z) the walker stood on the floor, or the last placement. */
+  private safe = { x: 0, z: 0 };
   private keys = new Set<string>();
   private yaw = 0;
   private pitch = 0;
@@ -66,6 +68,7 @@ export class Walker {
     this.capsule.start.set(x, RADIUS + 0.01, z);
     this.capsule.end.set(x, EYE - 0.1, z);
     this.velocity.set(0, 0, 0);
+    this.safe = { x, z };
     this.yaw = Math.atan2(-(lx - x), -(lz - z));
     this.pitch = -0.05;
     this.sync();
@@ -241,11 +244,14 @@ export class Walker {
         if (hit.depth >= 1e-10) this.capsule.translate(hit.normal.multiplyScalar(hit.depth));
       }
       this.pushOutOf(blockers);
+      if (this.onFloor) this.safe = { x: this.capsule.start.x, z: this.capsule.start.z };
     }
-    // Fell out of the house (bad plan, open edge): put the walker back on the floor.
+    // Fell out of the house (bad plan, open edge): return to the last floor spot, keeping the view.
     if (this.capsule.start.y < -5) {
-      this.capsule.translate(new THREE.Vector3(0, 6, 0));
-      this.velocity.set(0, 0, 0);
+      const { yaw, pitch } = this;
+      const { x, z } = this.safe;
+      this.place(x, z, x - Math.sin(yaw), z - Math.cos(yaw));
+      this.pitch = pitch;
     }
     this.sync();
   }

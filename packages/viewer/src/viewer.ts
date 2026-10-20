@@ -17,7 +17,7 @@ export type ViewerMode = 'plan' | 'dollhouse' | 'walk';
 export type ViewerTheme = 'light' | 'dark';
 
 export interface ViewerProgress {
-  phase: 'renderer' | 'plan' | 'assets' | 'first-frame' | 'ready';
+  phase: 'renderer' | 'plan' | 'assets' | 'build' | 'compile' | 'first-frame' | 'ready';
   /** 0..1 over the whole load; 1 once the first frame shows every model and texture. */
   progress: number;
   /** Models and textures loaded so far, and requested so far. */
@@ -168,12 +168,20 @@ const DEFAULT_TIME = 16 / 24;
 const WARM_TIME = { day: 13 / 24, dusk: (19 + 40 / 60) / 24, night: 22 / 24 };
 
 /** Mounts the viewer into `host` (sized by its CSS) and resolves after the first frame. */
+/** Ends the current task so the browser can paint and handle input between load phases. */
+function yieldToMain() {
+  const s = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  return s?.yield ? s.yield() : new Promise<void>((res) => setTimeout(res, 0));
+}
+
 export async function createViewer(host: HTMLElement, opts: ViewerOptions): Promise<Viewer> {
   const t0 = performance.now();
   const cleanup: (() => void)[] = [];
   const abort = new AbortController();
   const signal = abort.signal;
-  opts.signal?.addEventListener('abort', () => abort.abort(), { signal });
+  // An already-aborted signal never fires 'abort'.
+  if (opts.signal?.aborted) abort.abort();
+  else opts.signal?.addEventListener('abort', () => abort.abort(), { signal });
   let disposed = false;
   const dispose = () => {
     if (disposed) return;
@@ -203,6 +211,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   host.style.overflow = 'hidden';
 
   const caps = await capabilities();
+  check();
   const lite = opts.quality === 'lite' || (opts.quality !== 'full' && caps.recommended === 'lite');
   const [stage, plan, library] = await Promise.all([
     Stage.create(host, { forceWebGL: opts.forceWebGL, lite }),
@@ -227,7 +236,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   manager.onProgress = (_url, loaded, total) => {
     assetsLoaded = loaded;
     assetsTotal = total;
-    if (phase === 'plan' || phase === 'assets') report('assets', 0.1 + 0.85 * (loaded / Math.max(1, total)));
+    if (phase === 'plan' || phase === 'assets') report('assets', 0.1 + 0.6 * (loaded / Math.max(1, total)));
     stage.requestRender();
   };
 
@@ -297,6 +306,9 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     throw e;
   }
   cleanup.push(() => house.dispose());
+  report('build', 0.78);
+  await yieldToMain();
+  check();
   check();
 
   const roomList: RoomInfo[] = house.rooms.map((r) => ({
@@ -471,8 +483,11 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     planControls.update();
   }
 
+  // Walk cameras must stand inside a room; an exterior overview would drop the walker outside.
+  const insideRoom = (c: { position: number[] }) => house.rooms.some((r) => pointInPolygon([c.position[0], c.position[1]], r.room.polygon));
+
   function placeWalkerAtStart() {
-    const cam = plan.cameras?.[0];
+    const cam = plan.cameras?.find(insideRoom);
     if (cam) return walker.place(cam.position[0], cam.position[1], cam.lookAt[0], cam.lookAt[1]);
     // Otherwise step in through the front door: the first door on an exterior wall.
     const door = plan.openings?.find((o) => o.type.includes('door') && plan.walls.find((w) => w.id === o.wall)?.exterior);
@@ -534,7 +549,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       tourCtl.release();
       applyMode(state.mode);
     }
-    const cam = plan.cameras?.find((c) => c.room === id);
+    const cam = plan.cameras?.find((c) => c.room === id && insideRoom(c));
     if (state.mode === 'walk') {
       if (cam) walker.place(cam.position[0], cam.position[1], cam.lookAt[0], cam.lookAt[1]);
       else walker.place(r.center.x, r.center.z, r.center.x + 1, r.center.z);
@@ -1048,6 +1063,14 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   applyTime(state.time);
   applyMode(state.mode);
 
+  await yieldToMain();
+  check();
+  // Pipelines for the scene pass compile asynchronously here instead of in one blocking first draw.
+  await stage.compile();
+  check();
+  report('compile', 0.9);
+  await yieldToMain();
+  check();
   stage.render();
   await new Promise<void>((res) => requestAnimationFrame(() => res()));
   check();
@@ -1056,7 +1079,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   const warmStart = performance.now();
   let warmMs = 0;
   warmLater().then(() => (warmMs = performance.now() - warmStart));
-  report('first-frame', Math.max(0.1, assetsTotal ? 0.1 + 0.85 * (assetsLoaded / assetsTotal) : 0.5));
+  report('first-frame', 0.97);
   loop();
 
   const allIn = () => assetsTotal === 0 || assetsLoaded >= assetsTotal;
