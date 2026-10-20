@@ -1,6 +1,6 @@
 ---
 name: arch-generation
-description: Generate or revise an Arch project's rooms, furniture, materials and custom models as source, in bounded builder and critic rounds. Use when starting a project from a folder of customer documents, building from a floor plan, running or leading a design round, restyling a project, or deciding whether a version is ready for review.
+description: Generate or revise an Arch project's rooms, furniture, materials and custom models as source, in bounded builder and critic rounds. Use when organizing or planning a folder of customer documents, starting a project from them, building from a floor plan, running or leading a design round, restyling a project, or deciding whether a version is ready for review.
 ---
 
 # Arch generation
@@ -17,6 +17,8 @@ Read the project's root `AGENTS.md` and `BUILDERS.md` first. They travel with th
 - **Existing project folder on this machine:** `bun run arch continue <project-folder>`, then read the brief it prints.
 - **Bundle from another machine:** follow `arch-checkpoint`.
 
+For a new project, or while `source/intake.json` still lists `unresolved` documents, do intake: read [references/intake.md](references/intake.md) to classify every page into `source/intake.json` and plan the pieces. When the user asked only to plan or organize, stop after intake. Planning does not authorize building, and no session publishes on its own.
+
 `client.id` must equal the Studio client's key. Start from documents or Open attaches a folder to a Studio project. Sources registered through the CLI appear in Studio automatically.
 
 ## Which runtime
@@ -28,27 +30,32 @@ Check `schemaVersion` in `arch.project.json`.
 
 ## Before the first round
 
-The lead fixes these before any builder starts. Each ends when it is written in `arch.project.json` or the base plan under `assets/`.
+The lead fixes these before any builder starts. Each ends when it is written in `arch.project.json`, `source/intake.json` or the base plan under `assets/`.
 
 1. **References.** Every input the customer actually supplied, under `references`. Nothing else is a reference.
-2. **Geometry.** Walls, openings and room sizes follow the customer-approved plan. A missing dimension becomes an assumption with status `unconfirmed`. Scale, ceiling height and any change to a door swing are assumptions too.
-3. **Views.** Fixed cameras, each owned by one piece. Moving one is a lead decision.
-4. **Ownership.** One builder per piece. A piece is usually a room or an authored object, with its own modules under `source/` and its own files under `assets/`. Shared source (the entry, the base plan, shared materials) has one named owner.
+2. **Geometry.** Walls, openings, door swings and room sizes follow the customer-approved plan. Scale comes from a printed dimension or scale bar. A scale inferred from typical door or furniture sizes is a guess: record it as `unconfirmed` and ask before building on it. Any other missing dimension, the ceiling height and any departure from the plan are assumptions with status `unconfirmed` too. Door swings stay as drawn, whatever a camera or walking route would prefer.
+3. **Levels.** One storey per authored artifact. Intake can group storeys before authoring. Plan v1 has one floor plane; see the levels section of [references/intake.md](references/intake.md).
+4. **Views.** Fixed cameras, each owned by one piece. Moving one is a lead decision.
+5. **Ownership.** One builder per piece. A piece is usually a room or an authored object, with its own modules under `source/` and its own files under `assets/`. Shared source (the entry, the base plan, shared materials) has one named owner. The viewer, renderer and apps belong to no piece.
 
 ## A round
 
-1. Start a fresh builder per piece with the round number, the brief, the previous critique for that piece, and the comments on the current version.
-2. The builder edits only its own source and assets. A needed shared change goes in its report as a request; the builder works around it.
+1. Start a fresh builder per piece with the round number, the brief, the previous critique for that piece, and the comments on the current version. The builder starts on the critique's strongest gap.
+2. The builder edits only its own source and assets. A needed shared change, including any to the viewer or renderer, goes in its report as a request; the builder works around it.
 3. Run the artifact build: `bun run arch build <project-id> --authorize-source-execution` or Build in the Studio. It needs explicit authorization, stops after 30 seconds, and receives a restricted environment. It executes with the local user's permissions and is not a sandbox. A build that fails, times out, writes no `plan.json`, references an asset outside the artifact or produces an invalid plan ends the round for that piece. The build saves a checkpoint; record its ID and the artifact hash.
-4. Preview that exact checkpoint's artifact in the viewer and render the piece's views one at a time. Look at every image. A view counts only when the preview loaded with no error and no request left the artifact origin.
-5. Start a fresh critic with `arch-critique`. Its report goes in `outputs/critique/round-<n>.md`.
-6. Compare with the best round. Keep the better one. When the round is worse, restore the best round's checkpoint before the next round.
+4. Preview that exact checkpoint's artifact in the viewer and render the piece's views one at a time. Only a finished build's checkpoint is previewed, never a folder a builder is still writing. Look at every image. A view counts only when the preview loaded with no error and no request left the artifact origin.
+5. Start a fresh critic with `arch-critique`, separate from the piece's builder. Its report goes in `outputs/critique/round-<n>.md`.
+6. Compare with the best round. Keep the better one. When the round is worse, restore the best round's checkpoint before the next round. Reconcile any newer user decisions, intake classifications and assumptions after restoring, then save a checkpoint before resuming.
 
 Stop after six rounds, or earlier when the critic finds nothing material and the lead agrees. Report every unresolved issue by piece.
 
 ## Styling and models
 
-Styling is creative within the customer's brief and lives in source: material colours, roughness, PBR choices, furniture placement, custom models. Keep furniture at real dimensions, walking paths and doorways clear, nothing through walls, door swings and sills respected.
+Styling is creative within the customer's brief and lives in source: material colours, roughness, PBR choices, furniture placement, textiles, lighting, decor, custom models. Style comes from the brief or the user, never from a default. It stays inside the plan's architecture: arches, rooflines and openings appear only where the plan draws them. Keep furniture at real dimensions, walking paths and doorways clear, nothing through walls, door swings and sills respected. Use the lowest texture resolution that holds up in the fixed views; heavy texture sets have crashed preview GPUs.
+
+When the brief asks for Mediterranean, that usually means warm off-white plaster, natural wood and stone, terracotta and olive accents, and layered textiles, lighting and decor where the room calls for them.
+
+Set furniture.fixture in the authored plan when visibility should override the type default: true keeps a built-in visible when loose furniture is hidden; false hides it. Set it explicitly for custom built-ins and lighting. This applies to procedural pieces and custom GLBs; filenames do not determine fixture status.
 
 A custom model is generated or copied into the artifact by the generator. A GLB embeds its buffers and textures, so the artifact stays self-contained. Use only assets whose licence allows delivery in a web player and record credits in the project.
 

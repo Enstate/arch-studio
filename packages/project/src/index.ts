@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export { projectIntakeSchema, type ProjectIntakePlan } from "./intake.ts";
+
 export const projectId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/);
 export const relativeProjectPath = z
   .string()
@@ -156,6 +158,12 @@ export type PreviewSession = { url: string; projectId: string };
 
 /** Older artifact runtimes each reviewed viewer renders. Plan, geometry, asset and runtime contracts are unchanged. */
 const rendersOlder: Record<string, string[]> = {
+  // Authored fixture overrides, closed initial door poses and fixed sliding-panel collision.
+  "6104e28e993e9c1062fb035185c4457487e1aba344eb08e4036f2b917d7f6204": [
+    "9bbdf58f9b2c183f69bdd3034dbd521ea11d632b42c0ce0b8069afec74e6710c",
+    "7e0436bc1b36dfca102c35f11b40a4be9a22d8c1fdbf0ea136cd06853b5445fd",
+    "9347181d703461bfd63873589a89afda5a89e3a8ede79d6cba4ff13e46e22199",
+  ],
   // Resolution and AO settling.
   "7e0436bc1b36dfca102c35f11b40a4be9a22d8c1fdbf0ea136cd06853b5445fd": ["9347181d703461bfd63873589a89afda5a89e3a8ede79d6cba4ff13e46e22199"],
   // Clickable doors, room orbit, drag to pan and lamp shadow refresh.

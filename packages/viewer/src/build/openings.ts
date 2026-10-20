@@ -106,8 +106,9 @@ function buildDoor(plan: Plan, o: Opening, w: Wall, mat: MatFn, double: boolean)
     if (l.dir === -1) leaf.scale.x = -1;
     pivot.add(leaf);
     // Positive rotation.y turns +x toward −z. Mirror for leaves that run −x or swing to +z.
-    pivot.rotation.y = angle * l.dir * (swingZ === -1 ? 1 : -1);
-    pivot.userData = { kind: 'door-leaf', dynamic: true, open: pivot.rotation.y, closed: 0 };
+    const direction = l.dir * (swingZ === -1 ? 1 : -1);
+    pivot.rotation.y = angle * direction;
+    pivot.userData = { kind: 'door-leaf', dynamic: true, open: (angle || THREE.MathUtils.degToRad(75)) * direction, closed: 0 };
     g.add(pivot);
   }
   return g;
@@ -154,6 +155,14 @@ function buildWindow(plan: Plan, o: Opening, w: Wall, mat: MatFn, sliding: boole
     pane.position.set(0, (y0 + y1) / 2, 0);
     pane.userData.kind = 'glass';
     sash.add(pane);
+    if (sliding && i === 0) {
+      // The fixed sash stays solid in both furniture worlds. Keep its wall-local shape
+      // in the octree, rather than filling a diagonal panel's world-axis bounding box.
+      const collider = box(sw, h - FRAME * 2, 0.045, frameMat, 0, (y0 + y1) / 2, 0);
+      collider.visible = false;
+      collider.userData.collide = true;
+      sash.add(collider);
+    }
     if (!sliding) sash.add(box(0.02, 0.12, 0.03, mat('chrome'), sw / 2 - sf - 0.03, (y0 + y1) / 2, inside * 0.035));
     g.add(sash);
   }

@@ -15,6 +15,7 @@ import {
   artifactManifestSchema,
   type ArtifactManifest,
   projectManifestSchema,
+  projectIntakeSchema,
   continuationBriefSchema,
   checkpointManifestSchema,
   reviewNoteSchema,
@@ -23,6 +24,8 @@ import {
   type StudioProject,
   type CheckpointManifest,
   type ProjectInspection,
+  type ProjectIntakePlan,
+  type ProjectManifest,
   type ReviewNote,
   type PreviewSession,
 } from "@arch/project";
@@ -261,6 +264,47 @@ async function safeFile(directory: string, relative: string): Promise<string> {
     throw new Error(`Not a regular file: ${relative}`);
   return current;
 }
+const intakePath = "source/intake.json";
+const maximumIntakeBytes = 2 * 1024 * 1024;
+function projectIntakePlan(contents: Buffer, manifest: ProjectManifest): ProjectIntakePlan {
+  if (contents.byteLength > maximumIntakeBytes)
+    throw new Error("Project intake exceeds the 2 MiB limit.");
+  const plan = projectIntakeSchema.parse(JSON.parse(contents.toString("utf8")));
+  const references = new Set(manifest.references.map(reference => reference.path));
+  for (const document of plan.documents) {
+    if (!references.has(document.path))
+      throw new Error(`Intake document is not a project reference: ${document.path}`);
+  }
+  return plan;
+}
+async function projectIntake(directory: string, manifest: ProjectManifest): Promise<ProjectIntakePlan | null> {
+  let file: string;
+  try {
+    file = await safeFile(directory, intakePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  if ((await fs.stat(file)).size > maximumIntakeBytes)
+    throw new Error("Project intake exceeds the 2 MiB limit.");
+  return projectIntakePlan(await fs.readFile(file), manifest);
+}
+/** Read the optional structured intake against the current source manifest. */
+export async function readProjectIntake(directory: string): Promise<ProjectIntakePlan | null> {
+  const absolute = path.resolve(directory);
+  const manifest = projectManifestSchema.parse(
+    await fileContents(await safeFile(absolute, "arch.project.json")),
+  );
+  return projectIntake(absolute, manifest);
+}
+/** Read plan metadata from the same immutable version as its reference bytes. */
+export async function readCheckpointIntake(checkpointId: string): Promise<ProjectIntakePlan | null> {
+  const saved = await checkpoint(checkpointId);
+  const file = saved.files.find(entry => entry.path === intakePath);
+  if (!file) return null;
+  if (file.size > maximumIntakeBytes) throw new Error("Project intake exceeds the 2 MiB limit.");
+  return projectIntakePlan(await verifiedBlob(path.join(archiveDirectory(), "blobs", "sha256"), file), saved.project);
+}
 async function projectAt(directory: string): Promise<StudioProject> {
   const absolute = path.resolve(directory);
   if (
@@ -297,6 +341,7 @@ export async function registerProject(
   directory: string,
 ): Promise<StudioProject> {
   const project = await projectAt(directory);
+  await projectIntake(project.directory, project.manifest);
   return locked(async (value) => {
     const existing = value.projects.find(
       (p) => p.manifest.id === project.manifest.id,
@@ -396,6 +441,7 @@ export async function saveCheckpoint(
     const previous = value.projects.find((p) => p.manifest.id === projectId);
     if (!previous) throw new Error("Unknown project");
     const current = await projectAt(previous.directory);
+    await projectIntake(current.directory, current.manifest);
     if (current.manifest.id !== projectId)
       throw new Error("Registered project ID changed");
     const brief = continuationBriefSchema.parse(
@@ -406,6 +452,7 @@ export async function saveCheckpoint(
       const data = await fs.readFile(
         await safeFile(current.directory, relative),
       );
+      if (relative === intakePath) projectIntakePlan(data, current.manifest);
       const sha256 = digest(data);
       const blob = path.join(archiveDirectory(), "blobs", "sha256", sha256);
       await fs.mkdir(path.dirname(blob), { recursive: true });
@@ -547,6 +594,7 @@ export async function restoreCheckpoint(
       await fs.writeFile(destination, blob, { flag: "wx" });
     }
     const restored = await projectAt(temporary);
+    await projectIntake(restored.directory, restored.manifest);
     if (
       canonical(restored.manifest) !== canonical(saved.project) ||
       canonical(
@@ -962,7 +1010,10 @@ export async function importCheckpoint(
   const metadata = new Map<string, unknown>();
   const dependencies = new Map<string, string>();
   for (const file of saved.files) {
+    if (file.path === intakePath && file.size > maximumIntakeBytes)
+      throw new Error("Project intake exceeds the 2 MiB limit.");
     const contents = await verifiedBlob(path.join(directory, "blobs"), file);
+    if (file.path === intakePath) projectIntakePlan(contents, saved.project);
     if (["package.json", "bun.lock", "package-lock.json"].includes(file.path))
       dependencies.set(file.path, contents.toString());
     if (file.path === "arch.project.json" || file.path === "arch.context.json")
@@ -1100,7 +1151,7 @@ async function validatedArtifactPlan(directory:string, files:ArtifactManifest["f
     walls:z.array(z.object({...named,a:pair,b:pair,height:z.number().optional(),thickness:z.number().optional()}).passthrough()),
     openings:z.array(z.object({...named,wall:z.string(),type:z.enum(["door","double-door","sliding-door","window","opening","garage-door"]),offset:z.number(),width:z.number(),height:z.number().optional(),sill:z.number().optional()}).passthrough()).optional(),
     rooms:z.array(z.object({...named,name:z.string(),polygon:z.array(pair),areaLabel:z.number().optional()}).passthrough()).optional(),
-    furniture:z.array(z.object({...named,type:z.string(),position:pair,size:z.tuple([z.number(),z.number(),z.number()]).optional(),model:z.string().optional()}).passthrough()).optional(),
+    furniture:z.array(z.object({...named,type:z.string(),position:pair,size:z.tuple([z.number(),z.number(),z.number()]).optional(),model:z.string().optional(),fixture:z.boolean().optional()}).passthrough()).optional(),
     cameras:z.array(z.object({...named,position:pair,lookAt:pair,height:z.number().optional(),lookAtHeight:z.number().optional(),fov:z.number().optional(),photo:z.string().optional()}).passthrough()).optional(),
     materials:z.record(z.string(),material).optional(),environment:z.string().optional(),
     source:z.object({image:z.string(),pxPerMeter:z.number(),overall:pair.optional()}).passthrough().optional()

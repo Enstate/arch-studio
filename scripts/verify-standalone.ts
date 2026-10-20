@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
+import { chromium, type Browser, type BrowserContext, type Frame, type Page } from "playwright-core";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const evidence = path.join(root, "evidence/standalone");
@@ -23,6 +23,26 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => { void cleanup().finally(() => process.exit(1)); });
 }
 function passed(name: string) { checks.push(name); console.log(`PASS ${name}`); }
+function syntheticFloorPlanPdf() {
+  const drawing = "0.8 w 30 30 540 340 re S BT /F1 20 Tf 50 325 Td (Synthetic floor plan) Tj 0 -35 Td (6 m x 4 m - ceiling 2.6 m) Tj ET 100 80 360 180 re S";
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 400] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${Buffer.byteLength(drawing)} >>\nstream\n${drawing}\nendstream`,
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  pdf += offsets.slice(1).map(offset => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+  return Buffer.from(`${pdf}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+}
 function loopback(url: string) { return ["127.0.0.1", "localhost", "[::1]"].includes(new URL(url).hostname); }
 async function stop(child: ChildProcess) {
   if (child.exitCode !== null || child.signalCode !== null) return;
@@ -71,12 +91,19 @@ async function context(origin: string, viewport = { width: 1440, height: 1000 })
   await context.addInitScript(() => localStorage.setItem("arch-theme", "dark"));
   await context.route("**/*", route => {
     const url = route.request().url();
-    if (loopback(url)) return route.continue();
-    offMachine.add(new URL(url).origin); return route.abort();
+    // Chrome's bundled PDF viewer loads its own extension scripts. These are
+    // browser resources, not off-machine app requests.
+    const location = new URL(url);
+    const bundledPdf = location.protocol === "chrome-extension:" && location.hostname === "mhjfbmdgcfjbbpaeojofohoefgiehjai";
+    const browserResources = location.protocol === "chrome:" && location.hostname === "resources";
+    if (loopback(url) || bundledPdf || browserResources) return route.continue();
+    offMachine.add(location.origin); return route.abort();
   });
   return context;
 }
 async function section(page: Page, name: string) {
+  const primary = ({ "Project overview": "intake", "View project": "preview", "Work plan": "work", Files: "files" } as Record<string, string>)[name];
+  if (primary) { await page.locator(`[data-studio-view="${primary}"]:visible`).click(); return; }
   await page.getByRole("button", { name: "Project details and tools", exact: true }).click();
   await page.getByRole("menuitemradio", { name, exact: true }).click();
 }
@@ -127,8 +154,10 @@ try {
   await mkdir(evidence, { recursive: true });
   const home = path.join(temporary, "store"); const source = path.join(temporary, "source"); const inputs = path.join(temporary, "inputs");
   await mkdir(inputs);
-  const reference = '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><rect x="10" y="10" width="580" height="380" fill="white" stroke="black"/><text x="40" y="80">Synthetic studio: 6 m x 4 m, height 2.6 m</text></svg>';
+  const reference = '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><rect x="10" y="10" width="580" height="380" fill="white" stroke="black"/><text x="40" y="80">Synthetic studio: 6 m x 4 m, height 2.6 m</text><script>globalThis.__referenceExecuted = true;</script></svg>';
   await writeFile(path.join(inputs, "dimensions.svg"), reference);
+  const floorPlanPdf = syntheticFloorPlanPdf();
+  await writeFile(path.join(inputs, "floor-plan.pdf"), floorPlanPdf);
   await writeFile(path.join(inputs, "brief.txt"), "One synthetic rectangular room, 6 m by 4 m, 2.6 m high. Warm white walls and blue floor. No external assets.");
   let running = await server(home);
   browser = await chromium.launch({ executablePath: chrome, headless: true, args: ["--enable-unsafe-swiftshader"] });
@@ -176,8 +205,65 @@ try {
   await page.getByLabel("Documents folder", { exact: true }).fill(inputs);
   await page.getByLabel("New destination folder", { exact: true }).fill(source);
   await page.getByRole("button", { name: "Prepare project", exact: true }).click();
-  await page.getByText("Project prepared. Give the new folder to your agent", { exact: false }).waitFor();
+  await page.locator("[data-studio-intake]").waitFor();
+  assert.equal(await page.locator("[data-viewer] canvas").count(), 0);
+  const intakePath = path.join(source, "source/intake.json");
+  const intake = JSON.parse(await readFile(intakePath, "utf8"));
+  intake.brief = "A synthetic room, planned before any model exists.";
+  intake.style = "Warm plaster and natural oak.";
+  const drawing = intake.documents.find((document: {path: string}) => document.path === "reference/dimensions.svg");
+  assert.ok(drawing);
+  drawing.label = "Dimensioned room";
+  drawing.role = "primary";
+  drawing.level = "Ground floor";
+  intake.pieces = [{ id: "room-shell", label: "Room shell", scope: "Trace the four walls and preserve the opening.", documentIds: [drawing.id], dependsOn: [], status: "blocked", nextAction: "Confirm ceiling height before building." }];
+  await writeFile(intakePath, JSON.stringify(intake));
+  await cli(home, "continue", source);
+  const savedSource = JSON.parse(await cli(home, "list")).find((project: {directory: string}) => project.directory === source);
+  assert.ok(savedSource?.checkpointId);
+  await page.locator("[data-studio-version]").click();
+  await page.getByRole("menuitemradio").filter({hasText: savedSource.checkpointId.slice(0, 7)}).click();
+  await page.getByText(intake.brief, { exact: true }).waitFor();
+  await page.locator("[data-studio-questions]").getByText("Confirm ceiling height before building.", { exact: true }).waitFor();
+  await page.getByText("Ground floor", { exact: false }).waitFor();
+  const intakeDocument = page.getByRole("link", { name: "Download: Dimensioned room", exact: true });
+  const intakeDocumentUrl = await intakeDocument.getAttribute("href");
+  assert.ok(intakeDocumentUrl);
+  const intakeReference = await session.request.get(intakeDocumentUrl);
+  assert.equal(intakeReference.status(), 200);
+  assert.equal(await intakeReference.text(), reference);
+  await page.screenshot({ path: path.join(evidence, "intake-desktop.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth);
+  await page.screenshot({ path: path.join(evidence, "intake-narrow.png"), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  passed("structured intake updates before modeling, with saved reference access");
   passed("UI client, project and document intake");
+  // Live document IDs can be reassigned while an older saved version stays selected.
+  const changedIntake = structuredClone(intake);
+  const liveDrawing = changedIntake.documents.find((document: {path: string}) => document.path === "reference/dimensions.svg");
+  const livePdf = changedIntake.documents.find((document: {path: string}) => document.path === "reference/floor-plan.pdf");
+  [liveDrawing.id, livePdf.id] = [livePdf.id, liveDrawing.id];
+  changedIntake.pieces[0].nextAction = "Review the PDF page linked by the current work plan.";
+  await writeFile(intakePath, JSON.stringify(changedIntake));
+  await section(page, "Work plan");
+  const livePiece = page.locator('[data-studio-piece="room-shell"]');
+  await livePiece.getByText(changedIntake.pieces[0].nextAction, {exact: true}).waitFor();
+  await livePiece.locator("summary").click();
+  await livePiece.getByRole("button", {name: "floor-plan.pdf", exact: true}).waitFor();
+  assert.equal(await livePiece.getByRole("button", {name: "Dimensioned room", exact: true}).count(), 0);
+  await livePiece.getByRole("button", {name: "floor-plan.pdf", exact: true}).click();
+  const savedPdfId = intake.documents.find((document: {path: string}) => document.path === "reference/floor-plan.pdf").id;
+  await page.locator(`[data-studio-file-viewer="${savedPdfId}"] iframe`).waitFor();
+  await section(page, "Work plan");
+  await livePiece.locator("summary").click();
+  livePdf.page = 2;
+  changedIntake.pieces[0].nextAction = "Review the new page, which is not saved in this version.";
+  await writeFile(intakePath, JSON.stringify(changedIntake));
+  await livePiece.getByText(changedIntake.pieces[0].nextAction, {exact: true}).waitFor();
+  assert.equal(await livePiece.getByRole("button", {name: "floor-plan.pdf File unavailable", exact: true}).isDisabled(), true);
+  await writeFile(intakePath, JSON.stringify(intake));
+  passed("live work-plan links follow document paths and pages across reassigned IDs, and expose unsaved pages");
   const corners = [[0, 0], [6, 0], [6, 4], [0, 4]];
   const plan = { version: 1, name: "Standalone room", defaults: { wallHeight: 2.6, floor: "blue", interiorFinish: "white", exteriorFinish: "white", ceiling: "white" }, materials: { blue: { color: "#648fa8", roughness: 0.9 }, white: { color: "#efeae1", roughness: 0.9 } }, walls: corners.map((a, i) => ({ id: `wall-${i}`, a, b: corners[(i + 1) % 4], exterior: true })), rooms: [{ id: "studio", name: "Synthetic studio", polygon: corners, floor: "blue", wallFinish: "white" }] };
   await writeFile(path.join(source, "assets/plan.json"), JSON.stringify(plan));
@@ -196,6 +282,18 @@ try {
   await narrow.screenshot({ path: path.join(evidence, "narrow.png") });
   await narrowContext.close();
   passed("confirmed source execution and actual desktop/narrow viewer");
+  await writeFile(intakePath, "{");
+  await section(page, "Project overview");
+  await page.getByText("The project plan is invalid. Have your agent correct the errors below.", { exact: true }).waitFor();
+  await page.screenshot({ path: path.join(evidence, "intake-invalid.png") });
+  await section(page, "View project");
+  await viewer(page);
+  await writeFile(intakePath, JSON.stringify(intake));
+  await section(page, "Project overview");
+  await page.getByText(intake.brief, { exact: true }).waitFor();
+  await section(page, "View project");
+  await viewer(page);
+  passed("invalid intake stays isolated from the saved model and recovers after correction");
   const artifact = [...artifacts].find(url => new URL(url).pathname.endsWith(".json"));
   assert.ok(artifact, "Viewer requested real artifact JSON");
   assert.equal((await fetch(artifact)).status, 200);
@@ -207,7 +305,8 @@ try {
   assert.equal(range.status(), 206); assert.equal((await range.body()).length, 10);
   passed("artifact capability, origin, HEAD and byte-range boundary");
   await section(page, "Files");
-  const link = page.getByRole("link", { name: "dimensions.svg", exact: true });
+  const row = page.locator(`[data-studio-file="${drawing.id}"]`);
+  const link = row.getByRole("link", { name: "Download: Dimensioned room", exact: true });
   const href = await link.getAttribute("href"); assert.ok(href);
   const attachment = await session.request.get(href);
   assert.equal(attachment.status(), 200); assert.equal(await attachment.text(), reference);
@@ -217,8 +316,60 @@ try {
   assert.equal((await fetch(changedCapability(href))).status, 404);
   assert.equal((await fetch(href.slice(0, href.lastIndexOf("/") + 1) + "..%2Farch.project.json")).status, 404);
   assert.equal((await fetch(href, { headers: { Origin: "https://invalid.example" } })).status, 404);
+  const inlineSvg = await session.request.get(href + "?inline=1");
+  assert.equal(inlineSvg.status(), 200);
+  assert.equal(await inlineSvg.text(), reference);
+  assert.equal(inlineSvg.headers()["content-type"], "text/plain; charset=utf-8");
+  assert.match(inlineSvg.headers()["content-disposition"]!, /^inline/);
+  assert.match(inlineSvg.headers()["content-security-policy"]!, /sandbox/);
+  assert.ok(inlineSvg.headers()["content-security-policy"]!.includes(`frame-ancestors ${running.origin}`));
+  assert.equal((await session.request.get(href + "?inline=1", { headers: { Origin: "https://invalid.example" } })).status(), 404);
+  assert.equal((await session.request.get(changedCapability(href) + "?inline=1")).status(), 404);
+  assert.match((await session.request.get(href + "?inline=0")).headers()["content-disposition"]!, /^attachment/);
   const downloaded = page.waitForEvent("download"); await link.click();
   assert.equal(await (await downloaded).failure(), null);
+  await row.getByRole("button").click();
+  const textViewer = page.locator(`[data-studio-file-viewer="${drawing.id}"]`);
+  await textViewer.locator("pre").filter({ hasText: "globalThis.__referenceExecuted" }).waitFor();
+  assert.equal(await page.evaluate(() => "__referenceExecuted" in globalThis), false);
+  const pdfDrawing = intake.documents.find((document: {path: string}) => document.path === "reference/floor-plan.pdf");
+  assert.ok(pdfDrawing);
+  const pdfRow = page.locator(`[data-studio-file="${pdfDrawing.id}"]`);
+  const pdfUrl = await pdfRow.getByRole("link").getAttribute("href"); assert.ok(pdfUrl);
+  const inlinePdf = await session.request.get(pdfUrl + "?inline=1");
+  assert.equal(inlinePdf.status(), 200);
+  assert.deepEqual(await inlinePdf.body(), floorPlanPdf);
+  assert.equal(inlinePdf.headers()["content-type"], "application/pdf");
+  assert.match(inlinePdf.headers()["content-disposition"]!, /^inline/);
+  assert.ok(inlinePdf.headers()["content-security-policy"]!.includes(`frame-ancestors ${running.origin}`));
+  await pdfRow.getByRole("button").click();
+  const pdfViewer = page.locator(`[data-studio-file-viewer="${pdfDrawing.id}"]`);
+  await pdfViewer.locator("iframe").waitFor();
+  const pdfDeadline = Date.now() + 15000;
+  let pdfFrame: Frame | undefined;
+  while (!pdfFrame && Date.now() < pdfDeadline) {
+    pdfFrame = page.frames().find(frame => frame.url().startsWith("chrome-extension:"));
+    if (!pdfFrame) await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.ok(pdfFrame, "Chrome opened its PDF renderer inside the app");
+  try {
+    await pdfFrame.waitForFunction(() => (document.querySelector("pdf-viewer") as HTMLElement & {loadState_?: string} | null)?.loadState_ === "success", undefined, {timeout: 15000});
+  } catch (error) {
+    await page.screenshot({ path: path.join(evidence, "file-preview-failed.png") });
+    console.error("PDF renderer state", await pdfFrame.evaluate(() => {
+      const viewer = document.querySelector("pdf-viewer") as HTMLElement & {loadState_?: string; initialLoadComplete_?: boolean} | null;
+      return { loadState: viewer?.loadState_, initialLoadComplete: viewer?.initialLoadComplete_, text: document.body.innerText.slice(0, 500), html: document.body.innerHTML.slice(0, 500) };
+    }), [...offMachine]);
+    throw error;
+  }
+  await page.screenshot({ path: path.join(evidence, "file-preview-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await pdfViewer.getByRole("button", { name: "All files", exact: true }).waitFor();
+  await page.screenshot({ path: path.join(evidence, "file-preview-narrow.png") });
+  await pdfViewer.getByRole("button", { name: "All files", exact: true }).click();
+  await pdfRow.getByRole("button").waitFor();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  passed("in-app PDF and escaped SVG previews, narrow back navigation and separate download");
   passed("reference UI download, exact bytes and restrictive CSP");
   const note = "Synthetic private note: preserve the 6 by 4 metre room.";
   await section(page, "Review notes"); await page.getByLabel("Checkpoint review note").fill(note);
@@ -258,7 +409,7 @@ try {
   await folderDialog.getByRole("button", {name:"Open",exact:true}).click();
   await folderDialog.waitFor({state:"hidden"});
   await page.getByRole("heading", {name:"Opened folder",exact:true}).waitFor();
-  await page.getByRole("heading", {name:"Local source",exact:true}).waitFor();
+  await page.getByRole("heading", {name:"Project overview",exact:true}).waitFor();
   assert.equal(await access(executionMarker).then(()=>true,()=>false),false);
   await page.getByRole("button", {name:"Filter projects",exact:true}).click();
   const filterItem = page.getByRole("menuitem", {name:"Without local source",exact:true});
@@ -285,12 +436,12 @@ try {
   passed("folder button submits, selects the source preview, never executes source, preserves client binding, and filters without wrapping");
   assert.deepEqual([...offMachine], [], "App attempted off-machine network access");
   passed("zero off-machine app requests");
-  await writeFile(path.join(evidence, "checks.json"), JSON.stringify({ ok: true, checks, screenshots: ["desktop.png", "narrow.png"] }, null, 2));
+  await writeFile(path.join(evidence, "checks.json"), JSON.stringify({ ok: true, checks, screenshots: ["desktop.png", "narrow.png", "intake-desktop.png", "intake-narrow.png", "intake-invalid.png", "file-preview-desktop.png", "file-preview-narrow.png"] }, null, 2));
   console.log(JSON.stringify({ ok: true, checks, evidence }));
 } catch (error) {
   await mkdir(evidence, { recursive: true });
   await writeFile(path.join(evidence, "checks.json"), JSON.stringify({ ok: false, checks, error: error instanceof Error ? error.message : "Verification failed", offMachine: [...offMachine] }, null, 2));
-  console.error(error instanceof Error ? error.message : "Verification failed"); process.exitCode = 1;
+  console.error(error instanceof Error ? error.stack : "Verification failed"); process.exitCode = 1;
 } finally {
   await cleanup();
 }
