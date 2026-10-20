@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { pass, mrt, normalView, output, vec4, packNormalToRGB, unpackRGBToNormal, sample, renderOutput, mix, float } from 'three/tsl';
+import { pass, mrt, normalView, output, vec4, packNormalToRGB, unpackRGBToNormal, sample, renderOutput, mix, float, Fn, texture, reference, vec2, type vec3, add } from 'three/tsl';
 import { ao } from 'three/examples/jsm/tsl/display/GTAONode.js';
 import { denoise } from 'three/examples/jsm/tsl/display/DenoiseNode.js';
 import { smaa } from 'three/examples/jsm/tsl/display/SMAANode.js';
@@ -60,7 +60,8 @@ function lightMix(el: number) {
 
 const DAY_HEMI = { sky: new THREE.Color('#ffffff'), ground: new THREE.Color('#e4e1dc'), intensity: 2.3 };
 // Dusk fill: enough to read the outside walls in the overview, low enough for lamps to lead.
-const NIGHT_HEMI = { sky: new THREE.Color('#c9d2e0'), ground: new THREE.Color('#4a4036'), intensity: 0.3 };
+// Its ground stands in for the lamps' warm bounce off floors and walls, which keeps ceilings from going brown.
+const NIGHT_HEMI = { sky: new THREE.Color('#c9d2e0'), ground: new THREE.Color('#a8907a'), intensity: 0.3 };
 const NOON_SUN = new THREE.Color(1, 0.97, 0.93);
 const LOW_SUN = new THREE.Color(1, 0.76, 0.52);
 /** Walk-mode sky behind the windows once the sky texture has faded out. */
@@ -99,6 +100,20 @@ function untonemapped(hex: string, exposure: number) {
   }
   return c;
 }
+
+/** Tap offsets in texels and tent weights of the sun shadow filter. */
+const TENT: [number, number, number][] = [-1, 0, 1].flatMap((x) => [-1, 0, 1].map((y): [number, number, number] => [x, y, ((2 - Math.abs(x)) * (2 - Math.abs(y))) / 16]));
+
+/**
+ * Sun shadow filter: nine hardware-filtered taps in a tent, spaced `shadow.radius` texels apart.
+ * three's PCF turns five taps per pixel and leaves the smoothing to a temporal filter; with render
+ * on demand there is none, so its penumbra stayed dithered.
+ */
+const tentShadow = Fn(({ depthTexture, shadowCoord, shadow }: { depthTexture: THREE.Texture; shadowCoord: ReturnType<typeof vec3>; shadow: THREE.LightShadow }) => {
+  const step = reference('radius', 'float', shadow).div(reference('mapSize', 'vec2', shadow).x);
+  const taps = TENT.map(([x, y, w]) => texture(depthTexture, shadowCoord.xy.add(vec2(x, y).mul(step))).compare(shadowCoord.z).mul(w));
+  return add(...(taps as [typeof taps[0], typeof taps[0], ...typeof taps]));
+});
 
 /** three's render call depth of the scene pass: output, SMAA edges, the AO composite, then the scene. */
 const SCENE_PASS_DEPTH = 3;
@@ -242,12 +257,13 @@ export class Stage {
 
     this.sun.castShadow = true;
     // The shadow box is fitted to the house and its shadow on the lawn (fitShadow), so 4K
-    // gives a few millimetres per texel; a small PCF radius keeps the edge clean but not hard.
+    // gives a few millimetres per texel; the tent filter softens the edge over a few centimetres.
     const map = lite ? 2048 : 4096;
     this.sun.shadow.mapSize.set(map, map);
     this.sun.shadow.bias = -0.0004;
     this.sun.shadow.normalBias = 0.02;
     this.sun.shadow.radius = 2;
+    (this.sun.shadow as THREE.LightShadow & { filterNode?: unknown }).filterNode = tentShadow;
     // The house never moves, so the shadow map renders only when the sun, cut or plan changes.
     this.sun.shadow.autoUpdate = false;
     this.sun.shadow.needsUpdate = true;
@@ -636,8 +652,8 @@ export class Stage {
     r.lighting = this.lightings[this.preset];
     const target = r.getRenderTarget();
     const mrt = r.getMRT();
-    // The pass's target, MRT and render context are part of each pipeline's cache key, the context
-    // through its clipping id. three keys render contexts by call depth, and the scene pass draws
+    // The pass's target, MRT and render context are part of each pipeline's cache key, through the
+    // context's clipping id. three keys render contexts by call depth, and the scene pass draws
     // nested in the post chain (SCENE_PASS_DEPTH); compileAsync always asks for depth 0, which
     // compiled a second, unused set. If the chain changes, the compile misses and the first draw compiles.
     const contexts = (r as unknown as { _renderContexts: { get(t: unknown, m: unknown, depth?: number): unknown } })._renderContexts;

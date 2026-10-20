@@ -1,4 +1,5 @@
 import * as THREE from 'three/webgpu';
+import { abs, dot, float, normalView, positionViewDirection } from 'three/tsl';
 import type { MaterialDef, Plan } from '../plan/schema.ts';
 import { withDefaults } from '../plan/schema.ts';
 
@@ -39,6 +40,10 @@ export const BUILTIN: Record<string, MaterialDef> = {
 };
 
 const HEX = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
+/** Opacity clear glass adds at grazing view, on top of its own. */
+const GLASS_GRAZING = 0.6;
+/** Least clearcoat roughness on floors; see MaterialLibrary.get. */
+const FLOOR_COAT_ROUGHNESS = 0.35;
 
 /** Fetches and decodes an image off the main thread, flipped the way three expects image textures. */
 async function decodeBitmap(url: string) {
@@ -335,6 +340,9 @@ export class MaterialLibrary {
       if (d.clearcoat !== undefined) {
         p.clearcoat = d.clearcoat;
         p.clearcoatRoughness = d.clearcoatRoughness ?? 0.15;
+        // Lamps are points here, so a glossy coat mirrors each one as a hard, blown dot. A real downlight
+        // is a few centimetres wide; a rougher coat on floors spreads its reflection like one.
+        if (this.floors.has(key)) p.clearcoatRoughness = Math.max(FLOOR_COAT_ROUGHNESS, p.clearcoatRoughness);
       }
       if (d.specularIntensity !== undefined) p.specularIntensity = d.specularIntensity;
     }
@@ -342,6 +350,12 @@ export class MaterialLibrary {
       mat.transparent = true;
       mat.opacity = d.opacity;
       mat.depthWrite = false;
+      // Clear glass reflects more the flatter it is seen (Schlick's Fresnel); as a plain fade its
+      // reflection stayed at the pane's few percent of opacity and windows read as empty holes.
+      if ((mat.roughness ?? 1) < 0.1) {
+        const facing = abs(dot(normalView, positionViewDirection)).clamp();
+        mat.opacityNode = float(d.opacity).add(float(1).sub(facing).pow(5).mul(GLASS_GRAZING));
+      }
     }
     if (d.emissive) {
       mat.emissive = new THREE.Color(d.emissive);
