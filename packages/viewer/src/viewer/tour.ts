@@ -175,7 +175,9 @@ export function buildTourPath({ plan, rooms, colliders, reducedMotion }: TourInp
     const w = plan.walls.find((x) => x.id === o.wall);
     if (!w) continue;
     const dir = wallDir(w);
-    const c: Vec2 = [w.a[0] + dir[0] * o.offset, w.a[1] + dir[1] * o.offset];
+    // The fixed sliding panel occupies the start half. Cross the clear half when open.
+    const passage = o.offset + (o.type === 'sliding-door' ? o.width / 4 : 0);
+    const c: Vec2 = [w.a[0] + dir[0] * passage, w.a[1] + dir[1] * passage];
     const n: Vec2 = [-dir[1], dir[0]];
     const reach = wallThickness(plan, w) / 2 + 0.3;
     const a = roomAt(plan, [c[0] - n[0] * reach, c[1] - n[1] * reach])?.id ?? null;
