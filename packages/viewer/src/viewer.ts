@@ -1066,9 +1066,8 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   await yieldToMain();
   check();
   // Pipelines for the scene pass compile asynchronously here instead of in one blocking first draw.
-  await stage.compile();
+  await stage.compile((done) => report('compile', 0.78 + 0.14 * done));
   check();
-  report('compile', 0.9);
   await yieldToMain();
   check();
   stage.render();

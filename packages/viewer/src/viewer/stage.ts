@@ -100,6 +100,9 @@ function untonemapped(hex: string, exposure: number) {
   return c;
 }
 
+/** three's render call depth of the scene pass: output, SMAA edges, the AO composite, then the scene. */
+const SCENE_PASS_DEPTH = 3;
+
 /** PMREM cube size of the environment light. */
 const ENV_SIZE = 512;
 
@@ -624,19 +627,34 @@ export class Stage {
   }
 
   /**
-   * Compiles the scene pass's pipelines without drawing, so the first frame finds them ready.
-   * The pass's target and MRT are bound because they are part of each pipeline's cache key.
+   * Compiles the scene pass's pipelines without drawing, one object per task, so the first frame
+   * finds them ready. `onProgress` gets the compiled fraction.
    */
-  async compile() {
+  async compile(onProgress?: (done: number) => void) {
     const r = this.renderer;
     this.syncViewCam();
     r.lighting = this.lightings[this.preset];
     const target = r.getRenderTarget();
     const mrt = r.getMRT();
+    // The pass's target, MRT and render context are part of each pipeline's cache key, the context
+    // through its clipping id. three keys render contexts by call depth, and the scene pass draws
+    // nested in the post chain (SCENE_PASS_DEPTH); compileAsync always asks for depth 0, which
+    // compiled a second, unused set. If the chain changes, the compile misses and the first draw compiles.
+    const contexts = (r as unknown as { _renderContexts: { get(t: unknown, m: unknown, depth?: number): unknown } })._renderContexts;
+    const get = contexts.get;
+    contexts.get = (t, m) => get.call(contexts, t, m, SCENE_PASS_DEPTH);
     r.setRenderTarget(this.scenePass.renderTarget);
     r.setMRT(this.scenePass.getMRT());
     try {
-      await r.compileAsync(this.scene, this.viewCam);
+      let done: Promise<void>;
+      try {
+        // compileAsync takes its render context before its first await; the materials build later
+        // and read the MRT then, so the target stays bound until it finishes.
+        done = r.compileAsync(this.scene, this.viewCam, null, (e: ProgressEvent) => onProgress?.(e.loaded / Math.max(1, e.total)));
+      } finally {
+        contexts.get = get;
+      }
+      await done;
     } finally {
       r.setRenderTarget(target);
       r.setMRT(mrt);
