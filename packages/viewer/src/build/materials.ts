@@ -42,7 +42,7 @@ export const BUILTIN: Record<string, MaterialDef> = {
 const HEX = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
 /** Opacity clear glass adds at grazing view, on top of its own. */
 const GLASS_GRAZING = 0.6;
-/** Least clearcoat roughness on floors; see MaterialLibrary.get. */
+/** Default clearcoat roughness on floors; explicit authored values take precedence. */
 const FLOOR_COAT_ROUGHNESS = 0.35;
 
 /** Fetches and decodes an image off the main thread, flipped the way three expects image textures. */
@@ -339,10 +339,9 @@ export class MaterialLibrary {
       }
       if (d.clearcoat !== undefined) {
         p.clearcoat = d.clearcoat;
-        p.clearcoatRoughness = d.clearcoatRoughness ?? 0.15;
         // Lamps are points here, so a glossy coat mirrors each one as a hard, blown dot. A real downlight
-        // is a few centimetres wide; a rougher coat on floors spreads its reflection like one.
-        if (this.floors.has(key)) p.clearcoatRoughness = Math.max(FLOOR_COAT_ROUGHNESS, p.clearcoatRoughness);
+        // is a few centimetres wide; use a rougher floor default while preserving authored finishes.
+        p.clearcoatRoughness = d.clearcoatRoughness ?? (this.floors.has(key) ? FLOOR_COAT_ROUGHNESS : 0.15);
       }
       if (d.specularIntensity !== undefined) p.specularIntensity = d.specularIntensity;
     }
