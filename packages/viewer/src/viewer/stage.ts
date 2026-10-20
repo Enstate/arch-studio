@@ -143,6 +143,9 @@ export class Stage {
   private pipeline: THREE.RenderPipeline;
   private planPipeline: THREE.RenderPipeline | null = null;
   private scenePass: ReturnType<typeof pass>;
+  private gtao: ReturnType<typeof ao>;
+  private settled = false;
+  private lastChange = 0;
   private planCam: THREE.OrthographicCamera | null = null;
   /**
    * One light registry per preset. three keys every compiled material on the set of visible
@@ -200,8 +203,8 @@ export class Stage {
     this.camera = this.viewCam;
     this.scales = [0.6, 0.7, 0.8, 0.9, 1];
     this.scaleIndex = this.scales.length - 1;
-    // SMAA keeps edges clean at 1.5× on a Retina screen; the extra pixels of 2× cost more than they show.
-    r.setPixelRatio(Math.min(window.devicePixelRatio, lite ? 1.25 : 1.5));
+    // Desktop stills retain Retina detail; phones keep their bounded drawing buffer.
+    r.setPixelRatio(Math.min(window.devicePixelRatio, lite ? 1.25 : 2));
     r.outputColorSpace = THREE.SRGBColorSpace;
     // Neutral keeps finishes at their real color and rolls off only the brightest highlights.
     r.toneMapping = THREE.NeutralToneMapping;
@@ -264,6 +267,7 @@ export class Stage {
     const depth = this.scenePass.getTextureNode('depth');
     const normal = sample((uv) => unpackRGBToNormal(this.scenePass.getTextureNode('normal').sample(uv)));
     const gtao = ao(depth, normal, cam);
+    this.gtao = gtao;
     gtao.resolutionScale = 0.5;
     gtao.radius.value = 0.35;
     gtao.thickness.value = 0.5;
@@ -309,7 +313,7 @@ export class Stage {
   }
 
   get renderScale() {
-    return this.scales[this.scaleIndex];
+    return this.settled || this.outputKey === 'plan' ? 1 : this.scales[this.scaleIndex];
   }
 
   /**
@@ -595,8 +599,23 @@ export class Stage {
   renderIfNeeded(now = performance.now()) {
     if (!this.viewChanged() && this.owed <= 0) {
       this.lastFrame = 0;
-      this.noteIdleFrame(now);
-      return false;
+      if (this.settled || this.outputKey !== 'real' || now - this.lastChange < 120) {
+        this.noteIdleFrame(now);
+        return false;
+      }
+      // Brief input gaps during a drag stay cheap. After quiet, replace the last moving frame once.
+      this.settled = true;
+      this.lastRaf = 0;
+      this.scenePass.setResolutionScale(1);
+      this.gtao.resolutionScale = 1;
+      this.draw(true);
+      return true;
+    }
+    this.lastChange = now;
+    if (this.settled) {
+      this.settled = false;
+      this.scenePass.setResolutionScale(this.scales[this.scaleIndex]);
+      this.gtao.resolutionScale = 0.5;
     }
     this.lastRaf = 0;
     this.owed = Math.max(0, this.owed - 1);

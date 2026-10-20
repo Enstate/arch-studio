@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Plan } from "@arch/viewer/plan/schema";
 import { validatePlan } from "@arch/viewer/plan/validate";
 import {
+  viewerSupportsRuntime,
   artifactManifestSchema,
   checkpointManifestSchema,
   type ArtifactManifest,
@@ -96,7 +97,7 @@ export async function verifyArtifactManifest(checkpoint: CheckpointManifest, art
   const manifestFile = checkpointFiles.get("outputs/artifact.json");
   if (!manifestFile || manifestFile.size !== artifactBytes.byteLength || await sha256(artifactBytes) !== manifestFile.sha256) throw new Error("Artifact manifest blob mismatch");
   const artifact = artifactManifestSchema.parse(jsonBytes(artifactBytes));
-  if (!/^[a-f0-9]{64}$/.test(runtimeHash) || artifact.runtimeHash !== runtimeHash) throw new Error("Artifact runtime hash mismatch");
+  if (!viewerSupportsRuntime(runtimeHash, artifact.runtimeHash)) throw new Error("Artifact runtime hash mismatch");
   if (artifact.projectId !== checkpoint.projectId || canonicalJson(artifact.runtime) !== canonicalJson(checkpoint.project.runtime)) throw new Error("Artifact project/runtime mismatch");
   const paths = new Set<string>();
   for (const file of [...artifact.sources, ...artifact.files]) {

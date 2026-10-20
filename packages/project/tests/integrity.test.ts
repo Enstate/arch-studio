@@ -100,3 +100,16 @@ describe("portable integrity boundary", () => {
     await expect(verifyArtifactManifest(value.checkpoint, value.artifactBytes, runtimeHash, value.readBlob)).rejects.toThrow("project/context bytes mismatch");
   });
 });
+
+test("reviewed sharpness runtime verifies an unchanged previous-runtime checkpoint", async () => {
+  const oldRuntime = "9347181d703461bfd63873589a89afda5a89e3a8ede79d6cba4ff13e46e22199";
+  const sharpRuntime = "7e0436bc1b36dfca102c35f11b40a4be9a22d8c1fdbf0ea136cd06853b5445fd";
+  const saved = await fixture({mutateArtifact: artifact => { artifact.runtimeHash = oldRuntime; }});
+  const original = JSON.stringify(saved.checkpoint);
+  const verified = await verifyArtifactManifest(saved.checkpoint, saved.artifactBytes, sharpRuntime, saved.readBlob);
+  expect(verified.artifact.runtimeHash).toBe(oldRuntime);
+  expect(JSON.stringify(saved.checkpoint)).toBe(original);
+  await expect(verifyArtifactManifest(saved.checkpoint, saved.artifactBytes, "b".repeat(64), saved.readBlob)).rejects.toThrow("runtime hash mismatch");
+  const newer = await fixture({mutateArtifact: artifact => { artifact.runtimeHash = sharpRuntime; }});
+  await expect(verifyArtifactManifest(newer.checkpoint, newer.artifactBytes, oldRuntime, newer.readBlob)).rejects.toThrow("runtime hash mismatch");
+});
