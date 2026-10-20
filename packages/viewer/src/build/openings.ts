@@ -139,9 +139,9 @@ function buildWindow(plan: Plan, o: Opening, w: Wall, mat: MatFn, sliding: boole
   for (let i = 0; i < panes; i++) {
     const pw = innerW / panes;
     const cx = -innerW / 2 + pw * (i + 0.5);
-    // Sliding panels overlap on two tracks, one slid partly open.
+    // Open panels overlap on two tracks, leaving the other half clear for walking.
     const zt = sliding ? zf + (i === 0 ? -0.018 : 0.018) : zf;
-    const slide = sliding && i === 1 ? -pw * 0.45 : 0;
+    const slide = sliding && i === 1 ? -pw : 0;
     const sash = new THREE.Group();
     sash.position.set(cx + slide, 0, zt);
     if (slide) sash.userData = { kind: 'door-slide', dynamic: true, open: cx + slide, closed: cx };
