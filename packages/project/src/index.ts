@@ -159,6 +159,6 @@ export function viewerSupportsRuntime(viewerHash: string | undefined, artifactHa
   if (!viewerHash || !artifactHash || !/^[a-f0-9]{64}$/.test(viewerHash) || !/^[a-f0-9]{64}$/.test(artifactHash)) return false;
   if (viewerHash === artifactHash) return true;
   // Resolution and AO settling only. Plan, geometry, asset and runtime contracts are unchanged.
-  return viewerHash === "127fdfbd23e99d64fa0d37e12565da1a7b135db7b86228a2fe4a028e46a50405"
+  return viewerHash === "7e0436bc1b36dfca102c35f11b40a4be9a22d8c1fdbf0ea136cd06853b5445fd"
     && artifactHash === "9347181d703461bfd63873589a89afda5a89e3a8ede79d6cba4ff13e46e22199";
 }

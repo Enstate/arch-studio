@@ -89,11 +89,13 @@ try {
   const frame = await page.evaluate(() => (window as unknown as {__arch: {stage: {renderer: {info: {calls: number}}}}}).__arch.stage.renderer.info.calls);
   assert.equal(frame, idle.frame, "The sharp idle view must stop drawing");
   const resumed = await page.evaluate(() => {
-    const {stage, viewer} = (window as unknown as {__arch: {stage: {requestRender(): void; renderIfNeeded(): void; gtao: {resolutionScale: number}}; viewer: {stats(): {renderScale: number}}}}).__arch;
-    stage.requestRender(); stage.renderIfNeeded();
+    const {stage, viewer} = (window as unknown as {__arch: {stage: {requestRender(): void; renderIfNeeded(now?: number): void; gtao: {resolutionScale: number}}; viewer: {stats(): {renderScale: number}}}}).__arch;
+    const now = performance.now();
+    stage.requestRender(); stage.renderIfNeeded(now); stage.renderIfNeeded(now + 1);
+    stage.renderIfNeeded(now + 17);
     return {scale: viewer.stats().renderScale, aoScale: stage.gtao.resolutionScale};
   });
-  assert.equal(resumed.scale, 0.6, "Movement must recover the previous adaptive resolution");
+  assert.equal(resumed.scale, 0.6, "A brief input gap must retain the previous adaptive resolution");
   assert.equal(resumed.aoScale, 0.5, "Movement must recover inexpensive AO");
   const mobile = await browser.newContext({viewport: {width: 390, height: 844}, deviceScaleFactor: 3, isMobile: true, hasTouch: true, userAgent: "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/155.0.0.0 Mobile Safari/537.36"});
   const phone = await mobile.newPage(); await phone.goto(bootstrap); await ready(phone);

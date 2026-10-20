@@ -103,7 +103,7 @@ describe("portable integrity boundary", () => {
 
 test("reviewed sharpness runtime verifies an unchanged previous-runtime checkpoint", async () => {
   const oldRuntime = "9347181d703461bfd63873589a89afda5a89e3a8ede79d6cba4ff13e46e22199";
-  const sharpRuntime = "127fdfbd23e99d64fa0d37e12565da1a7b135db7b86228a2fe4a028e46a50405";
+  const sharpRuntime = "7e0436bc1b36dfca102c35f11b40a4be9a22d8c1fdbf0ea136cd06853b5445fd";
   const saved = await fixture({mutateArtifact: artifact => { artifact.runtimeHash = oldRuntime; }});
   const original = JSON.stringify(saved.checkpoint);
   const verified = await verifyArtifactManifest(saved.checkpoint, saved.artifactBytes, sharpRuntime, saved.readBlob);

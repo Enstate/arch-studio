@@ -145,6 +145,7 @@ export class Stage {
   private scenePass: ReturnType<typeof pass>;
   private gtao: ReturnType<typeof ao>;
   private settled = false;
+  private lastChange = 0;
   private planCam: THREE.OrthographicCamera | null = null;
   /**
    * One light registry per preset. three keys every compiled material on the set of visible
@@ -598,11 +599,11 @@ export class Stage {
   renderIfNeeded(now = performance.now()) {
     if (!this.viewChanged() && this.owed <= 0) {
       this.lastFrame = 0;
-      if (this.settled || this.outputKey !== 'real') {
+      if (this.settled || this.outputKey !== 'real' || now - this.lastChange < 120) {
         this.noteIdleFrame(now);
         return false;
       }
-      // Replace the last moving frame once, then resume drawing only on changes.
+      // Brief input gaps during a drag stay cheap. After quiet, replace the last moving frame once.
       this.settled = true;
       this.lastRaf = 0;
       this.scenePass.setResolutionScale(1);
@@ -610,6 +611,7 @@ export class Stage {
       this.draw(true);
       return true;
     }
+    this.lastChange = now;
     if (this.settled) {
       this.settled = false;
       this.scenePass.setResolutionScale(this.scales[this.scaleIndex]);
