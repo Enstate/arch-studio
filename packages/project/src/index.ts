@@ -158,6 +158,15 @@ export type PreviewSession = { url: string; projectId: string };
 
 /** Older artifact runtimes each reviewed viewer renders. Plan, geometry, asset and runtime contracts are unchanged. */
 const rendersOlder: Record<string, string[]> = {
+  // Quality rendering preserves authored finishes and the reviewed door/fixture contract.
+  "5df7b415cee927487dce7dea5e1efb743d1a75b5fda7088e853da2e892bdf4b7": [
+    "de3c67b050403fefe07d3a9486fb3e8ce0c791a33d89f303936b00ca967b1c90",
+    "6104e28e993e9c1062fb035185c4457487e1aba344eb08e4036f2b917d7f6204",
+    "b877cd74cb32faf79999cca0a2a56115c0f8fad641898c008f06ec6af2ce2906",
+    "9bbdf58f9b2c183f69bdd3034dbd521ea11d632b42c0ce0b8069afec74e6710c",
+    "7e0436bc1b36dfca102c35f11b40a4be9a22d8c1fdbf0ea136cd06853b5445fd",
+    "9347181d703461bfd63873589a89afda5a89e3a8ede79d6cba4ff13e46e22199",
+  ],
   // Clear sliding-door passages, matching tour routes and cancelled mount handling.
   "de3c67b050403fefe07d3a9486fb3e8ce0c791a33d89f303936b00ca967b1c90": [
     "6104e28e993e9c1062fb035185c4457487e1aba344eb08e4036f2b917d7f6204",
@@ -175,6 +184,12 @@ const rendersOlder: Record<string, string[]> = {
   "7e0436bc1b36dfca102c35f11b40a4be9a22d8c1fdbf0ea136cd06853b5445fd": ["9347181d703461bfd63873589a89afda5a89e3a8ede79d6cba4ff13e46e22199"],
   // Clickable doors, room orbit, drag to pan and lamp shadow refresh.
   "9bbdf58f9b2c183f69bdd3034dbd521ea11d632b42c0ce0b8069afec74e6710c": [
+    "7e0436bc1b36dfca102c35f11b40a4be9a22d8c1fdbf0ea136cd06853b5445fd",
+    "9347181d703461bfd63873589a89afda5a89e3a8ede79d6cba4ff13e46e22199",
+  ],
+  // Walk start and loading, pipeline precompile, sun shadows and glass reflections.
+  "b877cd74cb32faf79999cca0a2a56115c0f8fad641898c008f06ec6af2ce2906": [
+    "9bbdf58f9b2c183f69bdd3034dbd521ea11d632b42c0ce0b8069afec74e6710c",
     "7e0436bc1b36dfca102c35f11b40a4be9a22d8c1fdbf0ea136cd06853b5445fd",
     "9347181d703461bfd63873589a89afda5a89e3a8ede79d6cba4ff13e46e22199",
   ],

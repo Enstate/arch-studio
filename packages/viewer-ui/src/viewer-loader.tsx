@@ -46,9 +46,14 @@ export function ViewerLoader({ progress, done = false, onHidden }: { progress: n
         <div className="relative aspect-[440/354] w-14">
           <ArchMark className="absolute inset-0 h-full w-full text-foreground/8" />
           <div className="absolute inset-0" style={glyphMask}>
+            {/* Between reports the liquid keeps creeping a third of the way to full on a long ease-out, so a
+                stalled load still moves; the transition runs on the compositor while the main thread compiles. */}
             <div
-              className="absolute inset-0 transition-[translate] duration-700 ease-out-quint motion-reduce:transition-none"
-              style={{ translate: `0 ${(1 - level) * 100}%` }}
+              className={cn(
+                "absolute inset-0 translate-y-[calc((1-var(--level)-var(--creep))*100%)] transition-[translate] ease-out [--creep:var(--creep-to)] motion-reduce:transition-none motion-reduce:[--creep:0]",
+                done ? "duration-700" : "duration-[2400ms]",
+              )}
+              style={{ "--level": level, "--creep-to": done ? 0 : (1 - level) * 0.35 } as CSSProperties}
             >
               <div
                 aria-hidden="true"
