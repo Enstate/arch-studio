@@ -123,6 +123,7 @@ export function validatePlan(plan: Plan): Issue[] {
   // Furniture
   for (const f of plan.furniture ?? []) {
     claim(f.id, 'furniture');
+    if (f.fixture !== undefined && typeof f.fixture !== 'boolean') err(`furniture ${f.id}`, 'fixture must be a boolean');
     if (!isVec2(f.position)) {
       err(`furniture ${f.id}`, 'position must be [x, y]');
       continue;

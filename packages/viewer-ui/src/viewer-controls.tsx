@@ -428,6 +428,13 @@ function MorePanel({
         />
       </PanelRow>
       <PanelRow>
+        <label htmlFor={`${id}-furniture`} className="flex-1">
+          {t.viewer.furniture}
+        </label>
+        {keys && <Kbd className="pointer-coarse:hidden">H</Kbd>}
+        <Switch id={`${id}-furniture`} checked={state.furniture} onCheckedChange={actions.setFurniture} />
+      </PanelRow>
+      <PanelRow>
         <span className="w-20 shrink-0">{t.viewer.timeOfDay}</span>
         <TimeControl state={state} actions={actions} className="flex-1" />
       </PanelRow>
@@ -611,6 +618,7 @@ export function ViewerHotkeys({ actions }: { actions: ViewerActions }) {
   useHotkey("t", on(actions.toggleTour));
   useHotkey("l", on(actions.toggleNight));
   useHotkey("c", on(actions.toggleCut));
+  useHotkey("h", on(actions.toggleFurniture));
   useHotkey("[", on(() => actions.nudgeTime(-1)));
   useHotkey("]", on(() => actions.nudgeTime(1)));
   useHotkey("f", on(() => canFullscreen() && toggleFullscreen()));

@@ -534,6 +534,15 @@ async function loadModel(gltf: GLTFLoader, cache: Map<string, Promise<THREE.Grou
   return g;
 }
 
+const FIXTURES = new Set<string>([
+  'kitchen-base', 'kitchen-tall', 'kitchen-wall', 'island', 'fridge', 'hob', 'sink', 'toilet', 'basin',
+  'vanity', 'bathtub', 'shower', 'washer', 'stairs', 'wardrobe',
+]);
+/** Built-in pieces a buyer gets with the flat stay when "hide furniture" empties the rooms. */
+export function isFixture(furniture: Pick<Furniture, 'type' | 'fixture'>) {
+  return furniture.fixture ?? FIXTURES.has(furniture.type);
+}
+
 export async function buildFurniture(
   plan: Plan,
   lib: MaterialLibrary,
@@ -575,7 +584,7 @@ export async function buildFurniture(
       // Walk-through: rugs, worktop fittings, slim lamps, and anything hung or standing on
       // other furniture. Their bounding boxes are mostly air and would block doorways.
       const passable = ['rug', 'hob', 'sink', 'floor-lamp', 'plant'].includes(f.type) || (f.elevation ?? DEFAULT_ELEVATION[f.type] ?? 0) > 0.3;
-      obj.userData = { kind: 'furniture', id: f.id, type: f.type, collide: !passable };
+      obj.userData = { kind: 'furniture', id: f.id, type: f.type, collide: !passable, loose: !isFixture(f) };
       group.add(obj);
     }),
   );

@@ -43,9 +43,17 @@ export class Walker {
     this.bind();
   }
 
+  private worlds = new Map<THREE.Object3D, Octree>();
+
+  /** Octrees are cached per collider group, so switching back and forth is free. */
   setWorld(colliders: THREE.Object3D) {
-    this.octree = new Octree();
-    this.octree.fromGraphNode(colliders);
+    let o = this.worlds.get(colliders);
+    if (!o) {
+      o = new Octree();
+      o.fromGraphNode(colliders);
+      this.worlds.set(colliders, o);
+    }
+    this.octree = o;
   }
 
   /** Plan position (x, z) of the walker's feet. */
@@ -81,6 +89,7 @@ export class Walker {
   dispose() {
     this.unlock();
     this.abort.abort();
+    this.worlds.clear();
     this.octree = new Octree();
   }
 
@@ -157,6 +166,38 @@ export class Walker {
     this.pitch = THREE.MathUtils.clamp(this.pitch - dy * k, -1.35, 1.35);
   }
 
+  /** Boxes outside the octree that block the walker, such as closed doors. */
+  blockers: () => THREE.Box3[] = () => [];
+
+  /** Pushes the capsule (a vertical segment of RADIUS) horizontally out of each box it overlaps. */
+  private pushOutOf(boxes: THREE.Box3[]) {
+    const c = this.capsule;
+    for (const b of boxes) {
+      if (c.end.y + RADIUS < b.min.y || c.start.y - RADIUS > b.max.y) continue;
+      const x = c.start.x, z = c.start.z;
+      let nx = x - THREE.MathUtils.clamp(x, b.min.x, b.max.x), nz = z - THREE.MathUtils.clamp(z, b.min.z, b.max.z);
+      let d = Math.hypot(nx, nz);
+      if (d >= RADIUS) continue;
+      let push: number;
+      if (d > 1e-6) {
+        nx /= d;
+        nz /= d;
+        push = RADIUS - d;
+      } else {
+        // Centre inside the box: leave by the nearest face.
+        const faces = [[x - b.min.x, -1, 0], [b.max.x - x, 1, 0], [z - b.min.z, 0, -1], [b.max.z - z, 0, 1]].sort((p, q) => p[0] - q[0]);
+        [d, nx, nz] = faces[0];
+        push = d + RADIUS;
+      }
+      c.translate(new THREE.Vector3(nx * push, 0, nz * push));
+      const into = this.velocity.x * nx + this.velocity.z * nz;
+      if (into < 0) {
+        this.velocity.x -= into * nx;
+        this.velocity.z -= into * nz;
+      }
+    }
+  }
+
   private sync() {
     this.camera.position.copy(this.capsule.end).y += 0.1;
     this.camera.rotation.set(this.pitch, this.yaw, 0);
@@ -183,6 +224,7 @@ export class Walker {
     if (wish.lengthSq() > 1) wish.normalize();
     wish.multiplyScalar(speed);
 
+    const blockers = this.blockers();
     for (let i = 0; i < STEPS; i++) {
       // Snappy ground control: steer horizontal velocity straight to the wish velocity.
       const k = this.onFloor ? Math.min(1, step * 14) : step * 2;
@@ -198,6 +240,7 @@ export class Walker {
         else this.velocity.y = 0;
         if (hit.depth >= 1e-10) this.capsule.translate(hit.normal.multiplyScalar(hit.depth));
       }
+      this.pushOutOf(blockers);
     }
     // Fell out of the house (bad plan, open edge): put the walker back on the floor.
     if (this.capsule.start.y < -5) {

@@ -105,7 +105,7 @@ export interface Opening {
   hinge?: 'start' | 'end';
   /** Side of the wall the door swings into: left or right of the a-to-b direction. */
   swing?: 'left' | 'right';
-  /** Door leaf angle in degrees, 0 = closed. Defaults to 75 so walk mode is not blocked. */
+  /** Initial door leaf angle in degrees, 0 = closed. Defaults to 75. An authored 0 toggles open to 75. */
   openAngle?: number;
   frame?: string;
 }
@@ -136,6 +136,8 @@ export type FurnitureType =
 export interface Furniture {
   id: string;
   type: FurnitureType;
+  /** Stays visible when loose furniture is hidden. Overrides the type's fixture default. */
+  fixture?: boolean;
   /** Center of the footprint in plan coordinates. */
   position: Vec2;
   /** Rotation in degrees, clockwise in plan view. 0 means the front faces +y (down the plan). */

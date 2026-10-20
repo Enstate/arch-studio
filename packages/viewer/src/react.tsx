@@ -35,15 +35,17 @@ export function Viewer({ ref, onError, className, style, ...options }: ViewerPro
     let instance: ViewerInstance | undefined;
     const initial = latest.current.options;
     import('./viewer.ts')
-      .then(({ createViewer }) =>
-        createViewer(host, {
+      .then(({ createViewer }) => {
+        // StrictMode detaches and reattaches the ref at once, so the first mount is aborted before the import resolves.
+        if (controller.signal.aborted) throw new DOMException('Viewer creation aborted', 'AbortError');
+        return createViewer(host, {
           ...initial,
           onProgress: (p) => latest.current.options.onProgress?.(p),
           onModeChange: (m) => latest.current.options.onModeChange?.(m),
           onRoomChange: (r) => latest.current.options.onRoomChange?.(r),
           signal: controller.signal,
-        }),
-      )
+        });
+      })
       .then(
         (v) => {
           if (controller.signal.aborted) return v.dispose();
