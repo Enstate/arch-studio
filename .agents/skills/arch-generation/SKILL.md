@@ -55,6 +55,8 @@ Styling is creative within the customer's brief and lives in source: material co
 
 When the brief asks for Mediterranean, that usually means warm off-white plaster, natural wood and stone, terracotta and olive accents, and layered textiles, lighting and decor where the room calls for them.
 
+Set furniture.fixture in the authored plan when visibility should override the type default: true keeps a built-in visible when loose furniture is hidden; false hides it. Set it explicitly for custom built-ins and lighting. This applies to procedural pieces and custom GLBs; filenames do not determine fixture status.
+
 A custom model is generated or copied into the artifact by the generator. A GLB embeds its buffers and textures, so the artifact stays self-contained. Use only assets whose licence allows delivery in a web player and record credits in the project.
 
 The viewer is a shared runtime. A change to `packages/viewer/src` or its `package.json` changes the runtime hash, and existing artifacts stop previewing until their pinned runtime is restored. That change is its own reviewed change, never part of a project round.

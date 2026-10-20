@@ -104,6 +104,8 @@ export function buildDressing(plan: Plan, lib: MaterialLibrary, mat: MatFn) {
     const art = framedArt(artW, artH, seed++, mat);
     art.position.set(p.x, Math.max(h, 0.9) + 0.35 + artH / 2, p.z);
     art.rotation.y = rot;
+    // Hangs over the bed, so it leaves with the loose furniture.
+    art.userData.loose = true;
     group.add(art);
   }
 

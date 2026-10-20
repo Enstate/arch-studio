@@ -7,6 +7,7 @@ import { MaterialLibrary } from './build/materials.ts';
 import { buildHouse, CUT_HEIGHT, NO_CUT, type BuiltHouse } from './build/house.ts';
 import { Stage, sunElevation } from './viewer/stage.ts';
 import { Walker } from './viewer/walk.ts';
+import { openingDoors, poseDoor, type Door } from './viewer/doors.ts';
 import { PlanOverlay } from './viewer/overlay.ts';
 import { Library, NON_FLOOR_MAX } from './viewer/library.ts';
 import { capabilities } from './capabilities.ts';
@@ -41,6 +42,8 @@ export interface ViewerState {
   /** The sun is below the horizon. */
   night: boolean;
   cut: boolean;
+  /** Loose furniture is shown; fixtures such as kitchens and baths always are. */
+  furniture: boolean;
   grid: boolean;
   /** Room the camera is in (walk) or was last sent to (focusRoom). */
   room: string | null;
@@ -49,6 +52,8 @@ export interface ViewerState {
   /** Every model and first-pass texture has loaded. */
   ready: boolean;
   tour: TourState;
+  /** Opening IDs of doors that are closed or closing. */
+  closedDoors: string[];
 }
 
 export type Vec3 = [number, number, number];
@@ -60,6 +65,8 @@ export interface ViewerPick {
   kind: 'furniture' | 'wall' | 'floor' | 'opening' | 'outside' | 'other';
   /** Plan type of the furniture or opening, such as `sofa` or `window`. */
   type?: string;
+  /** Plan ID of the opening. */
+  id?: string;
   room: { id: string; name: string } | null;
 }
 
@@ -119,6 +126,7 @@ export interface Viewer {
   setMode(mode: ViewerMode): void;
   setTime(t: number): void;
   setCut(on: boolean): void;
+  setFurniture(visible: boolean): void;
   setGrid(on: boolean): void;
   setTheme(theme: ViewerTheme): void;
   rooms(): RoomInfo[];
@@ -135,6 +143,9 @@ export interface Viewer {
   getView(): ViewerView;
   /** Switches to the view's mode and flies the camera there. */
   setView(view: ViewerView): void;
+  /** Opens or closes a door by opening ID; without `open` it toggles from its authored pose. */
+  toggleDoor(id: string, open?: boolean): void;
+  doors(): { id: string; open: boolean }[];
   getState(): ViewerState;
   /** For useSyncExternalStore: calls back after every state change. */
   subscribe(listener: () => void): () => void;
@@ -148,6 +159,8 @@ const NIGHT_PAPER: Record<ViewerTheme, string> = { light: '#24282d', dark: PAPER
 // The house shadow on dark paper needs more weight to read at all.
 const GROUND_SHADOW: Record<ViewerTheme, number> = { light: 0.28, dark: 0.38 };
 const FLY_MS = 1100;
+const DOOR_REACH = 2.2;
+const DOOR_CONE = THREE.MathUtils.degToRad(35);
 const DEFAULT_TIME = 16 / 24;
 /**
  * Times the warm-up draws: the day light set, the evening set, and the evening set while the
@@ -234,6 +247,9 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   orbit.maxPolarAngle = Math.PI * 0.47;
   orbit.minDistance = 2;
   orbit.maxDistance = 80;
+  // Left-drag outside the house pans across the ground, slower than the default.
+  orbit.screenSpacePanning = false;
+  orbit.panSpeed = 0.65;
   const planControls = new OrbitControls(planCam, canvas);
   planControls.enableRotate = false;
   planControls.screenSpacePanning = true;
@@ -250,11 +266,13 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     time: Math.min(1, Math.max(0, opts.time ?? DEFAULT_TIME)),
     night: false,
     cut: opts.cut ?? false,
+    furniture: true,
     grid: true,
     room: null,
     locked: false,
     ready: false,
     tour: IDLE_TOUR,
+    closedDoors: [],
   };
   const listeners = new Set<() => void>();
   const setState = (patch: Partial<ViewerState>) => {
@@ -293,6 +311,76 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   stage.scene.add(house.root);
   for (const o of [...house.daylight.children, ...house.lights.children]) o.userData.intensity = (o as THREE.Light).intensity;
   walker.setWorld(house.colliders);
+
+  // ---------- doors ----------
+
+  const doors = openingDoors(house.root);
+  setState({ closedDoors: [...doors.values()].filter(door => door.target === 0).map(door => door.id) });
+  const doorBoxes: THREE.Box3[] = [];
+  walker.blockers = () => {
+    doorBoxes.length = 0;
+    for (const d of doors.values()) if (d.t === 0 && d.target === 0) doorBoxes.push(d.closedBox);
+    return doorBoxes;
+  };
+  // Lamp cube maps keep full walls in every mode, so each room keeps its own light in the cutaway.
+  // Their shadow passes see the clip plane above the house; three projects the plane before it
+  // draws a pass, and only the uniform values change, so no pipeline is added.
+  const lamps = house.lights.children.filter((o): o is THREE.PointLight => (o as THREE.PointLight).isPointLight && o.castShadow);
+  const lampCams = new Set<THREE.Camera>(lamps.map((l) => l.shadow.camera));
+  let heldCut: number | null = null;
+  stage.scene.onBeforeRender = (_r, _s, camera) => {
+    if (!lampCams.has(camera)) return;
+    heldCut = house.clipPlane.constant;
+    house.clipPlane.constant = NO_CUT;
+  };
+  stage.scene.onAfterRender = (_r, _s, camera) => {
+    if (heldCut === null || !lampCams.has(camera)) return;
+    house.clipPlane.constant = heldCut;
+    heldCut = null;
+  };
+  let doorsMoving = false;
+  const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function setDoor(d: Door, open: boolean) {
+    d.target = open ? 1 : 0;
+    if (reducedMotion()) d.t = d.target;
+    d.moving = doorsMoving = true;
+    stage.requestRender();
+    setState({ closedDoors: [...doors.values()].filter((x) => x.target === 0).map((x) => x.id) });
+  }
+  function stepDoors(dt: number) {
+    if (!doorsMoving) return;
+    doorsMoving = false;
+    let settled = false;
+    for (const d of doors.values()) {
+      if (!d.moving) continue;
+      d.t = d.target > d.t ? Math.min(d.target, d.t + dt / 0.5) : Math.max(d.target, d.t - dt / 0.5);
+      const e = d.t < 0.5 ? 4 * d.t ** 3 : 1 - (-2 * d.t + 2) ** 3 / 2;
+      poseDoor(d, e);
+      d.moving = d.t !== d.target;
+      if (!d.moving) settled = true;
+      else doorsMoving = true;
+    }
+    if (settled) {
+      stage.invalidateShadows();
+      refreshLampShadows();
+    }
+    stage.requestRender();
+  }
+  /** Lamps outside the current light set render their maps once they are drawn again. */
+  function refreshLampShadows() {
+    for (const l of lamps) l.shadow.needsUpdate = true;
+    stage.requestRender();
+  }
+  function openAllDoors() {
+    for (const d of doors.values()) {
+      d.t = d.target = 1;
+      d.moving = false;
+      poseDoor(d, 1);
+    }
+    stage.invalidateShadows();
+    refreshLampShadows();
+    setState({ closedDoors: [] });
+  }
 
   const b = house.bounds;
   const pad = 0.5;
@@ -382,13 +470,26 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     walker.place(b.cx, b.cy, b.cx + 1, b.cy);
   }
 
-  let fly: { cam: THREE.Camera; controls: OrbitControls; from: [THREE.Vector3, THREE.Vector3]; to: [THREE.Vector3, THREE.Vector3]; start: number } | null = null;
-  const stopFly = () => (fly = null);
+  let fly: { cam: THREE.Camera; controls: OrbitControls; from: [THREE.Vector3, THREE.Vector3]; to: [THREE.Vector3, THREE.Vector3]; start: number; onDone?: () => void } | null = null;
+  // Slow turn around a focused room; any input cancels it where it stands.
+  let spin: { target: THREE.Vector3; offset: THREE.Vector3; start: number } | null = null;
+  const stopFly = () => (fly = spin = null);
   orbit.addEventListener('start', stopFly);
   planControls.addEventListener('start', stopFly);
 
-  function flyTo(cam: THREE.Camera, controls: OrbitControls, position: THREE.Vector3, target: THREE.Vector3) {
-    fly = { cam, controls, from: [cam.position.clone(), controls.target.clone()], to: [position, target], start: performance.now() };
+  function flyTo(cam: THREE.Camera, controls: OrbitControls, position: THREE.Vector3, target: THREE.Vector3, onDone?: () => void) {
+    spin = null;
+    fly = { cam, controls, from: [cam.position.clone(), controls.target.clone()], to: [position, target], start: performance.now(), onDone };
+  }
+
+  const SPIN_MS = 24000;
+  function stepSpin(now: number) {
+    if (!spin) return;
+    const k = Math.min(1, (now - spin.start) / SPIN_MS);
+    const a = (1 - Math.cos(Math.PI * k)) * Math.PI;
+    orbitCam.position.copy(spin.offset).applyAxisAngle(THREE.Object3D.DEFAULT_UP, a).add(spin.target);
+    orbit.target.copy(spin.target);
+    if (k >= 1) spin = null;
   }
 
   function stepFly(now: number) {
@@ -397,12 +498,17 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     const e = k < 0.5 ? 4 * k * k * k : 1 - (-2 * k + 2) ** 3 / 2;
     fly.cam.position.lerpVectors(fly.from[0], fly.to[0], e);
     fly.controls.target.lerpVectors(fly.from[1], fly.to[1], e);
-    if (k >= 1) fly = null;
+    if (k >= 1) {
+      const done = fly.onDone;
+      fly = null;
+      done?.();
+    }
   }
 
   function focusRoom(id: string) {
     const r = house.rooms.find((x) => x.room.id === id);
     if (!r) return;
+    spin = null;
     if (tourCtl.active) {
       tourCtl.release();
       applyMode(state.mode);
@@ -414,7 +520,9 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     } else if (state.mode === 'dollhouse') {
       const off = orbitCam.position.clone().sub(orbit.target).setLength(Math.max(6, Math.sqrt(r.netArea) * 2.4));
       const target = new THREE.Vector3(r.center.x, 0.6, r.center.z);
-      flyTo(orbitCam, orbit, target.clone().add(off), target);
+      flyTo(orbitCam, orbit, target.clone().add(off), target, () => {
+        if (!reducedMotion() && state.mode === 'dollhouse') spin = { target, offset: off, start: performance.now() };
+      });
     } else {
       flyTo(planCam, planControls, new THREE.Vector3(r.center.x, 40, r.center.z), new THREE.Vector3(r.center.x, 0, r.center.z));
     }
@@ -435,12 +543,12 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   function applyMode(mode: ViewerMode) {
     // Warm-up switches looks only; flights, controls and pointer lock stay as they are.
     if (!warming) {
-      fly = null;
+      fly = spin = null;
       orbit.enabled = mode === 'dollhouse';
       planControls.enabled = mode === 'plan';
       walker.active = mode === 'walk';
       if (mode !== 'walk') walker.unlock();
-      canvas.style.cursor = onPick || mode === 'walk' ? 'crosshair' : mode === 'plan' ? 'grab' : '';
+      canvas.style.cursor = baseCursor(mode);
     }
 
     const cut = mode === 'plan' || (mode === 'dollhouse' && state.cut);
@@ -514,12 +622,14 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       applyTime(state.time);
       applyMode(mode);
       if (caps) house.caps.visible = true;
+      house.looseFurniture.visible = true;
       // Shadow passes compile per light set too.
       stage.invalidateShadows();
       stage.drawNow(false);
     } finally {
       for (const o of culled) o.frustumCulled = true;
       state = real;
+      house.looseFurniture.visible = real.furniture;
       applyTime(real.time);
       applyMode(real.mode);
       stage.invalidateShadows();
@@ -542,7 +652,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       await idle();
       if (signal.aborted) return;
       // Hold off while the view is moving; a hidden draw then would cost a visible frame.
-      if (fly || walker.locked || walker.moving || panKeys.size || tourCtl.active) continue;
+      if (fly || spin || walker.locked || walker.moving || panKeys.size || tourCtl.active || doorsMoving) continue;
       warmState(warmQueue.shift()!);
     }
   }
@@ -566,7 +676,9 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     begin() {
       // The tour visits every look; compile the rest now rather than on its way through the house.
       finishWarmUp();
-      fly = null;
+      // Tour paths run through doorways.
+      openAllDoors();
+      fly = spin = null;
       orbit.enabled = planControls.enabled = walker.active = false;
       walker.unlock();
       canvas.style.cursor = '';
@@ -651,7 +763,28 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   // ---------- input ----------
 
   let down: { x: number; y: number } | null = null;
-  canvas.addEventListener('pointerdown', (e) => (down = { x: e.clientX, y: e.clientY }), { signal });
+  canvas.addEventListener('pointerdown', (e) => {
+    down = { x: e.clientX, y: e.clientY };
+    spin = null;
+  }, { signal });
+  // Capture runs before OrbitControls reads mouseButtons for this drag.
+  let panning = false;
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'mouse' || e.button !== 0 || onPick || tourCtl.active || state.mode !== 'dollhouse') return;
+    panning = outside(e.clientX, e.clientY);
+    orbit.mouseButtons.LEFT = panning ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
+    if (panning) canvas.style.cursor = 'grabbing';
+  }, { signal, capture: true });
+  const endPan = () => {
+    if (!panning) return;
+    panning = false;
+    orbit.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+    cursor();
+  };
+  addEventListener('pointerup', endPan, { signal });
+  addEventListener('pointercancel', endPan, { signal });
+  canvas.addEventListener('wheel', () => (spin = null), { signal, passive: true });
+  addEventListener('keydown', () => (spin = null), { signal });
   canvas.addEventListener('click', (e) => {
     if (onPick) {
       // A drag turns or pans the camera; only a click in place marks a spot.
@@ -659,8 +792,36 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       if (moved <= 5) onPick(pickAt(e.clientX, e.clientY));
       return;
     }
+    const moved = down ? Math.hypot(e.clientX - down.x, e.clientY - down.y) : 0;
+    if (moved <= 5 && !tourCtl.active && state.mode !== 'plan') {
+      const d = doorAt(e.clientX, e.clientY);
+      if (d) return setDoor(d, d.target === 0);
+    }
     if (state.mode === 'walk' && !walker.locked) walker.lock();
   }, { signal });
+  document.addEventListener('keydown', (e) => {
+    if (e.code !== 'KeyE' || e.repeat || e.metaKey || e.ctrlKey || typing(e) || state.mode !== 'walk' || tourCtl.active) return;
+    const d = doorAt(0, 0, true) ?? doorAhead();
+    if (d) setDoor(d, d.target === 0);
+  }, { signal });
+  let hoverAt = 0;
+  canvas.addEventListener('pointermove', (e) => {
+    if (e.buttons || walker.locked || onPick || state.mode === 'plan' || tourCtl.active || e.timeStamp - hoverAt < 60) return;
+    hoverAt = e.timeStamp;
+    canvas.style.cursor = doorAt(e.clientX, e.clientY, walker.locked, shell)
+      ? 'pointer'
+      : state.mode === 'dollhouse' && e.pointerType === 'mouse' && outside(e.clientX, e.clientY)
+        ? 'grab'
+        : baseCursor(state.mode);
+  }, { signal });
+  // Empty space or only the ground disc under the pointer.
+  function outside(clientX: number, clientY: number) {
+    const hit = aim(clientX, clientY, false, Infinity, shell);
+    return !hit || hit.object === stage.ground;
+  }
+  // Floors, walls, openings and slab: enough to tell house from ground or find a door, and
+  // cheap to ray-test on hover. The merged furniture holds most triangles (about 9 ms a ray).
+  const shell = house.root.children.filter((o) => ['floor', 'wall', 'opening'].includes(o.userData.part) || o.userData.collide);
 
   const raycaster = new THREE.Raycaster();
   const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -674,16 +835,47 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   };
 
   /** What lies under the cursor, or under the crosshair while the pointer is locked. */
-  function pickAt(clientX: number, clientY: number): ViewerPick | null {
+  function aim(clientX: number, clientY: number, center: boolean, far = Infinity, targets: THREE.Object3D[] = [house.root]) {
     const rect = canvas.getBoundingClientRect();
-    const ndc = walker.locked
+    const ndc = center
       ? new THREE.Vector2(0, 0)
       : new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
     raycaster.setFromCamera(ndc, stage.camera);
+    raycaster.far = far;
     const cut = house.clipPlane.constant + 0.01;
     const hit = raycaster
-      .intersectObject(house.root, true)
+      .intersectObjects(targets, true)
       .find((h) => h.point.y <= cut && (h.object as THREE.Mesh).isMesh && isShown(h.object));
+    raycaster.far = Infinity;
+    return hit;
+  }
+
+  function doorAt(clientX: number, clientY: number, center = walker.locked, targets?: THREE.Object3D[]) {
+    // The crosshair reaches only doors within arm's length.
+    let o: THREE.Object3D | null = aim(clientX, clientY, center, center ? DOOR_REACH : Infinity, targets)?.object ?? null;
+    for (; o && !o.userData.dynamic; o = o.parent) if (o === house.root) return null;
+    for (; o; o = o.parent) if (o.userData.kind === 'opening') return doors.get(o.userData.id) ?? null;
+    return null;
+  }
+
+  /** The door closest ahead of the walker, for `E` when the crosshair misses it. */
+  function doorAhead() {
+    const eye = walker.camera.position, look = walker.camera.getWorldDirection(new THREE.Vector3());
+    const c = new THREE.Vector3();
+    let best: Door | null = null, bestDist = DOOR_REACH;
+    for (const d of doors.values()) {
+      const to = d.closedBox.getCenter(c).sub(eye);
+      const dist = to.length();
+      if (dist < bestDist && to.angleTo(look) <= DOOR_CONE) {
+        best = d;
+        bestDist = dist;
+      }
+    }
+    return best;
+  }
+
+  function pickAt(clientX: number, clientY: number): ViewerPick | null {
+    const hit = aim(clientX, clientY, walker.locked);
     const point = hit?.point ?? raycaster.ray.intersectPlane(groundPlane, new THREE.Vector3());
     if (!point) return null;
     // A wall face sits on the room's edge; a step back toward the camera lands inside the room.
@@ -702,13 +894,14 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     const part = partOf(hit.object);
     if (part === 'furniture' || part === 'opening') {
       const found = house.parts
-        .filter((p) => p.kind === part && p.box.containsPoint(point))
+        .filter((p) => p.kind === part && (state.furniture || !p.loose) && p.box.containsPoint(point))
         .sort((a, b) => volume(a.box) - volume(b.box))[0];
       if (part === 'furniture') {
         const f = found && plan.furniture?.find((x) => x.id === found.id);
         return out('furniture', f?.type, f?.room);
       }
-      return out('opening', found && plan.openings?.find((x) => x.id === found.id)?.type);
+      const o = found && plan.openings?.find((x) => x.id === found.id);
+      return { ...out('opening', o?.type), ...(o && { id: o.id }) };
     }
     if (part === 'wall' || part === 'floor') return out(part);
     return out('other');
@@ -717,8 +910,11 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     const s = box.getSize(new THREE.Vector3());
     return s.x * s.y * s.z;
   };
+  function baseCursor(mode: ViewerMode) {
+    return onPick || mode === 'walk' ? 'crosshair' : mode === 'plan' ? 'grab' : '';
+  }
   const cursor = () => {
-    if (!tourCtl.active) canvas.style.cursor = onPick || state.mode === 'walk' ? 'crosshair' : state.mode === 'plan' ? 'grab' : '';
+    if (!tourCtl.active) canvas.style.cursor = baseCursor(state.mode);
   };
   walker.onLockChange = (locked) => setState({ locked });
 
@@ -763,6 +959,21 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     orbit.target.add(panMove);
   }
 
+  // Keeps panning from dragging the house out of view.
+  const PAN_MARGIN = 4;
+  const clampShift = new THREE.Vector3();
+  function clampOrbit() {
+    const t = orbit.target;
+    clampShift.set(
+      THREE.MathUtils.clamp(t.x, b.minX - PAN_MARGIN, b.maxX + PAN_MARGIN) - t.x,
+      0,
+      THREE.MathUtils.clamp(t.z, b.minY - PAN_MARGIN, b.maxY + PAN_MARGIN) - t.z,
+    );
+    if (!clampShift.x && !clampShift.z) return;
+    t.add(clampShift);
+    orbitCam.position.add(clampShift);
+  }
+
   // ---------- loop ----------
 
   const timer = new THREE.Timer();
@@ -792,11 +1003,14 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     } else if (state.mode === 'dollhouse') {
       panDollhouse(dt);
       stepFly(now);
+      stepSpin(now);
       orbit.update();
+      clampOrbit();
     } else {
       stepFly(now);
       planControls.update();
     }
+    stepDoors(dt);
     frames++;
     if (stage.renderIfNeeded(now)) fpsFrames++;
     if (now - fpsStart >= 1000) {
@@ -872,6 +1086,14 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       // A running tour owns the cut; the setting applies once it ends.
       if (!tourCtl.active) applyMode(state.mode);
     },
+    setFurniture(visible) {
+      if (visible === state.furniture) return;
+      house.looseFurniture.visible = visible;
+      walker.setWorld(visible ? house.colliders : house.collidersFixed);
+      stage.invalidateShadows();
+      refreshLampShadows();
+      setState({ furniture: visible });
+    },
     setGrid(on) {
       overlay.grid.visible = on;
       stage.requestRender();
@@ -924,6 +1146,11 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       else if (mode === 'plan') flyTo(planCam, planControls, new THREE.Vector3(...position), new THREE.Vector3(...target));
       else flyTo(orbitCam, orbit, new THREE.Vector3(...position), new THREE.Vector3(...target));
     },
+    toggleDoor(id, open) {
+      const d = doors.get(id);
+      if (d) setDoor(d, open ?? d.target === 0);
+    },
+    doors: () => [...doors.values()].map((d) => ({ id: d.id, open: d.target === 1 })),
     getState: () => state,
     subscribe(listener) {
       listeners.add(listener);
