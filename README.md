@@ -45,6 +45,20 @@ Existing projects can be opened from their folders. Projects registered through
 the CLI appear in Studio automatically. New projects start without geometry.
 Studio provides preview and project management, not a CAD editor or agent chat.
 
+Before modeling, Studio shows a **Project overview** from `source/intake.json`.
+Agents use this versioned JSON file to describe the brief, design direction,
+individual drawing pages and revisions, duplicate files, and planned pieces with
+their dependencies and next actions. New projects start with unreviewed documents.
+The agent inspects them before assigning roles or planning geometry. Assumptions
+remain in `arch.project.json`; continuation decisions remain in `arch.context.json`.
+The overview travels with source checkpoints and does not require executing source
+or building a model. Files open inside Studio, with a separate download action.
+File labels, revisions and original bytes come from the selected saved version;
+the working brief and work plan reflect the current project folder.
+
+For intake and authoring instructions, use
+[arch-generation](.agents/skills/arch-generation/SKILL.md).
+
 ## Continue on another machine
 
 Choose **Handoff** to export an immutable checkpoint folder. On the other machine,
