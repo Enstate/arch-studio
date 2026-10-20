@@ -4,6 +4,7 @@ import path from "node:path";
 import { addReviewNote, artifactDetails, artifactFile, buildProjectArtifact, inspectArtifact, inspectProject, listProjects, registerProject, inspectSource, viewerRuntimeHash, exportCheckpoint, importCheckpoint, restoreCheckpoint, checkpointBrief, referenceFile } from "@arch/project-tools";
 import { initializeProject } from "@arch/project-tools/intake";
 import { z } from "zod";
+import { viewerSupportsRuntime } from "@arch/project";
 import { changeCatalog, localCatalog, requireProject } from "./local-catalog";
 import { requireStudio, studioOrigin } from "./local-session";
 import type { StudioCatalog, StudioProjectDetails, StudioVersion } from "./model";
@@ -121,7 +122,7 @@ export async function buildVersion({ data }: { data: { sourceId: string; project
 export async function openVersion({ data }: { data: { checkpointId: string } }) {
   const origin = requireStudio();
   const verified = await inspectArtifact(data);
-  if (verified.artifact.runtimeHash !== await viewerRuntimeHash()) throw new Error("This version requires a different viewer runtime. Export it to continue with the matching CLI.");
+  if (!viewerSupportsRuntime(await viewerRuntimeHash(), verified.artifact.runtimeHash)) throw new Error("This version requires a different viewer runtime. Export it to continue with the matching CLI.");
   return { ...await location(data.checkpointId, origin), artifactHash: verified.artifactHash };
 }
 export async function handoff({ data }: { data: { checkpointId: string; directory: string } }) { requireStudio(); return exportCheckpoint(data.checkpointId, data.directory); }
