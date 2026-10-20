@@ -20,7 +20,9 @@ bun run demo
 bun dev
 ```
 
-Open http://localhost:3101. The demo is a furnished, synthetic sample house with
+Open the Studio link printed in your terminal. Its per-launch token pairs your
+browser with your local Studio and disappears from the address bar after pairing.
+The demo is a furnished, synthetic sample house with
 procedural materials. It needs no downloaded asset library. It is a separate
 project and never supplies references for a customer's work.
 
@@ -58,8 +60,10 @@ Local notes and builds do not grant hosted acceptance or publication.
 
 This repository owns the viewer, shared UI, portable contracts and local tools.
 The private customer platform consumes versioned archives from GitHub Releases.
-`bun run release:packages --tag v0.1.0` prepares archives from a committed revision;
+`bun run release:packages --tag v0.1.0` prepares archives from the matching tag on HEAD;
 it does not publish them. Each release includes checksums and source provenance.
+The viewer keeps its own package version and exact manifest bytes across tool-only
+releases, so existing projects retain their runtime hash.
 
 `bun run fetch-assets` optionally downloads the CC0 Poly Haven library into
 `apps/studio/public/viewer`. Downloaded assets are excluded from Git. Preserve

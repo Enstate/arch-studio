@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { registerProject, buildProjectArtifact, inspectArtifact, artifactFile, exportCheckpoint, importCheckpoint, restoreCheckpoint } from '../src/index';
+import { registerProject, buildProjectArtifact, artifactDetails, inspectArtifact, artifactFile, exportCheckpoint, importCheckpoint, restoreCheckpoint } from '../src/index';
 test('v2 archive roundtrip verifies artifact bytes and rejects tampering', async()=>{
  const temp=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'arch-artifact-')));const prior=process.env.ARCH_HOME;
  try {
@@ -26,8 +26,14 @@ test('v2 archive roundtrip verifies artifact bytes and rejects tampering', async
  const plan=built.artifact.files.find(f=>f.path===built.artifact.plan)!;
  await artifactFile(built.checkpoint.id,plan.path);
  await fs.writeFile(path.join(process.env.ARCH_HOME,'blobs/sha256',plan.sha256),'tampered');
+ // Listings verify the manifest and checkpoint table, while opening and serving
+ // still reject changed asset bytes. No whole-artifact byte scan on every poll.
+ expect((await artifactDetails({checkpointId:built.checkpoint.id})).artifactHash).toBe(built.artifactHash);
  await expect(artifactFile(built.checkpoint.id,plan.path)).rejects.toThrow();
  await expect(inspectArtifact({checkpointId:built.checkpoint.id})).rejects.toThrow();
+ const metadata=built.checkpoint.files.find(file=>file.path==='outputs/artifact.json')!;
+ await fs.writeFile(path.join(process.env.ARCH_HOME,'blobs/sha256',metadata.sha256),'tampered metadata');
+ await expect(artifactDetails({checkpointId:built.checkpoint.id})).rejects.toThrow();
  process.env.ARCH_HOME=path.join(temp,'store');
  const generator=path.join(directory,'source/generate.ts');
  const original=await fs.readFile(generator,'utf8');

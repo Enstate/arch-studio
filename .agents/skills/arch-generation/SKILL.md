@@ -7,7 +7,7 @@ description: Generate or revise an Arch project's rooms, furniture, materials an
 
 A project is authored as **source**: `source/` holds the generator entry and its modules, `assets/` holds plan inputs, the model library, textures and custom models. The bounded artifact build runs the entry and writes an immutable **artifact** (`outputs/artifact/plan.json` plus everything the plan uses). The shared viewer in `packages/viewer` renders the artifact. Agents edit source; they never edit the artifact, the viewer or an app to change one project.
 
-Customer differences live in project source. One codebase serves every customer: no per-customer copy of the portal, Studio or viewer, and no hosted model. Builders are Opus 5.5 sessions in T3 Code or Claude Code.
+Customer differences live in project source. One codebase serves every customer: no per-customer copy of the portal, Studio or viewer. Builders run in the user's external coding agent, such as T3 Code, Codex or Claude Code, with that tool's own provider login.
 
 Read the project's root `AGENTS.md` and `BUILDERS.md` first. They travel with the checkpoint and override this skill for that project. Your design inputs are that project's `reference/` files and brief. When you need a plan type or rule, read `packages/viewer/src/plan/schema.ts` and `validate.ts`; other projects and `fixtures/` are not inputs.
 
@@ -17,7 +17,7 @@ Read the project's root `AGENTS.md` and `BUILDERS.md` first. They travel with th
 - **Existing project folder on this machine:** `bun run arch continue <project-folder>`, then read the brief it prints.
 - **Bundle from another machine:** follow `arch-checkpoint`.
 
-`client.id` must equal the Studio client's workspace slug. Before the first version, the project is attached in Studio, through Start from documents or Open on an existing folder.
+`client.id` must equal the Studio client's key. Start from documents or Open attaches a folder to a Studio project. Sources registered through the CLI appear in Studio automatically.
 
 ## Which runtime
 
@@ -39,7 +39,7 @@ The lead fixes these before any builder starts. Each ends when it is written in 
 
 1. Start a fresh builder per piece with the round number, the brief, the previous critique for that piece, and the comments on the current version.
 2. The builder edits only its own source and assets. A needed shared change goes in its report as a request; the builder works around it.
-3. Run the artifact build: `bun run arch build <project-id> --authorize-source-execution` (pending in the CLI) or Build in the Studio. It needs explicit authorization, stops after 30 seconds, and sees only `PATH` and `ARCH_ARTIFACT_OUTPUT`. A build that fails, times out, writes no `plan.json`, references an asset outside the artifact or produces an invalid plan ends the round for that piece. The build saves a checkpoint; record its ID and the artifact hash.
+3. Run the artifact build: `bun run arch build <project-id> --authorize-source-execution` or Build in the Studio. It needs explicit authorization, stops after 30 seconds, and receives a restricted environment. It executes with the local user's permissions and is not a sandbox. A build that fails, times out, writes no `plan.json`, references an asset outside the artifact or produces an invalid plan ends the round for that piece. The build saves a checkpoint; record its ID and the artifact hash.
 4. Preview that exact checkpoint's artifact in the viewer and render the piece's views one at a time. Look at every image. A view counts only when the preview loaded with no error and no request left the artifact origin.
 5. Start a fresh critic with `arch-critique`. Its report goes in `outputs/critique/round-<n>.md`.
 6. Compare with the best round. Keep the better one. When the round is worse, restore the best round's checkpoint before the next round.
@@ -65,4 +65,4 @@ A version is ready for review when all of these hold:
 - The latest critique and the unresolved list are saved in the project.
 - `arch.context.json` names the next action.
 
-Then save with `arch-checkpoint` and report the checkpoint ID, artifact hash and runtime hash, saying it meets these conditions. Registering the version and accepting it are staff actions in the Studio. Internal acceptance is a named person's decision; a critic score does not grant it.
+Then save with `arch-checkpoint` and report the checkpoint ID, artifact hash and runtime hash, saying it meets these conditions. Studio provides local review and handoff. Upload, acceptance and publication belong to Enstate's separate hosted platform. A critic score grants no acceptance.

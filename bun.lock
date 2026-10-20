@@ -58,6 +58,7 @@
     "packages/project": {
       "name": "@arch/project",
       "dependencies": {
+        "@arch/viewer": "workspace:*",
         "zod": "4.4.3",
       },
     },
@@ -145,6 +146,7 @@
         "@arch/config": "workspace:*",
         "@types/react": "^19.3.0",
         "typescript": "^6.0.3",
+        "vite": "^8.3.4",
       },
       "peerDependencies": {
         "react": "^19.3.0",

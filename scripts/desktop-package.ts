@@ -14,7 +14,7 @@ await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 const mac = process.platform === 'darwin';
 const application = mac ? join(output, 'Arch Studio.app') : join(output, 'Arch Studio');
-await cp(mac ? join(vendor, 'Electron.app') : vendor, application, { recursive: true });
+await cp(mac ? join(vendor, 'Electron.app') : vendor, application, { recursive: true, verbatimSymlinks: true });
 const resources = mac ? join(application, 'Contents/Resources') : join(application, 'resources');
 await rm(join(resources, 'default_app.asar'), { force: true });
 await mkdir(join(resources, 'app'), { recursive: true });

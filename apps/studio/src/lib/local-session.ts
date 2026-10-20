@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { getCookie, getRequest, setCookie } from "@tanstack/react-start/server";
+import { getRequest } from "@tanstack/react-start/server";
+import { studioSessionHeader } from "./browser-session";
 
-const cookie = "arch-studio-session";
 const secret = randomBytes(32).toString("hex");
 export function studioOrigin(request: Request) {
   const url = new URL(request.url);
@@ -12,18 +12,20 @@ export function studioOrigin(request: Request) {
   if (site && site !== "same-origin" && site !== "none") throw new Error("Cross-site Studio requests are refused.");
   return url.origin;
 }
-function valid(value: string | undefined) {
-  return Boolean(value && /^[a-f0-9]{64}$/.test(value) && timingSafeEqual(Buffer.from(value), Buffer.from(secret)));
+function valid(value: string | null | undefined, expected = secret) {
+  return Boolean(value && /^[a-f0-9]{64}$/.test(value) && /^[a-f0-9]{64}$/.test(expected) && timingSafeEqual(Buffer.from(value), Buffer.from(expected)));
 }
-export async function session() {
-  studioOrigin(getRequest());
-  setCookie(cookie, secret, { httpOnly: true, sameSite: "strict", path: "/" });
-  return { local: true as const };
+export async function session({ token }: { token?: string } = {}) {
+  const request = getRequest();
+  studioOrigin(request);
+  if (!valid(request.headers.get(studioSessionHeader)) && !valid(token, process.env.ARCH_STUDIO_BOOTSTRAP ?? "")) {
+    throw new Error("Open the Studio link printed in your terminal. Öffne den Studio-Link aus deinem Terminal.");
+  }
+  return { local: true as const, secret };
 }
 export function requireStudio(request?: Request) {
   const current = request ?? getRequest();
   const origin = studioOrigin(current);
-  const value = request ? current.headers.get("cookie")?.split(";").map(part => part.trim()).find(part => part.startsWith(`${cookie}=`))?.slice(cookie.length + 1) : getCookie(cookie);
-  if (!valid(value)) throw new Error("Open Studio to initialize this local session.");
+  if (!valid(current.headers.get(studioSessionHeader))) throw new Error("Open the Studio link printed in your terminal.");
   return origin;
 }

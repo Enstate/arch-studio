@@ -33,8 +33,13 @@ uses only that project's supplied references. Demo files are not design inputs.
 
 `bun install --frozen-lockfile` installs this public checkout. `bun run demo`
 creates the synthetic house in the selected local store. `bun dev` starts only
-loopback Studio, with no cloud login. There is no account form: an HttpOnly local
-session and strict request-origin checks protect the local server.
+loopback Studio, with no cloud login. Open the token-bearing launcher URL from
+the terminal. Studio exchanges its fragment token for a bearer held in
+origin-scoped sessionStorage and clears the fragment. Server functions require
+its custom request header. Never replace this with host-scoped cookies, which
+leak to other loopback ports. Bare-origin requests cannot create a session.
+Artifact and reference downloads require signed capability URLs and strict
+request-origin checks.
 
 Run the owning TypeScript config with `bun --check --tsconfig-override <config>`.
 Public package consumers include Studio and the separately released hosted app.

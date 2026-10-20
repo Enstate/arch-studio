@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { Plan } from "../../viewer/src/plan/schema.ts";
-import { validatePlan } from "../../viewer/src/plan/validate.ts";
+import type { Plan } from "@arch/viewer/plan/schema";
+import { validatePlan } from "@arch/viewer/plan/validate";
 import {
   artifactManifestSchema,
   checkpointManifestSchema,

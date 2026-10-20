@@ -1,11 +1,11 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { userInfo } from "node:os";
 import path from "node:path";
-import { addReviewNote, artifactFile, buildProjectArtifact, inspectArtifact, inspectProject, listProjects, registerProject, inspectSource, viewerRuntimeHash, exportCheckpoint, importCheckpoint, restoreCheckpoint, checkpointBrief, referenceFile } from "@arch/project-tools";
+import { addReviewNote, artifactDetails, artifactFile, buildProjectArtifact, inspectArtifact, inspectProject, listProjects, registerProject, inspectSource, viewerRuntimeHash, exportCheckpoint, importCheckpoint, restoreCheckpoint, checkpointBrief, referenceFile } from "@arch/project-tools";
 import { initializeProject } from "@arch/project-tools/intake";
 import { z } from "zod";
 import { changeCatalog, localCatalog, requireProject } from "./local-catalog";
-import { requireStudio } from "./local-session";
+import { requireStudio, studioOrigin } from "./local-session";
 import type { StudioCatalog, StudioProjectDetails, StudioVersion } from "./model";
 export { session } from "./local-session";
 const sha = z.string().regex(/^[a-f0-9]{64}$/);
@@ -42,13 +42,15 @@ export async function projectDetails({ data }: { data: { projectId: string } }):
   const project = requireProject(await localCatalog(), data.projectId);
   if (!project.sourceId) return { project, source: null, versions: [], notes: [] };
   const inspection = await inspectProject(project.sourceId);
+  const current = await inspectSource(inspection.project.directory);
+  requireSourceIdentity(project, current);
   const versions: StudioVersion[] = [];
   for (const checkpoint of inspection.checkpoints) {
     const hasArtifact = checkpoint.project.schemaVersion === 2 && checkpoint.files.some(file => file.path === "outputs/artifact.json");
     let artifactHash: string | null = null;
     let outputs: StudioVersion["outputs"] = [];
     if (hasArtifact) {
-      const verified = await inspectArtifact({ checkpointId: checkpoint.id });
+      const verified = await artifactDetails({ checkpointId: checkpoint.id });
       artifactHash = verified.artifactHash;
       const urls = await location(checkpoint.id, origin);
       outputs = verified.artifact.outputs.map((output, index) => ({ id: `${output.kind}-${index}`, kind: output.kind === "video" ? "film" : "still", label: path.basename(output.path), url: `${urls.base}${output.path.replace(/^outputs\/artifact\//, "").split("/").map(encodeURIComponent).join("/")}` }));
@@ -56,13 +58,15 @@ export async function projectDetails({ data }: { data: { projectId: string } }):
     const token = await capability(checkpoint.id, "reference");
     versions.push({ id: checkpoint.id, checkpointId: checkpoint.id, createdAt: checkpoint.createdAt, hasArtifact, artifactHash, outputs, references: checkpoint.project.references.map(reference => ({ ...reference, url: referenceLocation(checkpoint.id, token, reference.path, origin) })) });
   }
-  return { project, source: inspection.project, versions, notes: inspection.notes };
+  return { project, source: { ...inspection.project, manifest: current.manifest }, versions, notes: inspection.notes };
+}
+function requireSourceIdentity(project: StudioProjectDetails["project"], source: Pick<Awaited<ReturnType<typeof inspectSource>>, "manifest">) {
+  if (project.sourceId && source.manifest.id !== project.sourceId) throw new Error("The source identity changed. Open the correct source folder.");
+  if (source.manifest.client.id !== project.clientId) throw new Error("The source client ID must exactly match the selected client ID. Restore this project's original client ID before continuing.");
 }
 function attachSource(catalog: StudioCatalog, projectId: string, source: Awaited<ReturnType<typeof registerProject>>) {
   const project = requireProject(catalog, projectId);
-  if (source.manifest.client.id !== project.clientId) throw new Error("The source client ID must exactly match the selected client ID.");
-  const client = catalog.clients.find(client => client.id === project.clientId);
-  if (!client || source.manifest.client.name !== client.name) throw new Error("The source client name must match the selected client.");
+  requireSourceIdentity(project, source);
   if (project.sourceId && project.sourceId !== source.manifest.id) throw new Error("This project already has a source.");
   if (catalog.projects.some(other => other.id !== project.id && other.sourceId === source.manifest.id)) throw new Error("This source already belongs to another Studio project.");
   project.sourceId = source.manifest.id;
@@ -91,7 +95,7 @@ export async function initializeSource({ data }: { data: { inputsDirectory: stri
     return attachSource(catalog, project.id, initialized.project);
   });
 }
-async function sourceBinding(projectId: string, sourceId: string) {
+async function requireSourceBinding(projectId: string, sourceId: string) {
   return changeCatalog(async catalog => {
     const project = requireProject(catalog, projectId);
     if (project.sourceId !== sourceId) throw new Error("The source does not belong to this Studio project.");
@@ -108,10 +112,10 @@ async function sourceBinding(projectId: string, sourceId: string) {
 export async function buildVersion({ data }: { data: { sourceId: string; projectId: string; authorizeSourceExecution: true } }) {
   requireStudio();
   if (data.authorizeSourceExecution !== true) throw new Error("Building requires explicit permission to execute trusted source code.");
-  const project = await sourceBinding(data.projectId, data.sourceId);
+  const project = await requireSourceBinding(data.projectId, data.sourceId);
   const built = await buildProjectArtifact(data.sourceId, { authorizeSourceExecution: true });
   if (built.checkpoint.project.id !== data.sourceId || built.checkpoint.project.client.id !== project.clientId) throw new Error("The built source identity does not match this project.");
-  await sourceBinding(data.projectId, data.sourceId);
+  await requireSourceBinding(data.projectId, data.sourceId);
   return { versionId: built.checkpoint.id, checkpointId: built.checkpoint.id, artifactHash: built.artifactHash };
 }
 export async function openVersion({ data }: { data: { checkpointId: string } }) {
@@ -122,10 +126,15 @@ export async function openVersion({ data }: { data: { checkpointId: string } }) 
 }
 export async function handoff({ data }: { data: { checkpointId: string; directory: string } }) { requireStudio(); return exportCheckpoint(data.checkpointId, data.directory); }
 export async function brief({ data }: { data: { checkpointId: string } }) { requireStudio(); return checkpointBrief(data.checkpointId); }
-export async function restoreSource({ data }: { data: { bundle: string; directory: string } }) {
-  requireStudio(); const checkpoint = await importCheckpoint(data.bundle);
-  const source = await restoreCheckpoint(checkpoint.id, data.directory, { activate: true });
-  await localCatalog(); return source;
+export async function restoreSource({ data }: { data: { bundle: string; directory: string; activate?: boolean } }) {
+  requireStudio();
+  return changeCatalog(async catalog => {
+    const checkpoint = await importCheckpoint(data.bundle);
+    const bound = catalog.projects.find(project => project.sourceId === checkpoint.projectId);
+    if (bound) requireSourceIdentity(bound, { manifest: checkpoint.project });
+    // Switching an existing active folder requires a separate user choice.
+    return restoreCheckpoint(checkpoint.id, data.directory, { activate: data.activate === true });
+  });
 }
 export async function saveNote({ data }: { data: { projectId: string; checkpointId: string; body: string } }) {
   requireStudio(); const project = requireProject(await localCatalog(), data.projectId);
@@ -134,11 +143,12 @@ export async function saveNote({ data }: { data: { projectId: string; checkpoint
 }
 export async function referenceResponse(request: Request, checkpointId: string, token: string, relative: string) {
   try {
-    requireStudio(request); sha.parse(checkpointId); sha.parse(token);
+    studioOrigin(request); sha.parse(checkpointId); sha.parse(token);
     const expected = await capability(checkpointId, "reference");
     if (!timingSafeEqual(Buffer.from(token), Buffer.from(expected))) return new Response(null, { status: 404 });
     if (!["GET", "HEAD"].includes(request.method)) return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
-    const pathname = decodeURIComponent(relative);
+    // TanStack has already decoded the route splat once.
+    const pathname = relative;
     if (!pathname || pathname.includes("\\") || pathname.split("/").some(part => !part || part === "." || part === "..")) return new Response(null, { status: 404 });
     const content = await referenceFile({ checkpointId, path: pathname });
     return new Response(request.method === "HEAD" ? null : new Uint8Array(content.body), { headers: {
@@ -149,11 +159,11 @@ export async function referenceResponse(request: Request, checkpointId: string, 
 }
 export async function artifactResponse(request: Request, checkpointId: string, token: string, relative: string) {
   try {
-    const exactOrigin = requireStudio(request);
+    const exactOrigin = studioOrigin(request);
     sha.parse(checkpointId); sha.parse(token);
     const expected = await capability(checkpointId, "artifact");
     if (!timingSafeEqual(Buffer.from(token), Buffer.from(expected))) return new Response(null, { status: 404 });
-    const pathname = decodeURIComponent(relative);
+    const pathname = relative;
     if (!pathname || pathname.split("/").some(part => !part || part === "." || part === "..") || pathname.includes("\\")) return new Response(null, { status: 404 });
     const ext = path.extname(pathname);
     const types: Record<string, string> = { ".json": "application/json", ".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".bin": "application/octet-stream", ".webp": "image/webp", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".hdr": "image/vnd.radiance", ".mp4": "video/mp4", ".webm": "video/webm" };

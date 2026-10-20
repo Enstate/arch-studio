@@ -265,7 +265,7 @@ test("portable checkpoints deduplicate, preserve notes, reject tampering and uns
       path.join(process.env.ARCH_HOME!, "catalog.lock"),
       "stale",
     );
-    await expect(registerProject(restored)).rejects.toThrow("stale");
+    await expect(registerProject(restored)).rejects.toThrow("catalog.lock");
     expect((await listProjects())[0]!.checkpointId).toBe(first.id);
     const catalogFile = path.join(process.env.ARCH_HOME!, "catalog.json");
     const catalogContents = await fs.readFile(catalogFile, "utf8");

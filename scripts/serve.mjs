@@ -1,7 +1,10 @@
 import studio from '../apps/studio/dist/server/server.js';
 import { resolve, sep } from 'node:path';
 import { stat, realpath } from 'node:fs/promises';
-const client = resolve(process.env.ARCH_CLIENT_ROOT ?? new URL('../apps/studio/dist/client', import.meta.url).pathname);
+import { fileURLToPath } from 'node:url';
+import { randomBytes } from 'node:crypto';
+const client = await realpath(resolve(process.env.ARCH_CLIENT_ROOT ?? fileURLToPath(new URL('../apps/studio/dist/client', import.meta.url))));
+process.env.ARCH_STUDIO_BOOTSTRAP = randomBytes(32).toString('hex');
 const rawPort = process.env.ARCH_STUDIO_PORT ?? '0';
 if (!/^\d+$/.test(rawPort) || Number(rawPort) > 65535) throw new Error('Invalid ARCH_STUDIO_PORT');
 const server = Bun.serve({
@@ -21,5 +24,10 @@ const server = Bun.serve({
     return studio.fetch(request);
   },
 });
-console.log(JSON.stringify({ archStudioReady: true, origin: server.url.origin }));
-for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { server.stop(true); process.exit(0); });
+console.log(JSON.stringify({ archStudioReady: true, origin: server.url.origin, bootstrapUrl: `${server.url.origin}/#studio=${process.env.ARCH_STUDIO_BOOTSTRAP}` }));
+function shutdown() { server.stop(true); process.exit(0); }
+for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, shutdown);
+if (process.env.ARCH_STUDIO_PARENT_PIPE === '1') {
+  process.stdin.resume();
+  process.stdin.once('end', shutdown);
+}

@@ -5,6 +5,7 @@ import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { z } from "zod";
 import { promises as fs } from "node:fs";
 import { createRequire } from "node:module";
+import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -201,31 +202,36 @@ async function catalog(): Promise<Catalog> {
     throw error;
   }
 }
-async function locked<T>(action: (value: Catalog) => Promise<T>): Promise<T> {
-  const base = archiveDirectory();
-  await fs.mkdir(base, { recursive: true });
-  const lock = path.join(base, "catalog.lock");
-  // Fail closed on another writer, including stale locks. Never steal a live writer's lock.
-  let handle: Awaited<ReturnType<typeof fs.open>>;
-  try {
-    handle = await fs.open(lock, "wx");
-  } catch {
-    throw new Error(
-      "Catalog busy or stale catalog.lock. Retry after the writer finishes; remove a stale lock only after checking its owner.",
-    );
-  }
-  try {
-    await handle.writeFile(
-      JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }),
-    );
-    const value = await catalog();
-    const result = await action(value);
-    await atomic(path.join(base, "catalog.json"), value);
-    return result;
-  } finally {
-    await handle.close();
-    await fs.unlink(lock);
-  }
+let catalogWriter: Promise<unknown> = Promise.resolve();
+function locked<T>(action: (value: Catalog) => Promise<T>): Promise<T> {
+  const operation = catalogWriter.then(async () => {
+    const base = archiveDirectory();
+    await fs.mkdir(base, { recursive: true, mode: 0o700 });
+    // Older tools used a file lock. Never race an older process or remove its lock.
+    try {
+      await fs.access(path.join(base, "catalog.lock"));
+      throw new Error("An older tools catalog.lock exists. Stop its writer and inspect the lock before continuing.");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const file = path.join(base, "catalog-write.sqlite");
+    const database = new DatabaseSync(file);
+    await fs.chmod(file, 0o600);
+    try {
+      // The transaction owns the writer lease. The OS releases it on process exit,
+      // including SIGKILL, while the existing atomic JSON catalog stays portable.
+      database.exec("PRAGMA busy_timeout=2500; CREATE TABLE IF NOT EXISTS writer (id INTEGER PRIMARY KEY); BEGIN IMMEDIATE");
+      try {
+        const value = await catalog();
+        const result = await action(value);
+        await atomic(path.join(base, "catalog.json"), value);
+        database.exec("COMMIT");
+        return result;
+      } catch (error) { database.exec("ROLLBACK"); throw error; }
+    } finally { database.close(); }
+  });
+  catalogWriter = operation.catch(() => {});
+  return operation;
 }
 function safeRelative(value: string): string {
   relativeProjectPath.parse(value);
@@ -1139,11 +1145,39 @@ async function validatedArtifactPlan(directory:string, files:ArtifactManifest["f
   return plan;
 }
 const artifactBuilds=new Set<string>();
+const sourceBuildProcesses = new Set<() => void>();
+let sourceBuildsStopping = false;
+let sourceBuildShutdownBound = false;
+/** Stop only generator process groups started by this runtime. */
+function stopSourceBuilds(): void {
+  sourceBuildsStopping = true;
+  for (const stop of sourceBuildProcesses) stop();
+}
+function bindSourceBuildShutdown(): void {
+  if (sourceBuildShutdownBound) return;
+  sourceBuildShutdownBound = true;
+  // The server's shutdown listener exits immediately. Kill owned groups first,
+  // including when this module is bundled separately from the launcher.
+  process.prependOnceListener("SIGTERM", stopSourceBuilds);
+  process.prependOnceListener("SIGINT", stopSourceBuilds);
+  process.prependOnceListener("SIGHUP", stopSourceBuilds);
+  process.prependOnceListener("exit", stopSourceBuilds);
+}
+function releaseSourceBuildShutdown(): void {
+  if (artifactBuilds.size) return;
+  process.removeListener("SIGTERM", stopSourceBuilds);
+  process.removeListener("SIGINT", stopSourceBuilds);
+  process.removeListener("SIGHUP", stopSourceBuilds);
+  process.removeListener("exit", stopSourceBuilds);
+  sourceBuildShutdownBound = false;
+}
 /** Explicit local authoring operation. This subprocess is bounded, not a security sandbox. */
 export async function buildProjectArtifact(projectId: string, options: { authorizeSourceExecution: true }): Promise<{artifact: ArtifactManifest; checkpoint: CheckpointManifest; artifactHash: string}> {
   if (options?.authorizeSourceExecution !== true) throw new Error("Explicit local source execution authorization required");
+  if (sourceBuildsStopping) throw new Error("Source builds are stopping");
   if(artifactBuilds.has(projectId))throw new Error("Artifact build already running for this project");
   artifactBuilds.add(projectId);
+  bindSourceBuildShutdown();
   try {
   const project = await registered(projectId);
   const current = await projectAt(project.directory);
@@ -1155,7 +1189,13 @@ export async function buildProjectArtifact(projectId: string, options: { authori
   await fs.rm(output,{recursive:true,force:true});
   await fs.mkdir(output,{recursive:true});
   await new Promise<void>((resolve,reject) => {
+    if (sourceBuildsStopping) { reject(new Error("Source builds are stopping")); return; }
     const child = spawn(process.env.ARCH_BUN || (process.versions.bun ? process.execPath : path.join(homedir(),".bun/bin/bun")),["run",current.manifest.entry],{cwd:current.directory,stdio:["ignore","ignore","pipe"],env:{PATH:"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",ARCH_ARTIFACT_OUTPUT:output},detached:true});
+    const stop = () => {
+      if (child.pid === undefined) return;
+      try { process.kill(-child.pid, "SIGKILL"); } catch {}
+    };
+    sourceBuildProcesses.add(stop);
     const diagnostic = Buffer.alloc(4096);
     let diagnosticBytes = 0;
     let diagnosticTruncated = false;
@@ -1164,11 +1204,12 @@ export async function buildProjectArtifact(projectId: string, options: { authori
       diagnosticBytes += copied;
       if (copied < chunk.length) diagnosticTruncated = true;
     });
-    const timer = setTimeout(()=>{try {process.kill(-child.pid!,"SIGKILL");}catch{} reject(new Error("Generator exceeded 30 second local execution limit"));},30_000);
-    child.once("error",e=>{clearTimeout(timer);reject(e)});
-    child.once("exit",()=>{try{process.kill(-child.pid!,"SIGKILL");}catch{}});
+    const timer = setTimeout(()=>{stop(); reject(new Error("Generator exceeded 30 second local execution limit"));},30_000);
+    child.once("error",e=>{clearTimeout(timer);sourceBuildProcesses.delete(stop);reject(e)});
+    child.once("exit",stop);
     child.once("close",code=>{
       clearTimeout(timer);
+      sourceBuildProcesses.delete(stop);
       const detail = diagnostic.subarray(0, diagnosticBytes).toString("utf8").trim();
       code===0?resolve():reject(new Error(`Generator failed (${code})${detail ? `: ${detail}` : ""}${diagnosticTruncated ? "\n[stderr truncated at 4 KiB]" : ""}`));
     });
@@ -1182,12 +1223,13 @@ export async function buildProjectArtifact(projectId: string, options: { authori
   await atomic(path.join(current.directory,"outputs/artifact.json"),artifact);
   const saved = await saveCheckpoint(projectId);
   return {artifact,checkpoint:saved,artifactHash:digest(canonical(artifact))};
-  }finally{artifactBuilds.delete(projectId);}
+  }finally{artifactBuilds.delete(projectId);releaseSourceBuildShutdown();}
 }
-export async function inspectArtifact(target: {projectId: string}|{checkpointId:string}): Promise<{artifact:ArtifactManifest;checkpointId:string;artifactHash:string}> {
-  const id = "checkpointId" in target ? target.checkpointId : (await registered(target.projectId)).checkpointId;
-  if (!id) throw new Error("Project has no checkpoint");
-  const saved=await checkpoint(id);
+/** Verify immutable artifact metadata for listings without reading every asset.
+ * Use inspectArtifact to verify all bytes before opening or exporting a version.
+ */
+export async function artifactDetails({ checkpointId }: { checkpointId: string }): Promise<{artifact:ArtifactManifest;checkpointId:string;artifactHash:string}> {
+  const saved=await checkpoint(checkpointId);
   const entry=saved.files.find(f=>f.path==="outputs/artifact.json");
   if (!entry) throw new Error("Checkpoint has no viewer artifact");
   const artifact=artifactManifestSchema.parse(JSON.parse((await verifiedBlob(path.join(archiveDirectory(),"blobs/sha256"),entry)).toString()));
@@ -1199,11 +1241,18 @@ export async function inspectArtifact(target: {projectId: string}|{checkpointId:
     if(seen.has(file.path)) throw new Error("Duplicate artifact path"); seen.add(file.path);
     const match=checkpointFiles.get(file.path);
     if(!match || match.sha256!==file.sha256 || match.size!==file.size) throw new Error("Artifact checkpoint integrity failure");
-    await verifiedBlob(path.join(archiveDirectory(),"blobs/sha256"),match);
   }
   if(!artifact.files.some(f=>f.path===artifact.plan)) throw new Error("Artifact plan missing");
   for(const output of artifact.outputs) if(!artifact.files.some(f=>f.path===output.path)) throw new Error("Artifact output missing");
-  return {artifact,checkpointId:id,artifactHash:digest(canonical(artifact))};
+  return {artifact,checkpointId,artifactHash:digest(canonical(artifact))};
+}
+export async function inspectArtifact(target: {projectId: string}|{checkpointId:string}): Promise<{artifact:ArtifactManifest;checkpointId:string;artifactHash:string}> {
+  const id = "checkpointId" in target ? target.checkpointId : (await registered(target.projectId)).checkpointId;
+  if (!id) throw new Error("Project has no checkpoint");
+  const details = await artifactDetails({ checkpointId: id });
+  for (const file of [...details.artifact.sources, ...details.artifact.files])
+    await verifiedBlob(path.join(archiveDirectory(),"blobs/sha256"),file);
+  return details;
 }
 const artifactManifests=new Map<string,Promise<Map<string,ArtifactManifest["files"][number]>>>();
 export async function artifactFile(checkpointId:string, relative:string):Promise<Buffer> {

@@ -22,6 +22,8 @@ function command(args: string[], cwd = root): Buffer {
   return result.stdout;
 }
 const commit = command(["git", "rev-parse", "--verify", "HEAD^{commit}"]).toString().trim();
+const taggedCommit = command(["git", "rev-parse", "--verify", `refs/tags/${tag}^{commit}`]).toString().trim();
+if (taggedCommit !== commit) throw new Error(`${tag} must point to HEAD before preparing its release`);
 const source = (path: string) => command(["git", "show", `${commit}:${path}`]);
 const catalog = JSON.parse(source("package.json").toString()).workspaces.catalog as Record<string, string>;
 const license = source("LICENSE");
@@ -53,7 +55,6 @@ function manifest(name: string, bytes: Buffer): Buffer {
     }
   }
   if (name === "viewer") {
-    if (value.version !== version) throw new Error("Viewer version differs from release; its manifest cannot be rewritten");
     return bytes;
   }
   value.version = version;
