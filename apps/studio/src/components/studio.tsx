@@ -11,6 +11,7 @@ import { useHotkey } from "@arch/ui/hooks/use-hotkey";
 import { useIsMobile } from "@arch/ui/hooks/use-mobile";
 import { UiLabelsProvider } from "@arch/ui/lib/ui-labels";
 import { useTheme } from "@arch/ui/lib/theme";
+import { cn } from "@arch/ui/lib/utils";
 import { ViewerSurface, ViewerLocaleProvider, type ViewerInstance } from "@arch/viewer-ui";
 import { useForm } from "@tanstack/react-form";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -21,10 +22,12 @@ import type { StudioCatalog, StudioProjectSummary, StudioVersion } from "../lib/
 import { type Locale, studioText } from "../lib/messages";
 import { useStudioLocale } from "../lib/locale";
 import { SourceSetup } from "./source-setup";
+import { IntakeOverview, WorkPlan } from "./intake-overview";
+import { ProjectFiles, projectFiles } from "./project-files";
 import { DesktopUpdates } from "./desktop-updates";
 
 type Copy = typeof studioText.en;
-type Section = "preview" | "source" | "versions" | "outputs" | "notes" | "files" | "handoff";
+type Section = "preview" | "intake" | "work" | "files" | "source" | "versions" | "outputs" | "notes" | "handoff";
 export function Studio() {
   const {locale, selectLocale} = useStudioLocale();
   const t = studioText[locale];
@@ -124,31 +127,66 @@ function Workspace({clientId, catalog: data, t, locale, changeLocale, header, se
   </div>;
   return <><div className="studio-shell"><ProjectLayout sidebar={sidebar} sidebarOpen={sidebarOpen} isMobile={isMobile} mobileOpen={mobileOpen} onMobileOpenChange={setMobileOpen} labels={{skipToContent: t.skipToContent, sidebar: t.sidebar, mobileTitle: t.mobileTitle, mobileDescription: t.mobileDescription}}>{error ? <ProjectPage title={t.studio} navigation={navigation}><div className="m-auto grid gap-3"><p role="alert">{t.error}</p><Button onClick={retry}>{t.retry}</Button></div></ProjectPage> : project ? <Project key={project.id} project={project} t={t} navigation={navigation} section={section} setSection={setSection} /> : <ProjectPage title={t.studio} navigation={navigation}><div className="m-auto grid max-w-sm gap-4 p-6 text-center text-ui"><p>{pending ? t.loading : clientId ? t.noProjects : t.noClients}</p><Button disabled={pending} onClick={() => clientId ? openNewProject() : newClient()}>{clientId ? t.newProject : t.newClient}</Button><Button variant="outline" onClick={() => setImportOpen(true)}>{t.restore}</Button></div></ProjectPage>}</ProjectLayout></div><Dialog open={newProjectOpen} onOpenChange={setNewProjectOpen}><DialogContent><DialogHeader><DialogTitle>{t.newProject}</DialogTitle></DialogHeader><form autoComplete="off" className="grid gap-4" onSubmit={event => {event.preventDefault(); void projectForm.handleSubmit();}}><projectForm.Field name="name">{field => <Field className="gap-2"><FieldLabel htmlFor="studio-project-name" className="text-ui font-normal">{t.name}</FieldLabel><Input id="studio-project-name" name={field.name} value={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.value)} autoComplete="off" required disabled={create.isPending} /></Field>}</projectForm.Field>{create.error && <p role="alert">{create.error.message}</p>}<Button type="submit" disabled={create.isPending}>{t.create}</Button></form></DialogContent></Dialog><Dialog open={importOpen} onOpenChange={setImportOpen}><DialogContent><DialogHeader><DialogTitle>{t.restore}</DialogTitle></DialogHeader><Handoff t={t} /></DialogContent></Dialog></>;
 }
+const primaryViews = ["preview", "intake", "work", "files"] as const;
+const toolSections = ["outputs", "notes", "versions", "source", "handoff"] as const;
+/** Primary project navigation. The header copy shows on wide screens, the panel copy on narrow ones. */
+function ProjectViews({view, setSection, hasModel, counts, t, className}: {view: Section; setSection: (section: Section) => void; hasModel: boolean; counts: {work: number; files: number}; t: Copy; className?: string}) {
+  const labels = {preview: t.tabModel, intake: t.tabOverview, work: t.intakePieces, files: t.files};
+  return <nav aria-label={t.projectViews} className={cn("flex items-center gap-0.5", className)}>{primaryViews.map(value => {
+    const count = value === "work" ? counts.work : value === "files" ? counts.files : 0;
+    return <button type="button" key={value} data-studio-view={value} aria-current={view === value ? "page" : undefined} disabled={value === "preview" && !hasModel} title={value === "preview" && !hasModel ? t.noModel : undefined} onClick={() => setSection(value)} className="inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-2.5 text-ui font-medium whitespace-nowrap text-muted-foreground outline-none transition-colors duration-150 hover:bg-foreground/7 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/50 aria-[current=page]:bg-foreground/11 aria-[current=page]:text-foreground max-lg:h-9 max-lg:flex-1 max-lg:px-1.5">{labels[value]}{!!count && <span aria-hidden="true" className="text-xs tabular-nums text-muted-foreground">{count}</span>}</button>;
+  })}</nav>;
+}
+function ScrollPage({children}: {children: ReactNode}) {
+  return <div className="min-h-0 flex-1 overflow-y-auto"><div className="mx-auto grid w-full max-w-3xl content-start gap-8 px-6 py-8 text-ui max-md:px-4 max-md:py-6">{children}</div></div>;
+}
 function Project({project, t, navigation, section, setSection}: {project: StudioProjectSummary; t: Copy; navigation: ReactNode; section: Section; setSection: (section: Section) => void}) {
   const queryClient = useQueryClient();
   const details = useQuery({queryKey: ["studio-project", project.id], queryFn: () => projectDetails({data: {projectId: project.id}}), refetchInterval: 5000});
   const [versionId, setVersionId] = useState<string>();
   if (!versionId && details.data?.versions[0]) setVersionId(details.data.versions[0].id);
   const [confirmBuild, setConfirmBuild] = useState(false);
+  const [fileKey, setFileKey] = useState<string>();
   const version = details.data?.versions.find(item => item.id === versionId) ?? details.data?.versions[0];
   const source = details.data?.source;
+  const intake = details.data?.intake ?? null;
+  const intakeError = details.data?.intakeError ?? null;
+  const assumptions = source?.manifest.assumptions ?? [];
   const build = useMutation({mutationFn: () => buildVersion({data: {sourceId: source!.manifest.id, projectId: project.id, authorizeSourceExecution: true}}), onSuccess: async value => {setVersionId(value.versionId); setSection("preview"); setConfirmBuild(false); await queryClient.invalidateQueries();}});
-  const sections: Section[] = ["preview", "source", "versions", "outputs", "notes", "files", "handoff"];
   const versions = details.data?.versions ?? [];
   const versionLabel = (item: StudioVersion) => `${t.version} ${versions.length - versions.findIndex(version => version.id === item.id)} · ${item.checkpointId.slice(0,7)}`;
+  // Without a built model the default project view falls back to the overview.
+  const view: Section = section === "preview" && !version?.hasArtifact ? "intake" : section;
+  // File labels come from the plan saved with the selected version, never the live plan.
+  const files = projectFiles(version?.intake ?? null, version?.references ?? [], t);
+  const allFiles = [...files.documents, ...files.others];
+  const filesSource = {versionLabel: version && versionLabel(version), filesError: version?.intakeError ?? null};
+  const openFile = (key: string) => {setFileKey(key); setSection("files");};
+  const views = (className: string) => <ProjectViews view={view} setSection={setSection} hasModel={!!version?.hasArtifact} counts={{work: intake?.pieces.length ?? 0, files: allFiles.length}} t={t} className={className} />;
   const actions = <>
+    {views("mr-1 max-lg:hidden")}
     {version && <DropdownMenu><DropdownMenuTrigger aria-label={`${t.versions}: ${versionLabel(version)}`} data-studio-version={version.id} className="flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground outline-none hover:bg-foreground/7 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/50 max-md:h-11"><span>{versionLabel(version)}</span><ChevronDownIcon className="size-3.5" /></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-64"><DropdownMenuRadioGroup value={version.id} onValueChange={value => setVersionId(value as string)}>{versions.map(item => <DropdownMenuRadioItem closeOnClick key={item.id} value={item.id} className="studio-choice py-2"><span className="grid min-w-0 gap-0.5"><span>{versionLabel(item)}<span className="ml-2 text-xs font-normal text-muted-foreground">{item.hasArtifact ? t.ready : t.draft}</span></span><span className="font-mono text-xs font-normal text-muted-foreground">{item.checkpointId.slice(0,12)}</span></span></DropdownMenuRadioItem>)}</DropdownMenuRadioGroup></DropdownMenuContent></DropdownMenu>}
     <Button size="sm" className="mx-1 max-md:size-9 max-md:p-0" disabled={!source || build.isPending} onClick={() => setConfirmBuild(true)}><HammerIcon /><span className="max-md:sr-only">{build.isPending ? t.building : t.buildAction}</span></Button>
-    <DropdownMenu><DropdownMenuTrigger className={projectIconButton} aria-label={t.projectSections} title={t.projectSections}><MoreHorizontalIcon /></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-60"><DropdownMenuRadioGroup value={section} onValueChange={value => setSection(value as Section)}>{sections.map(value => <DropdownMenuRadioItem closeOnClick key={value} value={value} className="studio-choice">{value === "preview" ? t.viewProject : t[value]}</DropdownMenuRadioItem>)}</DropdownMenuRadioGroup><DropdownMenuSeparator /><DropdownMenuItem render={<a href="https://arch.enstate-labs.workers.dev/staff" target="_blank" rel="noreferrer" />}><ArrowUpRightIcon />{t.hosted}</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+    <DropdownMenu><DropdownMenuTrigger className={projectIconButton} aria-label={t.projectSections} title={t.projectSections}><MoreHorizontalIcon /></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-60"><DropdownMenuRadioGroup value={section} onValueChange={value => setSection(value as Section)}>{toolSections.map(value => <DropdownMenuRadioItem closeOnClick key={value} value={value} className="studio-choice">{t[value]}</DropdownMenuRadioItem>)}</DropdownMenuRadioGroup><DropdownMenuSeparator /><DropdownMenuItem render={<a href="https://arch.enstate-labs.workers.dev/staff" target="_blank" rel="noreferrer" />}><ArrowUpRightIcon />{t.hosted}</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
   </>;
-  return <><ProjectPage title={project.name} navigation={navigation} actions={actions}>{details.isError ? <div className="m-auto grid gap-3"><p role="alert">{details.error.message}</p><Button onClick={() => {void details.refetch();}}>{t.retry}</Button></div> : section === "preview" && version?.hasArtifact ? <VersionPreview key={version.id} version={version} t={t} /> : <div className="min-h-0 flex-1 overflow-y-auto"><div className="mx-auto grid w-full max-w-3xl gap-6 px-6 py-8 text-ui"><header className="flex items-center gap-3"><h2 className="flex-1 text-lg font-medium">{section === "preview" ? t.source : t[section]}</h2>{section !== "preview" && <Button size="sm" variant="ghost" onClick={() => setSection("preview")}>{t.viewProject}</Button>}</header>{details.isPending ? <p role="status">{t.loading}</p> : <>
-    {(section === "source" || section === "preview") && <div className="grid gap-4"><p className="text-muted-foreground">{source?.directory ?? t.noSources}</p>{section === "preview" && <p className="text-muted-foreground">{t.noArtifact}</p>}<SourceSetup projectId={project.id} attached={!!source} t={t} /></div>}
-    {section === "versions" && <div className="grid gap-3">{!details.data?.versions.length && <p>{t.noVersions}</p>}{details.data?.versions.map(item => <button type="button" key={item.id} onClick={() => {setVersionId(item.id); setSection("preview");}} className="rounded-xl border p-4 text-left hover:bg-accent"><span className="block text-sm font-medium">{versionLabel(item)}</span><span className="text-xs text-muted-foreground">{item.hasArtifact ? t.ready : t.sourceCheckpoint}</span></button>)}</div>}
-    {section === "outputs" && (version ? <VersionMedia version={version} t={t} /> : <p>{t.noVersions}</p>)}
-    {section === "files" && <div className="grid gap-3"><p className="text-muted-foreground">{t.filesHint}</p>{!version?.references.length && <p>{t.noFiles}</p>}{version?.references.map(file => <a key={file.path} href={file.url} target="_blank" rel="noreferrer" className="rounded-lg border p-3 underline underline-offset-4">{file.label}</a>)}</div>}
-    {section === "notes" && (version ? <Notes key={version.id} projectId={project.id} version={version} notes={details.data?.notes ?? []} t={t} /> : <p>{t.noVersions}</p>)}
-    {section === "handoff" && <Handoff key={version?.id} checkpointId={version?.checkpointId} t={t} />}
-    </>}</div></div>}</ProjectPage><Dialog open={confirmBuild} onOpenChange={value => {if (!build.isPending) setConfirmBuild(value);}}><DialogContent><DialogHeader><DialogTitle>{t.build}</DialogTitle><DialogDescription>{t.executionConfirmation}</DialogDescription></DialogHeader><p className="break-all font-mono text-xs">{source?.directory}</p>{build.error && <p role="alert" className="text-destructive">{build.error.message}</p>}<div className="flex justify-end gap-2"><Button variant="ghost" disabled={build.isPending} onClick={() => setConfirmBuild(false)}>{t.cancel}</Button><Button disabled={!source || build.isPending} onClick={() => build.mutate()}>{build.isPending ? t.building : t.authorizeBuild}</Button></div></DialogContent></Dialog></>;
+  const tool = (content: ReactNode) => <ScrollPage><h2 className="text-lg font-medium">{t[view as typeof toolSections[number]]}</h2>{content}</ScrollPage>;
+  const content = details.isError ? <div className="m-auto grid gap-3"><p role="alert">{details.error.message}</p><Button onClick={() => {void details.refetch();}}>{t.retry}</Button></div>
+    : view === "preview" && version ? <VersionPreview key={version.id} version={version} t={t} />
+    : details.isPending ? <p role="status" className="m-auto text-ui text-muted-foreground">{t.loading}</p>
+    : view === "intake" ? <ScrollPage>
+      <h2 className="sr-only">{t.intake}</h2>
+      {!source && <header className="grid gap-1"><h3 className="text-lg font-medium">{t.connectSource}</h3><p className="text-muted-foreground">{t.noSources}</p></header>}
+      <SourceSetup projectId={project.id} attached={!!source} confirmationOnly={!!source} t={t} />
+      {source && <IntakeOverview intake={intake} error={intakeError} assumptions={assumptions} files={allFiles} {...filesSource} openFile={openFile} openFiles={() => setSection("files")} openWork={() => setSection("work")} t={t} />}
+    </ScrollPage>
+    : view === "work" ? <ScrollPage>{source ? <WorkPlan intake={intake} error={intakeError} assumptions={assumptions} files={allFiles} openFile={openFile} t={t} /> : <p className="text-muted-foreground">{t.noSources}</p>}</ScrollPage>
+    : view === "files" ? <ProjectFiles documents={files.documents} others={files.others} {...filesSource} selected={fileKey} select={setFileKey} t={t} />
+    : view === "source" ? tool(<div className="grid min-w-0 gap-6">{source ? <p className="break-all rounded-lg bg-foreground/4 px-3 py-2 font-mono text-xs text-muted-foreground">{source.directory}</p> : <p className="text-muted-foreground">{t.noSources}</p>}<SourceSetup projectId={project.id} attached={!!source} t={t} /></div>)
+    : view === "versions" ? tool(<div className="grid gap-1">{!versions.length && <p className="text-muted-foreground">{t.noVersions}</p>}{versions.map(item => <button type="button" key={item.id} onClick={() => {setVersionId(item.id); setSection("preview");}} className="flex items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-foreground/5"><span className="flex-1 text-ui font-medium">{versionLabel(item)}</span><span className="text-xs text-muted-foreground">{item.hasArtifact ? t.ready : t.sourceCheckpoint}</span></button>)}</div>)
+    : view === "outputs" ? tool(version ? <VersionMedia version={version} t={t} /> : <p className="text-muted-foreground">{t.noVersions}</p>)
+    : view === "notes" ? tool(version ? <Notes key={version.id} projectId={project.id} version={version} notes={details.data?.notes ?? []} t={t} /> : <p className="text-muted-foreground">{t.noVersions}</p>)
+    : tool(<Handoff key={version?.id} checkpointId={version?.checkpointId} t={t} />);
+  return <><ProjectPage title={project.name} navigation={navigation} actions={actions}>{views("shrink-0 border-b px-2 py-1.5 lg:hidden")}{content}</ProjectPage><Dialog open={confirmBuild} onOpenChange={value => {if (!build.isPending) setConfirmBuild(value);}}><DialogContent><DialogHeader><DialogTitle>{t.build}</DialogTitle><DialogDescription>{t.executionConfirmation}</DialogDescription></DialogHeader><p className="break-all font-mono text-xs">{source?.directory}</p>{build.error && <p role="alert" className="text-destructive">{build.error.message}</p>}<div className="flex justify-end gap-2"><Button variant="ghost" disabled={build.isPending} onClick={() => setConfirmBuild(false)}>{t.cancel}</Button><Button disabled={!source || build.isPending} onClick={() => build.mutate()}>{build.isPending ? t.building : t.authorizeBuild}</Button></div></DialogContent></Dialog></>;
 }
 function VersionPreview({version, t}: {version: StudioVersion; t: Copy}) {
   const preview = useQuery({queryKey: ["studio-preview", version.checkpointId], queryFn: () => openVersion({data: {checkpointId: version.checkpointId}}), staleTime: 60_000, retry: false});
