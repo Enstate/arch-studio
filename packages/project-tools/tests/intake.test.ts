@@ -48,8 +48,9 @@ test("ordinary references initialize a portable unrendered source and reject uns
     const instructions = await fs.readFile(path.join(options.directory, "BUILDERS.md"), "utf8");
     expect(instructions).toContain("unconfirmed");
     expect(instructions).toContain("source/intake.json");
+    expect(instructions).toContain("fixture is an optional boolean");
     expect(await fs.readFile(path.join(options.directory, "AGENTS.md"), "utf8")).toContain("source/intake.json");
-    expect(instructions).not.toMatch(/dennis|fixture|sample.house/i);
+    expect(instructions).not.toMatch(/dennis|sample.house/i);
     await expect(inspectArtifact({ projectId: options.id })).rejects.toThrow();
     await expect(buildProjectArtifact(options.id, { authorizeSourceExecution: true })).rejects.toThrow("Project needs authoring: inspect reference/ and BUILDERS.md");
     expect(await fs.readdir(path.join(options.directory, "outputs/artifact"))).toEqual([]);

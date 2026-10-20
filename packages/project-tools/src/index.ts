@@ -1151,7 +1151,7 @@ async function validatedArtifactPlan(directory:string, files:ArtifactManifest["f
     walls:z.array(z.object({...named,a:pair,b:pair,height:z.number().optional(),thickness:z.number().optional()}).passthrough()),
     openings:z.array(z.object({...named,wall:z.string(),type:z.enum(["door","double-door","sliding-door","window","opening","garage-door"]),offset:z.number(),width:z.number(),height:z.number().optional(),sill:z.number().optional()}).passthrough()).optional(),
     rooms:z.array(z.object({...named,name:z.string(),polygon:z.array(pair),areaLabel:z.number().optional()}).passthrough()).optional(),
-    furniture:z.array(z.object({...named,type:z.string(),position:pair,size:z.tuple([z.number(),z.number(),z.number()]).optional(),model:z.string().optional()}).passthrough()).optional(),
+    furniture:z.array(z.object({...named,type:z.string(),position:pair,size:z.tuple([z.number(),z.number(),z.number()]).optional(),model:z.string().optional(),fixture:z.boolean().optional()}).passthrough()).optional(),
     cameras:z.array(z.object({...named,position:pair,lookAt:pair,height:z.number().optional(),lookAtHeight:z.number().optional(),fov:z.number().optional(),photo:z.string().optional()}).passthrough()).optional(),
     materials:z.record(z.string(),material).optional(),environment:z.string().optional(),
     source:z.object({image:z.string(),pxPerMeter:z.number(),overall:pair.optional()}).passthrough().optional()

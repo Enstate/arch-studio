@@ -7,6 +7,7 @@ import { MaterialLibrary } from './build/materials.ts';
 import { buildHouse, CUT_HEIGHT, NO_CUT, type BuiltHouse } from './build/house.ts';
 import { Stage, sunElevation } from './viewer/stage.ts';
 import { Walker } from './viewer/walk.ts';
+import { openingDoors, poseDoor, type Door } from './viewer/doors.ts';
 import { PlanOverlay } from './viewer/overlay.ts';
 import { Library, NON_FLOOR_MAX } from './viewer/library.ts';
 import { capabilities } from './capabilities.ts';
@@ -142,7 +143,7 @@ export interface Viewer {
   getView(): ViewerView;
   /** Switches to the view's mode and flies the camera there. */
   setView(view: ViewerView): void;
-  /** Opens or closes a door by opening ID; without `open` it toggles. Doors start open. */
+  /** Opens or closes a door by opening ID; without `open` it toggles from its authored pose. */
   toggleDoor(id: string, open?: boolean): void;
   doors(): { id: string; open: boolean }[];
   getState(): ViewerState;
@@ -313,30 +314,8 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
 
   // ---------- doors ----------
 
-  type Door = { id: string; parts: THREE.Object3D[]; t: number; target: number; moving: boolean; closedBox: THREE.Box3 };
-  const doors = new Map<string, Door>();
-  const poseDoor = (d: Door, e: number) => {
-    for (const p of d.parts) {
-      const v = p.userData.closed + (p.userData.open - p.userData.closed) * e;
-      if (p.userData.kind === 'door-slide') p.position.x = v;
-      else p.rotation.y = v;
-    }
-  };
-  house.root.updateMatrixWorld(true);
-  house.root.traverse((o) => {
-    if (o.userData.kind !== 'opening') return;
-    const parts: THREE.Object3D[] = [];
-    o.traverse((c) => c.userData.dynamic && parts.push(c));
-    if (!parts.length) return;
-    const d: Door = { id: o.userData.id, parts, t: 1, target: 1, moving: false, closedBox: new THREE.Box3() };
-    poseDoor(d, 0);
-    o.updateMatrixWorld(true);
-    for (const p of parts) d.closedBox.expandByObject(p);
-    d.closedBox.expandByScalar(0.02);
-    poseDoor(d, 1);
-    o.updateMatrixWorld(true);
-    doors.set(d.id, d);
-  });
+  const doors = openingDoors(house.root);
+  setState({ closedDoors: [...doors.values()].filter(door => door.target === 0).map(door => door.id) });
   const doorBoxes: THREE.Box3[] = [];
   walker.blockers = () => {
     doorBoxes.length = 0;
