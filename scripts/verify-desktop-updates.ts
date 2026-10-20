@@ -127,7 +127,7 @@ try {
   assert.equal((await page.evaluate(() => window.archDesktop!.checkForUpdate())).status, 'available');
   await page.locator('[data-desktop-update="available"]').waitFor();
   await mkdir(join(root, 'evidence/desktop-updates'), { recursive: true });
-  await page.screenshot({ path: join(root, 'evidence/desktop-updates/available.png'), scale: 'device' });
+  await page.screenshot({ path: join(root, 'evidence/desktop-updates/available.png'), scale: 'device', animations: 'disabled' });
   await page.getByRole('button', { name: /^(Download update|Update herunterladen)$/ }).click();
   await page.locator('[data-desktop-update="downloaded"]').waitFor({ timeout: 90_000 });
   assert(feedRequests > 0 && payloadRequests > 0, 'Real updater must fetch the feed and signed ZIP');
@@ -137,7 +137,7 @@ try {
   await page.getByRole('dialog').getByRole('button', { name: /^(Cancel|Abbrechen)$/ }).click();
   assert.equal((await page.evaluate(() => window.archDesktop!.getUpdateState())).status, 'downloaded');
   await restart.click();
-  await page.screenshot({ path: join(root, 'evidence/desktop-updates/restart-confirmation.png'), scale: 'device' });
+  await page.screenshot({ path: join(root, 'evidence/desktop-updates/restart-confirmation.png'), scale: 'device', animations: 'disabled' });
   const exited = new Promise<void>(resolve => electron!.once('close', () => resolve()));
   await page.getByRole('dialog').getByRole('button', { name: /^(Restart and install|Neu starten und installieren)$/ }).click();
   let exitTimer: ReturnType<typeof setTimeout>;
@@ -157,7 +157,7 @@ try {
   assert.equal((await restored.evaluate(() => window.archDesktop!.getUpdateState())).currentVersion, '0.0.2');
   assert.deepEqual(await readFile(storeSource), originalSource);
   newOrigin = new URL(restored.url()).origin;
-  await restored.screenshot({ path: join(root, 'evidence/desktop-updates/restarted.png'), scale: 'device' });
+  await restored.screenshot({ path: join(root, 'evidence/desktop-updates/restarted.png'), scale: 'device', animations: 'disabled' });
   await assert.rejects(fetch(oldOrigin));
   completed = true;
   console.log(JSON.stringify({ status: 'passed', syntheticVersions: ['0.0.1', '0.0.2'], realSignedDownload: true, nativeReplacementAndRelaunch: true, projectAndCheckpointPreserved: true, untrustedWindowRefused: true }));
