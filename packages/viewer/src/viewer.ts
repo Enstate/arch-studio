@@ -248,7 +248,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   orbit.maxDistance = 80;
   // Left-drag outside the house pans across the ground, slower than the default.
   orbit.screenSpacePanning = false;
-  orbit.panSpeed = 0.5;
+  orbit.panSpeed = 0.65;
   const planControls = new OrbitControls(planCam, canvas);
   planControls.enableRotate = false;
   planControls.screenSpacePanning = true;
@@ -819,7 +819,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   canvas.addEventListener('pointermove', (e) => {
     if (e.buttons || walker.locked || onPick || state.mode === 'plan' || tourCtl.active || e.timeStamp - hoverAt < 60) return;
     hoverAt = e.timeStamp;
-    canvas.style.cursor = doorAt(e.clientX, e.clientY)
+    canvas.style.cursor = doorAt(e.clientX, e.clientY, walker.locked, shell)
       ? 'pointer'
       : state.mode === 'dollhouse' && e.pointerType === 'mouse' && outside(e.clientX, e.clientY)
         ? 'grab'
@@ -827,9 +827,12 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   }, { signal });
   // Empty space or only the ground disc under the pointer.
   function outside(clientX: number, clientY: number) {
-    const hit = aim(clientX, clientY, false);
+    const hit = aim(clientX, clientY, false, Infinity, shell);
     return !hit || hit.object === stage.ground;
   }
+  // Floors, walls, openings and slab: enough to tell house from ground or find a door, and
+  // cheap to ray-test on hover. The merged furniture holds most triangles (about 9 ms a ray).
+  const shell = house.root.children.filter((o) => ['floor', 'wall', 'opening'].includes(o.userData.part) || o.userData.collide);
 
   const raycaster = new THREE.Raycaster();
   const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -843,7 +846,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   };
 
   /** What lies under the cursor, or under the crosshair while the pointer is locked. */
-  function aim(clientX: number, clientY: number, center: boolean, far = Infinity) {
+  function aim(clientX: number, clientY: number, center: boolean, far = Infinity, targets: THREE.Object3D[] = [house.root]) {
     const rect = canvas.getBoundingClientRect();
     const ndc = center
       ? new THREE.Vector2(0, 0)
@@ -852,15 +855,15 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     raycaster.far = far;
     const cut = house.clipPlane.constant + 0.01;
     const hit = raycaster
-      .intersectObject(house.root, true)
+      .intersectObjects(targets, true)
       .find((h) => h.point.y <= cut && (h.object as THREE.Mesh).isMesh && isShown(h.object));
     raycaster.far = Infinity;
     return hit;
   }
 
-  function doorAt(clientX: number, clientY: number, center = walker.locked) {
+  function doorAt(clientX: number, clientY: number, center = walker.locked, targets?: THREE.Object3D[]) {
     // The crosshair reaches only doors within arm's length.
-    let o: THREE.Object3D | null = aim(clientX, clientY, center, center ? DOOR_REACH : Infinity)?.object ?? null;
+    let o: THREE.Object3D | null = aim(clientX, clientY, center, center ? DOOR_REACH : Infinity, targets)?.object ?? null;
     for (; o && !o.userData.dynamic; o = o.parent) if (o === house.root) return null;
     for (; o; o = o.parent) if (o.userData.kind === 'opening') return doors.get(o.userData.id) ?? null;
     return null;
