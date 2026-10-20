@@ -20,11 +20,14 @@ import {
   MaximizeIcon,
   MinimizeIcon,
   MoonIcon,
+  MoveIcon,
   PauseIcon,
   PlayIcon,
+  Rotate3dIcon,
   ScissorsIcon,
   SunIcon,
   TagIcon,
+  ZoomInIcon,
 } from "lucide-react";
 import { type ReactElement, type ReactNode, useId, useMemo, useRef, useState } from "react";
 
@@ -545,6 +548,41 @@ function writeFlag(key: string) {
   }
 }
 
+/** Highlight the physical mouse button, alongside the action's rotate or pan symbol. */
+function MouseButtonIcon({ button }: { button: "left" | "right" }) {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="size-4 shrink-0">
+      <path d={button === "left" ? "M12 3v7H6V9a6 6 0 0 1 6-6Z" : "M12 3v7h6V9a6 6 0 0 0-6-6Z"} fill="currentColor" stroke="none" />
+      <rect x="5" y="2" width="14" height="20" rx="7" />
+      <path d="M5 10h14M12 2v8" />
+    </svg>
+  );
+}
+
+/** Mouse bindings stay visible; the canvas cursor uses the same rotate and pan symbols. */
+export function NavigationHint({ state }: { state: ViewerState }) {
+  const hint = useT().viewer.navigation;
+  if (state.mode === "walk" || state.tour.status === "playing" || state.tour.status === "paused") return null;
+  const plan = state.mode === "plan";
+  return (
+    <fieldset data-viewer-navigation aria-label={hint.heading} className="pointer-events-auto flex min-w-0 items-center gap-3 rounded-xl border-0 bg-popover px-3 py-2 text-xs text-muted-foreground shadow-popover pointer-coarse:hidden">
+      <span className="inline-flex items-center gap-1.5" title={plan ? hint.leftPan : hint.leftRotate}>
+        <MouseButtonIcon button="left" />
+        {plan ? <MoveIcon aria-hidden="true" className="size-3.5" /> : <Rotate3dIcon aria-hidden="true" className="size-3.5" />}
+        <span>{plan ? hint.pan : hint.rotate}</span>
+        <span className="sr-only">{plan ? hint.leftPan : hint.leftRotate}</span>
+      </span>
+      <span className="inline-flex items-center gap-1.5" title={plan ? hint.rightPan : hint.panAlternative}>
+        <MouseButtonIcon button="right" /><MoveIcon aria-hidden="true" className="size-3.5" />
+        <span>{hint.pan}</span>
+        {!plan && <span aria-hidden="true" className="inline-flex items-center gap-1 @max-lg:hidden">/ <Kbd>Shift</Kbd> + <MouseButtonIcon button="left" /></span>}
+        <span className="sr-only">{plan ? hint.rightPan : hint.panAlternative}</span>
+      </span>
+      <span className="inline-flex items-center gap-1.5 @max-md:hidden"><ZoomInIcon aria-hidden="true" className="size-3.5" />{hint.zoom}</span>
+    </fieldset>
+  );
+}
+
 /** One-time walk help, shown the first time someone enters walk mode. */
 export function WalkHint({ state }: { state: ViewerState }) {
   const [seen, setSeen] = useState(() => readFlag(HINT_KEY));
@@ -581,7 +619,7 @@ function WalkHintCard({ onDismiss }: { onDismiss: () => void }) {
               <Kbd key={key}>{key}</Kbd>
             ))}
           </span>
-          {hint.move} · {hint.look} ·<Kbd>Esc</Kbd>
+          {hint.move} · <Kbd>Space</Kbd>{hint.jump} · {hint.look} ·<Kbd>Esc</Kbd>
           {hint.release}
         </>
       )}

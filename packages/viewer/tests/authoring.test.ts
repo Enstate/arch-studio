@@ -32,12 +32,13 @@ function plan(): Plan {
 }
 
 // A self-contained custom GLB, decoded by the same GLTFLoader as project assets.
-function modelUrl() {
+function modelUrl(material?: Record<string, unknown>) {
   const positions = new THREE.BoxGeometry(1, 1, 1).toNonIndexed().attributes.position.array;
   const binary = Buffer.from(positions.buffer, positions.byteOffset, positions.byteLength);
   const json = JSON.stringify({
     asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0] }], nodes: [{ mesh: 0 }],
-    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: material ? 0 : undefined }] }],
+    ...(material ? { materials: [material] } : {}),
     buffers: [{ byteLength: binary.length }], bufferViews: [{ buffer: 0, byteLength: binary.length }],
     accessors: [{ bufferView: 0, componentType: 5126, count: positions.length / 3, type: 'VEC3', min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] }],
   });
@@ -150,5 +151,20 @@ test.each([0, 45])('sliding fixed panel blocks walking on a %s degree wall with 
         expect(!!octree.capsuleIntersect(at(1.15, 0))).toBe(false);
       }
     }
+  } finally { house.dispose(); lib.dispose(); }
+});
+
+test.each(['OPAQUE', 'MASK', 'BLEND'] as const)('loaded %s material has appropriate shadow casting', async alphaMode => {
+  const p = plan();
+  p.furniture = [{ id: 'pane', type: 'box', position: [3, 2], model: './pane.glb' }];
+  const lib = new MaterialLibrary(p, () => undefined);
+  const house = await buildHouse(p, lib, {
+    resolveUrl: () => modelUrl({ alphaMode, alphaCutoff: 0.5, pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 0.2] } }),
+  });
+  try {
+    const meshes: THREE.Mesh[] = [];
+    house.looseFurniture.traverse(object => { if ((object as THREE.Mesh).isMesh) meshes.push(object as THREE.Mesh); });
+    expect(meshes.length).toBeGreaterThan(0);
+    for (const mesh of meshes) expect(mesh.castShadow).toBe(alphaMode !== 'BLEND');
   } finally { house.dispose(); lib.dispose(); }
 });

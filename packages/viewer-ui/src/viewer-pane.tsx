@@ -6,7 +6,7 @@ import { type ReactNode, useCallback, useId, useMemo, useRef, useState } from "r
 import { useT } from "./locale";
 
 import type { ViewerProject } from "./types";
-import { ControlBar, focusToggle, RoomLabel, readStoredFlag, storeFlag, ToolsCard, ViewerHotkeys, WalkHint } from "./viewer-controls";
+import { ControlBar, focusToggle, RoomLabel, readStoredFlag, storeFlag, ToolsCard, ViewerHotkeys, NavigationHint, WalkHint } from "./viewer-controls";
 import {
   posterFor,
   useFullscreen,
@@ -162,6 +162,7 @@ export function ViewerSurface({
       >
         {viewer && state && actions && (
           <>
+            <NavigationHint state={state} />
             <WalkHint state={state} />
             <div
               ref={listenForExpand}

@@ -113,3 +113,34 @@ test("reviewed sharpness runtime verifies an unchanged previous-runtime checkpoi
   const newer = await fixture({mutateArtifact: artifact => { artifact.runtimeHash = sharpRuntime; }});
   await expect(verifyArtifactManifest(newer.checkpoint, newer.artifactBytes, oldRuntime, newer.readBlob)).rejects.toThrow("runtime hash mismatch");
 });
+
+test("current viewer verifies a checkpoint saved before overview daylight tuning", async () => {
+  const { viewerRuntimeHash } = await import("../../project-tools/src/index.ts");
+  const currentRuntime = await viewerRuntimeHash();
+  const previousRuntime = "5df7b415cee927487dce7dea5e1efb743d1a75b5fda7088e853da2e892bdf4b7";
+  const saved = await fixture({ mutateArtifact: artifact => { artifact.runtimeHash = previousRuntime; } });
+  const original = JSON.stringify(saved.checkpoint);
+  const verified = await verifyArtifactManifest(saved.checkpoint, saved.artifactBytes, currentRuntime, saved.readBlob);
+  expect(verified.artifact.runtimeHash).toBe(previousRuntime);
+  expect(JSON.stringify(saved.checkpoint)).toBe(original);
+  const newer = await fixture({ mutateArtifact: artifact => { artifact.runtimeHash = currentRuntime; } });
+  await expect(verifyArtifactManifest(newer.checkpoint, newer.artifactBytes, previousRuntime, newer.readBlob)).rejects.toThrow("runtime hash mismatch");
+});
+
+
+test.each([
+  "4df83644b7926264bd8dc2585ed16d3cf9e2b93b362ce3b68f41712238d01fb4",
+  "d26ba79ff81a31651e7bc5ff3c9172999d85b98ecacaea7c655970ca5d0d245c",
+  "3854b01658e1aebb6f510c783fd5398fa1c2b9525ee1b96c16cc7d1389f03661",
+  "bcf2044d3a9ecdc1b91e204e49bccecc5bd20a0325b2bb198c0d1b20da3e925c",
+])("current viewer renders an unchanged checkpoint from reviewed runtime %s", async previousRuntime => {
+  const { viewerRuntimeHash } = await import("../../project-tools/src/index.ts");
+  const currentRuntime = await viewerRuntimeHash();
+  const saved = await fixture({ mutateArtifact: artifact => { artifact.runtimeHash = previousRuntime; } });
+  const original = JSON.stringify(saved.checkpoint);
+  const verified = await verifyArtifactManifest(saved.checkpoint, saved.artifactBytes, currentRuntime, saved.readBlob);
+  expect(verified.artifact.runtimeHash).toBe(previousRuntime);
+  expect(JSON.stringify(saved.checkpoint)).toBe(original);
+  const newer = await fixture({ mutateArtifact: artifact => { artifact.runtimeHash = currentRuntime; } });
+  await expect(verifyArtifactManifest(newer.checkpoint, newer.artifactBytes, previousRuntime, newer.readBlob)).rejects.toThrow("runtime hash mismatch");
+});

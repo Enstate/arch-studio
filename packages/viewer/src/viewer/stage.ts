@@ -529,17 +529,20 @@ export class Stage {
       this.scene.environmentIntensity = 0.6;
       this.renderer.toneMappingExposure = 1;
     } else {
+      const overview = this.background !== null;
       // Low sun is weaker as well as warmer, and fades out a moment before it touches the horizon.
-      this.sun.intensity = 4 * (0.45 + 0.55 * Math.min(1, Math.sin(THREE.MathUtils.degToRad(this.elevation)) * 2)) * sun;
+      // With the roof cut away, direct sun reaches every room. Use softer daylight in the overview
+      // so pale floors and fabrics retain their colour and shading instead of rolling into white.
+      this.sun.intensity = (overview ? 2.2 : 4) * (0.45 + 0.55 * Math.min(1, Math.sin(THREE.MathUtils.degToRad(this.elevation)) * 2)) * sun;
       // No bounce light is simulated: by day a white sky hemisphere over a near-neutral floor bounce and the
       // environment lift every shaded surface to a soft, bright base; GTAO darkens creases and contact.
       // The lawn in the HDRI already warms the bounce, so the hemisphere's ground stays almost grey.
       this.hemi.color.lerpColors(NIGHT_HEMI.sky, DAY_HEMI.sky, day);
       this.hemi.groundColor.lerpColors(NIGHT_HEMI.ground, DAY_HEMI.ground, day);
-      this.hemi.intensity = THREE.MathUtils.lerp(NIGHT_HEMI.intensity, DAY_HEMI.intensity, day);
-      this.scene.environmentIntensity = THREE.MathUtils.lerp(0.05, this.hdriLight ? 0.35 : 0.6, day);
+      this.hemi.intensity = THREE.MathUtils.lerp(NIGHT_HEMI.intensity, overview ? 1.25 : DAY_HEMI.intensity, day);
+      this.scene.environmentIntensity = THREE.MathUtils.lerp(0.05, (this.hdriLight ? 0.35 : 0.6) * (overview ? 0.7 : 1), day);
       // Interiors are exposed for the room, like interior photography; the overviews get sun everywhere.
-      this.renderer.toneMappingExposure = THREE.MathUtils.lerp(1.15, this.background ? 0.95 : 1.1, day);
+      this.renderer.toneMappingExposure = THREE.MathUtils.lerp(1.15, overview ? 0.85 : 1.1, day);
     }
     // The shadow-only ground ignores light intensity, so it would keep a set sun's shadow all night.
     (this.ground.material as THREE.Material).opacity = this.groundShadow * (this.flat ? 1 : sun);

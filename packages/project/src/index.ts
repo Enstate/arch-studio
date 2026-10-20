@@ -158,6 +158,68 @@ export type PreviewSession = { url: string; projectId: string };
 
 /** Older artifact runtimes each reviewed viewer renders. Plan, geometry, asset and runtime contracts are unchanged. */
 const rendersOlder: Record<string, string[]> = {
+  // Orbit drags recover and angled steps probe the current blocking contact. Saved artifact contracts are unchanged.
+  "1d0838bcb131e259ce7cbdbb67d4d3b075e76d9cd8c18384af697598f3c951ab": [
+    "4df83644b7926264bd8dc2585ed16d3cf9e2b93b362ce3b68f41712238d01fb4",
+    "d26ba79ff81a31651e7bc5ff3c9172999d85b98ecacaea7c655970ca5d0d245c",
+    "bcf2044d3a9ecdc1b91e204e49bccecc5bd20a0325b2bb198c0d1b20da3e925c",
+    "3854b01658e1aebb6f510c783fd5398fa1c2b9525ee1b96c16cc7d1389f03661",
+    "5df7b415cee927487dce7dea5e1efb743d1a75b5fda7088e853da2e892bdf4b7",
+    "de3c67b050403fefe07d3a9486fb3e8ce0c791a33d89f303936b00ca967b1c90",
+    "6104e28e993e9c1062fb035185c4457487e1aba344eb08e4036f2b917d7f6204",
+    "b877cd74cb32faf79999cca0a2a56115c0f8fad641898c008f06ec6af2ce2906",
+    "9bbdf58f9b2c183f69bdd3034dbd521ea11d632b42c0ce0b8069afec74e6710c",
+    "7e0436bc1b36dfca102c35f11b40a4be9a22d8c1fdbf0ea136cd06853b5445fd",
+    "9347181d703461bfd63873589a89afda5a89e3a8ede79d6cba4ff13e46e22199",
+  ],
+
+  // Room ceilings and the roof join both collision worlds; only Space yields to focused actions.
+  "4df83644b7926264bd8dc2585ed16d3cf9e2b93b362ce3b68f41712238d01fb4": [
+    "d26ba79ff81a31651e7bc5ff3c9172999d85b98ecacaea7c655970ca5d0d245c",
+    "bcf2044d3a9ecdc1b91e204e49bccecc5bd20a0325b2bb198c0d1b20da3e925c",
+    "3854b01658e1aebb6f510c783fd5398fa1c2b9525ee1b96c16cc7d1389f03661",
+    "5df7b415cee927487dce7dea5e1efb743d1a75b5fda7088e853da2e892bdf4b7",
+    "de3c67b050403fefe07d3a9486fb3e8ce0c791a33d89f303936b00ca967b1c90",
+    "6104e28e993e9c1062fb035185c4457487e1aba344eb08e4036f2b917d7f6204",
+    "b877cd74cb32faf79999cca0a2a56115c0f8fad641898c008f06ec6af2ce2906",
+    "9bbdf58f9b2c183f69bdd3034dbd521ea11d632b42c0ce0b8069afec74e6710c",
+    "7e0436bc1b36dfca102c35f11b40a4be9a22d8c1fdbf0ea136cd06853b5445fd",
+    "9347181d703461bfd63873589a89afda5a89e3a8ede79d6cba4ff13e46e22199",
+  ],
+
+  // Ground support follows collision resolution; angled steps retain clearance and obstruction guards.
+  "d26ba79ff81a31651e7bc5ff3c9172999d85b98ecacaea7c655970ca5d0d245c": [
+    "bcf2044d3a9ecdc1b91e204e49bccecc5bd20a0325b2bb198c0d1b20da3e925c",
+    "3854b01658e1aebb6f510c783fd5398fa1c2b9525ee1b96c16cc7d1389f03661",
+    "5df7b415cee927487dce7dea5e1efb743d1a75b5fda7088e853da2e892bdf4b7",
+    "de3c67b050403fefe07d3a9486fb3e8ce0c791a33d89f303936b00ca967b1c90",
+    "6104e28e993e9c1062fb035185c4457487e1aba344eb08e4036f2b917d7f6204",
+    "b877cd74cb32faf79999cca0a2a56115c0f8fad641898c008f06ec6af2ce2906",
+    "9bbdf58f9b2c183f69bdd3034dbd521ea11d632b42c0ce0b8069afec74e6710c",
+    "7e0436bc1b36dfca102c35f11b40a4be9a22d8c1fdbf0ea136cd06853b5445fd",
+    "9347181d703461bfd63873589a89afda5a89e3a8ede79d6cba4ff13e46e22199",
+  ],
+  // Reviewed wall joins, transparent shadows and grounded jump/step controls. Saved plan and asset contracts are unchanged.
+  "bcf2044d3a9ecdc1b91e204e49bccecc5bd20a0325b2bb198c0d1b20da3e925c": [
+    "3854b01658e1aebb6f510c783fd5398fa1c2b9525ee1b96c16cc7d1389f03661",
+    "5df7b415cee927487dce7dea5e1efb743d1a75b5fda7088e853da2e892bdf4b7",
+    "de3c67b050403fefe07d3a9486fb3e8ce0c791a33d89f303936b00ca967b1c90",
+    "6104e28e993e9c1062fb035185c4457487e1aba344eb08e4036f2b917d7f6204",
+    "b877cd74cb32faf79999cca0a2a56115c0f8fad641898c008f06ec6af2ce2906",
+    "9bbdf58f9b2c183f69bdd3034dbd521ea11d632b42c0ce0b8069afec74e6710c",
+    "7e0436bc1b36dfca102c35f11b40a4be9a22d8c1fdbf0ea136cd06853b5445fd",
+    "9347181d703461bfd63873589a89afda5a89e3a8ede79d6cba4ff13e46e22199",
+  ],
+  // Softer overview daylight; authored materials, geometry, assets and saved artifacts are unchanged.
+  "3854b01658e1aebb6f510c783fd5398fa1c2b9525ee1b96c16cc7d1389f03661": [
+    "5df7b415cee927487dce7dea5e1efb743d1a75b5fda7088e853da2e892bdf4b7",
+    "de3c67b050403fefe07d3a9486fb3e8ce0c791a33d89f303936b00ca967b1c90",
+    "6104e28e993e9c1062fb035185c4457487e1aba344eb08e4036f2b917d7f6204",
+    "b877cd74cb32faf79999cca0a2a56115c0f8fad641898c008f06ec6af2ce2906",
+    "9bbdf58f9b2c183f69bdd3034dbd521ea11d632b42c0ce0b8069afec74e6710c",
+    "7e0436bc1b36dfca102c35f11b40a4be9a22d8c1fdbf0ea136cd06853b5445fd",
+    "9347181d703461bfd63873589a89afda5a89e3a8ede79d6cba4ff13e46e22199",
+  ],
   // Quality rendering preserves authored finishes and the reviewed door/fixture contract.
   "5df7b415cee927487dce7dea5e1efb743d1a75b5fda7088e853da2e892bdf4b7": [
     "de3c67b050403fefe07d3a9486fb3e8ce0c791a33d89f303936b00ca967b1c90",

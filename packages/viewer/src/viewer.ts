@@ -7,6 +7,7 @@ import { MaterialLibrary } from './build/materials.ts';
 import { buildHouse, CUT_HEIGHT, NO_CUT, type BuiltHouse } from './build/house.ts';
 import { Stage, sunElevation } from './viewer/stage.ts';
 import { Walker } from './viewer/walk.ts';
+import { bindOrbitInput, ORBIT_CURSOR } from './viewer/orbit-input.ts';
 import { openingDoors, poseDoor, type Door } from './viewer/doors.ts';
 import { PlanOverlay } from './viewer/overlay.ts';
 import { Library, NON_FLOOR_MAX } from './viewer/library.ts';
@@ -256,7 +257,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   orbit.maxPolarAngle = Math.PI * 0.47;
   orbit.minDistance = 2;
   orbit.maxDistance = 80;
-  // Left-drag outside the house pans across the ground, slower than the default.
+  // Explicit mouse buttons stay consistent over both the house and its surroundings.
   orbit.screenSpacePanning = false;
   orbit.panSpeed = 0.65;
   const planControls = new OrbitControls(planCam, canvas);
@@ -559,6 +560,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     // Warm-up switches looks only; flights, controls and pointer lock stay as they are.
     if (!warming) {
       fly = spin = null;
+      cancelOrbitDrag();
       orbit.enabled = mode === 'dollhouse';
       planControls.enabled = mode === 'plan';
       walker.active = mode === 'walk';
@@ -694,6 +696,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       // Tour paths run through doorways.
       openAllDoors();
       fly = spin = null;
+      cancelOrbitDrag();
       orbit.enabled = planControls.enabled = walker.active = false;
       walker.unlock();
       canvas.style.cursor = '';
@@ -782,22 +785,13 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     down = { x: e.clientX, y: e.clientY };
     spin = null;
   }, { signal });
-  // Capture runs before OrbitControls reads mouseButtons for this drag.
-  let panning = false;
+  const cancelOrbitDrag = bindOrbitInput(canvas, [orbit, planControls], () => cursor(), signal);
   canvas.addEventListener('pointerdown', (e) => {
-    if (e.pointerType !== 'mouse' || e.button !== 0 || onPick || tourCtl.active || state.mode !== 'dollhouse') return;
-    panning = outside(e.clientX, e.clientY);
-    orbit.mouseButtons.LEFT = panning ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
-    if (panning) canvas.style.cursor = 'grabbing';
-  }, { signal, capture: true });
-  const endPan = () => {
-    if (!panning) return;
-    panning = false;
-    orbit.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
-    cursor();
-  };
-  addEventListener('pointerup', endPan, { signal });
-  addEventListener('pointercancel', endPan, { signal });
+    if (e.pointerType !== 'mouse' || onPick || tourCtl.active || state.mode === 'walk') return;
+    const modified = e.ctrlKey || e.metaKey || e.shiftKey;
+    const pan = state.mode === 'plan' || (e.button === 2 ? !modified : e.button === 0 && modified);
+    canvas.style.cursor = e.button === 1 ? ORBIT_CURSOR.zoom : pan ? ORBIT_CURSOR.pan : ORBIT_CURSOR.rotate;
+  }, { signal });
   canvas.addEventListener('wheel', () => (spin = null), { signal, passive: true });
   addEventListener('keydown', () => (spin = null), { signal });
   canvas.addEventListener('click', (e) => {
@@ -825,15 +819,8 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     hoverAt = e.timeStamp;
     canvas.style.cursor = doorAt(e.clientX, e.clientY, walker.locked, shell)
       ? 'pointer'
-      : state.mode === 'dollhouse' && e.pointerType === 'mouse' && outside(e.clientX, e.clientY)
-        ? 'grab'
-        : baseCursor(state.mode);
+      : baseCursor(state.mode);
   }, { signal });
-  // Empty space or only the ground disc under the pointer.
-  function outside(clientX: number, clientY: number) {
-    const hit = aim(clientX, clientY, false, Infinity, shell);
-    return !hit || hit.object === stage.ground;
-  }
   // Floors, walls, openings and slab: enough to tell house from ground or find a door, and
   // cheap to ray-test on hover. The merged furniture holds most triangles (about 9 ms a ray).
   const shell = house.root.children.filter((o) => ['floor', 'wall', 'opening'].includes(o.userData.part) || o.userData.collide);
@@ -926,7 +913,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     return s.x * s.y * s.z;
   };
   function baseCursor(mode: ViewerMode) {
-    return onPick || mode === 'walk' ? 'crosshair' : mode === 'plan' ? 'grab' : '';
+    return onPick || mode === 'walk' ? 'crosshair' : mode === 'plan' ? ORBIT_CURSOR.pan : ORBIT_CURSOR.rotate;
   }
   const cursor = () => {
     if (!tourCtl.active) canvas.style.cursor = baseCursor(state.mode);

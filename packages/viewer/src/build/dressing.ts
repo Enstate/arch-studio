@@ -46,6 +46,7 @@ export function buildDressing(plan: Plan, lib: MaterialLibrary, mat: MatFn) {
       const room = rodHalf < Math.min(o.offset, L - o.offset) - 0.08;
       if (room) {
         const curtainMat = curtainMaterial(lib);
+        let panels = 0;
         for (const side of [-1, 1]) {
           const u = side * (o.width / 2 + panelW / 2 + 0.04);
           const c: Vec2 = [mid[0] + along[0] * u + inward[0] * face, mid[1] + along[1] * u + inward[1] * face];
@@ -56,13 +57,16 @@ export function buildDressing(plan: Plan, lib: MaterialLibrary, mat: MatFn) {
           panel.castShadow = true;
           panel.receiveShadow = true;
           group.add(panel);
+          panels++;
         }
-        const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, rodHalf * 2, 24), steel);
-        rod.rotation.z = Math.PI / 2;
-        rod.rotation.y = Math.atan2(-inward[0], -inward[1]);
-        rod.position.set(mid[0] + inward[0] * face, top + 0.02, mid[1] + inward[1] * face);
-        rod.castShadow = true;
-        group.add(rod);
+        if (panels) {
+          const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, rodHalf * 2, 24), steel);
+          rod.rotation.z = Math.PI / 2;
+          rod.rotation.y = Math.atan2(-inward[0], -inward[1]);
+          rod.position.set(mid[0] + inward[0] * face, top + 0.02, mid[1] + inward[1] * face);
+          rod.castShadow = true;
+          group.add(rod);
+        }
       }
 
       // Panel radiator under windows with a real sill, unless a counter or bed is there.
