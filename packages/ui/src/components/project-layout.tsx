@@ -26,7 +26,7 @@ export function ProjectLayout({
       <div
         data-sidebar={sidebarOpen ? "open" : "closed"}
         style={{ "--sidebar-w": "15.75rem" } as CSSProperties}
-        className="grid h-svh grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)] overflow-hidden bg-sidebar text-foreground transition-[grid-template-columns] duration-200 ease-out-quint has-[[data-viewer]]:transition-none md:grid-cols-[0_minmax(0,1fr)] md:data-[sidebar=open]:grid-cols-[var(--sidebar-w)_minmax(0,1fr)]"
+        className="group/layout grid h-svh grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)] overflow-hidden bg-sidebar text-foreground transition-[grid-template-columns] duration-200 ease-out-quint has-[[data-viewer]]:transition-none md:grid-cols-[0_minmax(0,1fr)] md:data-[sidebar=open]:grid-cols-[var(--sidebar-w)_minmax(0,1fr)]"
       >
         <a
           href="#inhalt"
@@ -37,7 +37,7 @@ export function ProjectLayout({
         <aside aria-label={labels.sidebar} inert={!sidebarOpen} className="hidden min-w-0 overflow-hidden md:block">
           {!isMobile && sidebar}
         </aside>
-        <main className="relative flex min-h-0 min-w-0 flex-col">{children}</main>
+        <main className="relative flex min-h-0 min-w-0 flex-col transition-[padding] duration-200 ease-out-quint group-has-[[data-viewer]]/layout:transition-none md:group-data-[sidebar=closed]/layout:pl-2">{children}</main>
       </div>
 
       <Sheet open={isMobile && mobileOpen} onOpenChange={onMobileOpenChange}>
@@ -69,7 +69,11 @@ export function ProjectSidebar({
         {toggle}
       </div>
       {children}
-      {footer && <div className="pt-2">{footer}</div>}
+      {footer && (
+        <div className="pt-2">
+          <div className="flex flex-col gap-px rounded-[11px] border border-border-strong bg-foreground/3 p-1">{footer}</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -92,7 +96,7 @@ export function ProjectPage({
 }) {
   return (
     <>
-      <header className="flex h-11 shrink-0 items-center gap-1.5 pr-2.5 max-md:h-14 max-md:px-1.5">
+      <header className="flex h-11 shrink-0 items-center gap-1.5 pr-2.5 max-md:h-14 max-md:gap-0.5 max-md:px-1.5">
         {navigation}
         <div className="flex min-w-0 flex-1 items-baseline gap-2 px-1.5">
           {title === null ? (
@@ -119,7 +123,7 @@ export function ProjectPage({
 }
 
 export const projectIconButton =
-  "inline-grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 hover:bg-foreground/7 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/50 active:scale-[0.96] max-md:size-11 [&_svg]:size-4";
+  "inline-grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 ease-out hover:bg-foreground/7 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/50 active:scale-[0.96] max-md:size-11 [&_svg]:size-4";
 
 export const projectNavItem =
-  "flex h-7.5 w-full min-w-0 items-center gap-2.25 rounded-[7px] px-2 text-left text-ui font-medium text-muted-foreground outline-none transition-colors duration-150 hover:bg-foreground/7 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/50 aria-[current=page]:bg-foreground/11 aria-[current=page]:text-foreground max-md:h-11 [&_svg]:size-4 [&_svg]:shrink-0";
+  "flex h-7.5 w-full min-w-0 items-center gap-2.25 rounded-[7px] px-2 text-left text-ui font-medium text-muted-foreground outline-none transition-colors duration-150 ease-out hover:bg-foreground/7 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/50 aria-[current=page]:bg-foreground/11 aria-[current=page]:text-foreground max-md:h-11 [&_svg]:size-4 [&_svg]:shrink-0";

@@ -1,7 +1,7 @@
 import type { Translation } from "../types";
 
 export const de = {
-  modes: { plan: "Grundriss", dollhouse: "Puppenhaus", walk: "Begehen" },
+  modes: { plan: "Plan", dollhouse: "3D", walk: "Gehen" },
   toolbar: "3D-Ansicht",
   view: "Ansicht",
   tour: {
@@ -16,6 +16,13 @@ export const de = {
   timeOfDay: "Tageszeit",
   clock: (time: string) => `${time} Uhr`,
   more: "Mehr Optionen",
+  hideControls: "Ansichtssteuerung ausblenden",
+  showControls: "Ansichtssteuerung einblenden",
+  tools: "Werkzeuge",
+  hideTools: "Werkzeuge ausblenden",
+  showTools: "Werkzeuge einblenden",
+  hideLabels: "Beschriftungen ausblenden",
+  showLabels: "Beschriftungen einblenden",
   moreTitle: "Ansicht anpassen",
   moreDescription: "Schnitt, Tageszeit, Räume und Vollbild",
   cut: "Schnitt",
@@ -110,7 +117,7 @@ export const de = {
 };
 
 export const en: Translation<typeof de> = {
-  modes: { plan: "Floor plan", dollhouse: "Dollhouse", walk: "Walk" },
+  modes: { plan: "Plan", dollhouse: "3D", walk: "Walk" },
   toolbar: "3D view",
   view: "View",
   tour: {
@@ -124,6 +131,13 @@ export const en: Translation<typeof de> = {
   timeOfDay: "Time of day",
   clock: (time: string) => time,
   more: "More options",
+  hideControls: "Hide view controls",
+  showControls: "Show view controls",
+  tools: "Tools",
+  hideTools: "Hide tools",
+  showTools: "Show tools",
+  hideLabels: "Hide labels",
+  showLabels: "Show labels",
   moreTitle: "Adjust view",
   moreDescription: "Cutaway, time of day, rooms and full screen",
   cut: "Cutaway",

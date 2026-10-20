@@ -202,7 +202,8 @@ function VersionPreview({version, t}: {version: StudioVersion; t: Copy}) {
       if (currentViewer.current === viewer) setError(t.error);
     });
   }, [t.error]);
-  return <div data-studio-preview={error ? "error" : ready ? "ready" : "pending"} className="relative size-full min-h-0">{preview.data ? <ViewerSurface planUrl={preview.data.planUrl} assetBase={preview.data.assetBase} artifactId={preview.data.artifactHash} onViewer={onViewer} /> : <div className="grid size-full place-items-center p-6"><div className="grid gap-3 text-center text-ui"><p role={preview.isError ? "alert" : "status"}>{preview.isError ? preview.error.message : t.preparing}</p>{preview.isError && <Button onClick={() => {void preview.refetch();}}>{t.retry}</Button>}</div></div>}{preview.data && <p role="status" className="pointer-events-none absolute top-3 right-3 rounded-lg bg-background/90 px-3 py-2 text-xs shadow-sm">{error || (ready ? t.ready : t.preparing)}</p>}</div>;
+  const status = <p role="status" className="pointer-events-none rounded-lg bg-background/90 px-3 py-2 text-xs shadow-sm">{error || (ready ? t.ready : t.preparing)}</p>;
+  return <div data-studio-preview={error ? "error" : ready ? "ready" : "pending"} className="relative size-full min-h-0">{preview.data ? <ViewerSurface planUrl={preview.data.planUrl} assetBase={preview.data.assetBase} artifactId={preview.data.artifactHash} onViewer={onViewer} top={status} /> : <div className="grid size-full place-items-center p-6"><div className="grid gap-3 text-center text-ui"><p role={preview.isError ? "alert" : "status"}>{preview.isError ? preview.error.message : t.preparing}</p>{preview.isError && <Button onClick={() => {void preview.refetch();}}>{t.retry}</Button>}</div></div>}</div>;
 }
 function VersionMedia({version, t}: {version: StudioVersion; t: Copy}) {
   if (!version.outputs.length) return <p className="text-muted-foreground">{t.noOutputs}</p>;

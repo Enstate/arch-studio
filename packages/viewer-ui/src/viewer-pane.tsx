@@ -1,11 +1,12 @@
 import { useMountEffect } from "@arch/ui/hooks/use-mount-effect";
 import { cn } from "@arch/ui/lib/utils";
-import { type ReactNode, useCallback, useMemo, useState } from "react";
+import { ChevronUpIcon } from "lucide-react";
+import { type ReactNode, useCallback, useId, useMemo, useRef, useState } from "react";
 
 import { useT } from "./locale";
 
 import type { ViewerProject } from "./types";
-import { ControlBar, FullscreenButton, RoomLabel, ViewerHotkeys, WalkHint } from "./viewer-controls";
+import { ControlBar, focusToggle, RoomLabel, readStoredFlag, storeFlag, ToolsCard, ViewerHotkeys, WalkHint } from "./viewer-controls";
 import {
   posterFor,
   useFullscreen,
@@ -20,7 +21,7 @@ import { ViewerStage } from "./viewer-stage";
 export function ViewerPane({
   project,
   ...layers
-}: { project: ViewerProject } & Pick<ViewerSurfaceProps, "onViewer" | "above" | "rightPanelOpen">) {
+}: { project: ViewerProject } & Pick<ViewerSurfaceProps, "onViewer" | "above" | "rightPanelOpen" | "toolsHidden">) {
   if (project.status === "processing" || !project.planUrl) return <Processing />;
   return <ViewerSurface artifactId={project.artifactId} assetBase={project.assetBase} planUrl={project.planUrl} posterUrl={project.posterUrl ?? posterFor(project.planUrl)} {...layers} />;
 }
@@ -42,8 +43,6 @@ function Processing() {
  * stays mounted, a project with the same plan reuses the running viewer.
  */
 export interface ViewerSurfaceProps {
-  /** A fullscreen button top right. The portal keeps that corner free; F and "Mehr" still work. */
-  cornerFullscreen?: boolean;
   onViewer?: (viewer: ViewerInstance | null) => void;
   onProgress?: (progress: number) => void;
   onError?: () => void;
@@ -62,6 +61,8 @@ export interface ViewerSurfaceProps {
    * their container queries measure that width.
    */
   rightPanelOpen?: boolean;
+  /** Hides the top-right tools card, such as while a popover covers that corner. */
+  toolsHidden?: boolean;
   className?: string;
 }
 
@@ -74,8 +75,8 @@ export function ViewerSurface({
   footer,
   above,
   rightPanelOpen,
+  toolsHidden,
   className,
-  cornerFullscreen,
   onViewer,
   onProgress,
   onError,
@@ -88,12 +89,47 @@ export function ViewerSurface({
   const state = useViewerState(viewer);
   const actions = useMemo(() => viewer && viewerActions(viewer), [viewer]);
   const fullscreen = useFullscreen();
+  const t = useT();
+  const contentId = useId();
+  const [collapsed, setCollapsed] = useState(() => readStoredFlag(DOCK_KEY, "collapsed"));
+  const setDock = (next: boolean) => {
+    setCollapsed(next);
+    storeFlag(DOCK_KEY, next ? "collapsed" : "open");
+  };
+  const [labelsHidden, setLabelsHidden] = useState(() => readStoredFlag(LABELS_KEY, "off"));
+  const toggleLabels = () => {
+    setLabelsHidden(!labelsHidden);
+    storeFlag(LABELS_KEY, labelsHidden ? "on" : "off");
+  };
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  const toggleDock = (next: boolean) => {
+    setDock(next);
+    focusToggle(dockRef.current, contentId, !next);
+  };
+  const setDockRef = useRef(setDock);
+  setDockRef.current = setDock;
+  const listenForExpand = useCallback((node: HTMLDivElement | null) => {
+    dockRef.current = node;
+    if (!node) return;
+    // Focus requests from outside (the comments M hotkey) focus right after dispatching, before React
+    // re-renders, so the content drops `inert` here first; the render then agrees.
+    const expand = () => {
+      const content = node.firstElementChild;
+      if (content instanceof HTMLElement) content.inert = false;
+      setDockRef.current(false);
+    };
+    node.addEventListener(DOCK_EXPAND_EVENT, expand);
+    return () => node.removeEventListener(DOCK_EXPAND_EVENT, expand);
+  }, []);
 
   return (
     <div
       data-viewer=""
+      data-labels={viewer && labelsHidden ? "off" : undefined}
       className={cn(
         "@container relative size-full min-h-0 overflow-hidden bg-muted",
+        // `.arch-room-label` is the class @arch/viewer gives each room label button.
+        "data-[labels=off]:[&_.arch-room-label]:invisible",
         fullscreen && "fixed inset-0 z-50",
         className,
       )}
@@ -108,26 +144,59 @@ export function ViewerSurface({
         onError={onError}
       />
 
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-3 p-3">
+      <div className="@container pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-3 p-3">
         <div className="flex min-w-0 flex-col items-start gap-2">
           {top}
           {viewer && state && <RoomLabel viewer={viewer} state={state} />}
         </div>
-        {viewer && cornerFullscreen && <FullscreenButton />}
+        {viewer && state && actions && (
+          <ToolsCard viewer={viewer} state={state} actions={actions} labelsHidden={labelsHidden} onToggleLabels={toggleLabels} hidden={rightPanelOpen || toolsHidden} />
+        )}
       </div>
 
       <div
         className={cn(
-          "@container pointer-events-none absolute inset-x-0 bottom-0 flex flex-col items-center gap-2 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] transition-[padding] duration-200 ease-out-quint",
+          "@container pointer-events-none absolute inset-x-0 bottom-0 flex flex-col items-center gap-2 p-3 pb-[max(1.25rem,env(safe-area-inset-bottom))] transition-[padding] duration-200 ease-out-quint",
           rightPanelOpen && "md:pr-90",
         )}
       >
         {viewer && state && actions && (
           <>
             <WalkHint state={state} />
-            <div className="grid w-fit max-w-full grid-cols-1 gap-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-300">
-              {above}
-              <ControlBar viewer={viewer} state={state} actions={actions} />
+            <div
+              ref={listenForExpand}
+              className={cn(
+                "pointer-events-auto relative grid max-w-full origin-bottom grid-cols-1 overflow-hidden bg-popover text-popover-foreground shadow-overlay transition-[width,height,border-radius,box-shadow] duration-[420ms] ease-[cubic-bezier(0.32,0.72,0,1)] [interpolate-size:allow-keywords] motion-reduce:transition-none motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-300",
+                collapsed ? "size-11 rounded-[22px]" : "h-auto w-fit rounded-[20px] @max-md:w-full",
+              )}
+            >
+              <div
+                id={contentId}
+                inert={collapsed}
+                aria-hidden={collapsed || undefined}
+                className={cn(
+                  "col-start-1 row-start-1 flex min-w-0 flex-col transition-[opacity,filter,scale] duration-200 ease-out",
+                  collapsed ? "pointer-events-none scale-[0.96] opacity-0 blur-xs" : "blur-none scale-100 opacity-100",
+                )}
+              >
+                {above}
+                {above && <div aria-hidden="true" className="mx-2 h-px shrink-0 bg-border" />}
+                <ControlBar state={state} actions={actions} docked controlsId={contentId} onCollapse={() => toggleDock(true)} />
+              </div>
+              <button
+                type="button"
+                inert={!collapsed}
+                aria-label={t.viewer.showControls}
+                aria-expanded="false"
+                aria-controls={contentId}
+                className={cn(
+                  "absolute inset-0 grid place-items-center rounded-[22px] text-muted-foreground outline-none transition-[opacity,filter,scale,color] duration-200 ease-out hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset [&_svg]:size-4",
+                  collapsed ? "scale-100 opacity-100 blur-none delay-120" : "pointer-events-none scale-[0.25] opacity-0 blur-xs",
+                )}
+                onClick={() => toggleDock(false)}
+              >
+                <ChevronUpIcon aria-hidden="true" />
+              </button>
             </div>
             <ViewerSession key={instanceKey(viewer)} viewer={viewer} actions={actions} />
           </>
@@ -137,6 +206,11 @@ export function ViewerSurface({
     </div>
   );
 }
+
+const DOCK_KEY = "arch-viewer-dock";
+const LABELS_KEY = "arch-viewer-labels";
+/** Dispatch with `bubbles: true` from inside the dock to expand it before focusing. */
+export const DOCK_EXPAND_EVENT = "arch:dock-expand";
 
 const instanceKeys = new WeakMap<ViewerInstance, number>();
 let instanceCount = 0;
