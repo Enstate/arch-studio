@@ -20,6 +20,7 @@ import { brief, buildVersion, catalog, createClient, createProject, handoff, ope
 import type { StudioCatalog, StudioProjectSummary, StudioVersion } from "../lib/model";
 import { type Locale, studioText } from "../lib/messages";
 import { SourceSetup } from "./source-setup";
+import { DesktopUpdates } from "./desktop-updates";
 
 type Copy = typeof studioText.en;
 type Section = "preview" | "source" | "versions" | "outputs" | "notes" | "files" | "handoff";
@@ -48,7 +49,7 @@ function Clients({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLoca
 }
 function StudioFooter({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale: () => void}) {
   const {theme, setTheme} = useTheme();
-  return <><p className="px-2 py-2 text-xs text-muted-foreground">{t.local}</p><DropdownMenu><DropdownMenuTrigger className={projectNavItem}><ArchMark /><span className="flex-1">{t.studio}</span><ChevronsUpDownIcon /></DropdownMenuTrigger><DropdownMenuContent side="top"><DropdownMenuItem onClick={changeLocale}>{t.language}<span className="ml-auto">{locale === "de" ? "English" : "Deutsch"}</span></DropdownMenuItem>{(["system", "light", "dark"] as const).map(value => <DropdownMenuItem key={value} onClick={() => setTheme(value)}><span className="flex-1">{t[value]}</span>{theme === value && <CheckIcon />}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu></>;
+  return <><p className="px-2 py-2 text-xs text-muted-foreground">{t.local}</p><DesktopUpdates t={t} /><DropdownMenu><DropdownMenuTrigger className={projectNavItem}><ArchMark /><span className="flex-1">{t.studio}</span><ChevronsUpDownIcon /></DropdownMenuTrigger><DropdownMenuContent side="top"><DropdownMenuItem onClick={changeLocale}>{t.language}<span className="ml-auto">{locale === "de" ? "English" : "Deutsch"}</span></DropdownMenuItem>{(["system", "light", "dark"] as const).map(value => <DropdownMenuItem key={value} onClick={() => setTheme(value)}><span className="flex-1">{t[value]}</span>{theme === value && <CheckIcon />}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu></>;
 }
 function Workspace({clientId, catalog: data, t, header, footer, pending, error, retry, createClient: newClient}: {clientId?: string; catalog?: StudioCatalog; t: Copy; header: ReactNode; footer: ReactNode; pending: boolean; error: boolean; retry: () => void; createClient: () => void}) {
   const queryClient = useQueryClient();
