@@ -27,6 +27,8 @@ export interface PickPart {
   kind: 'furniture' | 'opening';
   id: string;
   box: THREE.Box3;
+  /** Hidden with the loose furniture. */
+  loose?: boolean;
 }
 
 export interface BuiltHouse {
@@ -43,8 +45,12 @@ export interface BuiltHouse {
   /** Soft spots in the window openings that stand in for skylight; shown in day light. */
   daylight: THREE.Group;
   furniture: THREE.Group;
+  /** Loose furniture and its decor, the part "hide furniture" turns off; fixtures stay. */
+  looseFurniture: THREE.Group;
   /** Invisible copies of everything the walker collides with. */
   colliders: THREE.Group;
+  /** `colliders` without the loose furniture. */
+  collidersFixed: THREE.Group;
   rooms: BuiltRoom[];
   /** What a ray hit: merged groups carry `userData.part`, single pieces are found by box. */
   parts: PickPart[];
@@ -345,9 +351,14 @@ function mergeStatic(group: THREE.Object3D) {
   const buckets = new Map<string, { mat: THREE.Material; cast: boolean; recv: boolean; geos: THREE.BufferGeometry[] }>();
   const doomed: THREE.Mesh[] = [];
   const m = new THREE.Matrix4();
+  // Door leaves and sliding panels move at runtime, so they keep their own meshes.
+  const live = (o: THREE.Object3D | null) => {
+    for (; o && o !== group; o = o.parent) if (o.userData.dynamic) return true;
+    return false;
+  };
   group.traverse((o) => {
     const mesh = o as THREE.Mesh;
-    if (!mesh.isMesh || (mesh as THREE.InstancedMesh).isInstancedMesh || !mesh.visible) return;
+    if (!mesh.isMesh || live(mesh) || (mesh as THREE.InstancedMesh).isInstancedMesh || !mesh.visible) return;
     // Merge only what every pass can share: position, normal and one UV set.
     const src = mesh.geometry;
     if (!src.attributes.position || !src.attributes.normal) return;
@@ -437,6 +448,15 @@ export async function buildHouse(
   const lights = buildLights(plan, lib, opts.lampShadows ?? true);
   const daylight = buildDaylight(plan);
   const dressing = buildDressing(plan, lib, clipLib);
+  // Fixtures and loose pieces merge separately so the loose group can hide without a re-merge.
+  const pieces = [...furniture.children];
+  const fixtures = new THREE.Group();
+  const loose = new THREE.Group();
+  fixtures.name = 'fixtures';
+  loose.name = 'loose';
+  for (const o of pieces) (o.userData.loose ? loose : fixtures).add(o);
+  for (const o of [...dressing.children]) if (o.userData.loose) loose.add(o);
+  furniture.add(fixtures, loose);
   root.add(floors, walls, caps, openings, ceilings, furniture, dressing, lights, daylight);
 
   // Slab and plinth so the house does not float on the ground plane.
@@ -463,7 +483,8 @@ export async function buildHouse(
   root.updateMatrixWorld(true);
   const colliders = new THREE.Group();
   // Furniture collides as one box per piece; per-triangle collision on cushions only slows the walker.
-  for (const f of furniture.children) {
+  const collidersFixed = new THREE.Group();
+  for (const f of pieces) {
     if (!f.userData.collide) continue;
     const rot = f.rotation.y;
     f.rotation.y = 0;
@@ -478,7 +499,9 @@ export async function buildHouse(
     col.matrixAutoUpdate = false;
     col.matrix.copy(f.matrixWorld);
     col.matrixWorld.copy(f.matrixWorld);
+    col.userData.loose = !!f.userData.loose;
     colliders.add(col);
+    if (!f.userData.loose) collidersFixed.add(col.clone());
   }
   root.traverse((o) => {
     if ((o as THREE.Mesh).isMesh && o.userData.collide) {
@@ -487,20 +510,23 @@ export async function buildHouse(
       c.matrix.copy(o.matrixWorld);
       c.matrixWorld.copy(o.matrixWorld);
       colliders.add(c);
+      collidersFixed.add(c.clone());
     }
   });
 
   const parts: PickPart[] = [];
-  for (const [group, kind] of [[furniture, 'furniture'], [openings, 'opening']] as const) {
+  for (const [group, kind, list] of [[furniture, 'furniture', pieces], [openings, 'opening', openings.children]] as const) {
     group.userData.part = kind;
-    for (const o of group.children) {
-      if (o.userData.kind === kind) parts.push({ kind, id: o.userData.id, box: new THREE.Box3().setFromObject(o).expandByScalar(0.03) });
+    for (const o of list) {
+      if (o.userData.kind === kind) {
+        parts.push({ kind, id: o.userData.id, box: new THREE.Box3().setFromObject(o).expandByScalar(0.03), ...(o.userData.loose && { loose: true }) });
+      }
     }
   }
   floors.userData.part = 'floor';
   walls.userData.part = caps.userData.part = 'wall';
 
-  for (const g of [floors, walls, caps, openings, ceilings, furniture, dressing]) mergeStatic(g);
+  for (const g of [floors, walls, caps, openings, ceilings, fixtures, loose, dressing]) mergeStatic(g);
 
   const rooms: BuiltRoom[] = (plan.rooms ?? []).map((r) => {
     const c = polygonCentroid(r.polygon);
@@ -508,7 +534,7 @@ export async function buildHouse(
   });
 
   return {
-    root, walls, caps, ceilings, lights, daylight, furniture, colliders, rooms, parts, clipPlane, bounds: b,
+    root, walls, caps, ceilings, lights, daylight, furniture, looseFurniture: loose, colliders, collidersFixed, rooms, parts, clipPlane, bounds: b,
     dispose() {
       root.traverse((o) => {
         const m = o as THREE.Mesh;

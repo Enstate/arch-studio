@@ -107,7 +107,7 @@ function buildDoor(plan: Plan, o: Opening, w: Wall, mat: MatFn, double: boolean)
     pivot.add(leaf);
     // Positive rotation.y turns +x toward −z. Mirror for leaves that run −x or swing to +z.
     pivot.rotation.y = angle * l.dir * (swingZ === -1 ? 1 : -1);
-    pivot.userData.kind = 'door-leaf';
+    pivot.userData = { kind: 'door-leaf', dynamic: true, open: pivot.rotation.y, closed: 0 };
     g.add(pivot);
   }
   return g;
@@ -143,6 +143,7 @@ function buildWindow(plan: Plan, o: Opening, w: Wall, mat: MatFn, sliding: boole
     const slide = sliding && i === 1 ? -pw * 0.45 : 0;
     const sash = new THREE.Group();
     sash.position.set(cx + slide, 0, zt);
+    if (slide) sash.userData = { kind: 'door-slide', dynamic: true, open: cx + slide, closed: cx };
     const sw = sliding ? pw + 0.03 : pw;
     const sf = 0.05;
     sash.add(box(sw, sf, 0.045, frameMat, 0, y0 + FRAME + sf / 2, 0));

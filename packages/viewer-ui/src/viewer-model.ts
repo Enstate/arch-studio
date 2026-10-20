@@ -92,6 +92,8 @@ export function viewerActions(viewer: ViewerInstance) {
         viewer.setCut(true);
       } else viewer.setCut(!cut);
     },
+    setFurniture: (visible: boolean) => viewer.setFurniture(visible),
+    toggleFurniture: () => viewer.setFurniture(!viewer.getState().furniture),
     toggleNight() {
       const { time, night } = viewer.getState();
       const back = before && before.night !== night ? before.time : night ? DAY_TIME : NIGHT_TIME;
@@ -115,7 +117,9 @@ export const VIEWER_SHORTCUTS = [
   { id: "tour", keys: [["T"]] },
   { id: "night", keys: [["L"]] },
   { id: "cut", keys: [["C"]] },
+  { id: "furniture", keys: [["H"]] },
   { id: "time", keys: [["["], ["]"]] },
   { id: "fullscreen", keys: [["F"]] },
   { id: "walk", keys: [["W", "A", "S", "D"]] },
+  { id: "door", keys: [["E"]] },
 ] as const;
