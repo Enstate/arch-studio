@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { _electron } from 'playwright-core';
+import type {} from '../apps/desktop/update-state';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -20,6 +21,7 @@ const electron = await _electron.launch({executablePath, args: [`--user-data-dir
 let origin: string | undefined;
 try {
   const page = await electron.firstWindow();
+  assert.equal(await electron.evaluate(({app}) => app.commandLine.hasSwitch('headless')), false, 'Desktop UI verification must use the native display');
   page.on('pageerror', error => console.error('Renderer error:',error.message));
   page.on('console', message => {if(message.type()==='error') console.error('Renderer console:',message.text());});
   page.setDefaultTimeout(30000);
@@ -28,6 +30,10 @@ try {
   assert.equal(new URL(page.url()).hash, '');
   await page.locator('[data-studio-preview="ready"]').waitFor({timeout:60000});
   await page.getByRole('progressbar').waitFor({state:'hidden',timeout:10000});
+  await page.locator('[data-desktop-update]').waitFor();
+  const update = await page.evaluate(() => window.archDesktop!.getUpdateState());
+  assert.equal(update.currentVersion, await electron.evaluate(({app}) => app.getVersion()));
+  assert.notEqual(update.status, 'disabled', 'Signed release must include its update feed');
   assert.equal(await page.locator('[data-viewer] canvas').count(), 1);
   const versions=page.getByLabel(/^(Versions|Versionen)$/);
   const priorVersion=await versions.inputValue();

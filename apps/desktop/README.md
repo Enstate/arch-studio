@@ -9,8 +9,10 @@ Installed releases check GitHub Releases after 15 seconds and every four minutes
 The Studio sidebar and **Arch Studio → Check for Updates** expose the same flow:
 check, choose **Download update**, then confirm **Restart and install**. Checks
 never download or install automatically. Closing Studio does not install an
-update. A failed download can be retried. A stalled installer restarts the app;
-an unfinished installation is detected on the next launch. Updates
+update. A failed download can be retried. Studio retains ownership of its local
+server until native installation quits the app. The window is disabled while
+Squirrel prepares the update; an explicit error restores it. An unfinished
+installation is detected on the next launch. Updates
 replace the application, while projects and checkpoints stay in the user's store.
 
 The main process owns the fixed `Enstate/arch-studio` stable feed. The isolated
@@ -42,6 +44,13 @@ APPLE_KEYCHAIN_PROFILE=<existing-profile> bun run package:desktop:release --vers
 bun scripts/verify-desktop.ts
 ```
 
+For a bounded local build, run `--phase app`, `--phase notarize` and
+`--phase installer` separately with the same version and clean commit. The app
+phase builds Studio afresh. Later phases reject changed source or app bytes.
+`bun scripts/verify-desktop-updates.ts` uses the signing credentials to create
+two disposable signed versions, then tests real download, cancel, native
+replacement/relaunch and project preservation through a local test feed.
+
 The packager uses an owned temporary signing keychain and removes it on exit.
 It preserves the exact viewer source/manifest bytes, compiles the SSR server,
 and bundles the matching host-architecture Bun runtime. Run each architecture
@@ -56,8 +65,10 @@ asserts the UI pixel ratio matches the display and captures device pixels.
 
 ## Publication
 
-The tag workflow builds native arm64 and x64 apps, source archives and one merged
-`latest-mac.yml`. CI needs `MACOS_CERTIFICATE_P12`, `MACOS_CERTIFICATE_PASSWORD`,
+The tag workflow always builds source archives. Hosted macOS builds and publication
+are opt-in through the repository variable `MACOS_RELEASE_CI_ENABLED=true`, after
+signing credentials are configured. They build native arm64 and x64 apps and one
+merged `latest-mac.yml`. CI needs `MACOS_CERTIFICATE_P12`, `MACOS_CERTIFICATE_PASSWORD`,
 and either `APPLE_ID`/`APPLE_APP_SPECIFIC_PASSWORD` or
 `APPLE_API_KEY`/`APPLE_API_KEY_ID`/`APPLE_API_ISSUER` secrets. The team is
 `3T885JB4UJ`. An API key secret may contain the P8 text; it is written only to a
@@ -67,6 +78,16 @@ private temporary file and removed after notarization.
 manifests. `RELEASE_TAG`, full `GITHUB_SHA` and `GH_REPO` identify
 `bun scripts/publish-desktop-release.ts release`. Publication verifies every
 source and desktop hash, resumes a matching incomplete draft without replacing
-assets, and publishes only after the remote set is complete. A published release
+assets, and publishes only after the remote set is complete. Resume by rerunning
+the publisher with the same built artifact bytes. In Actions, rerun the failed
+publish job, not all build jobs. Mismatched assets stop publication; existing
+draft assets are never deleted or overwritten. A published release
 is immutable. The DMG is for installation; ZIP, blockmaps and `latest-mac.yml`
 are also required for in-app updates.
+
+A local release can use the existing macOS Keychain profile without exporting
+its credential to GitHub. Build both architectures from the tag's exact commit,
+put source archives in `release/source` and each architecture's installer,
+update and provenance files in `release/arm64` or `release/x64`, then run the
+same merger and publisher. In-app updates use those published assets regardless
+of whether the signed builds ran locally or in Actions.

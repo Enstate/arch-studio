@@ -46,6 +46,7 @@ const capture = (command: string, parameters: string[]) => {
 const validateApplication = async () => {
   const stamp = JSON.parse(await readFile(stampPath, 'utf8'));
   const commit = capture('git', ['rev-parse', 'HEAD']);
+  if (stamp.sourceClean !== true || capture('git', ['status', '--porcelain', '--untracked-files=normal']) !== '') throw new Error('Public desktop releases require clean source provenance. Run the app phase from a clean checkout.');
   if (stamp.commit !== commit || stamp.sourceChanges !== createHash('sha256').update(capture('git', ['diff', 'HEAD', '--', 'apps/desktop', 'apps/studio', 'packages/viewer', 'scripts/serve.mjs'])).digest('hex')) throw new Error('Source differs from the signed app provenance. Run the app phase from this checkout.');
   const staged = JSON.parse(await readFile(join(stage, 'package.json'), 'utf8'));
   const plist = join(application, 'Contents/Info.plist');
@@ -59,8 +60,14 @@ const validateApplication = async () => {
   }
   if (Object.keys(stamp.files).length !== 3) throw new Error('Incomplete app provenance. Run the app phase.');
   run('codesign', ['--verify', '--deep', '--strict', application]);
+  return stamp;
 };
 if (['all', 'app'].includes(phase)) {
+  if (release) {
+    if (capture('git', ['status', '--porcelain', '--untracked-files=normal']) !== '') throw new Error('Public desktop releases require a clean checkout.');
+    // Ignored dist output may belong to a different checkout revision.
+    run(process.execPath, ['run', 'build:studio']);
+  }
   await access(join(root, 'apps/studio/dist/server/server.js'));
   await access(join(root, 'apps/studio/dist/client'));
   await rm(output, { recursive: true, force: true });
@@ -103,10 +110,13 @@ const packageDesktop = async () => {
   const arch = process.arch === 'arm64' ? Arch.arm64 : Arch.x64;
   if (['all', 'app'].includes(phase)) {
     const compileApp = async () => {
+      const sourceClean = capture('git', ['status', '--porcelain', '--untracked-files=normal']) === '';
+      if (release && !sourceClean) throw new Error('Public desktop releases require a clean checkout.');
+      const commit = capture('git', ['rev-parse', 'HEAD']);
       await build({ targets: platform.createTarget(['dir'], arch), config, publish: 'never' });
       if (release) {
         const files = Object.fromEntries(await Promise.all(['app.asar', 'bun', 'arch-server'].map(async name => [name, await digest(join(application, 'Contents/Resources', name))])));
-        await writeFile(stampPath, JSON.stringify({ version, arch: process.arch, platform: process.platform, signed: true, commit: capture('git', ['rev-parse', 'HEAD']), sourceChanges: createHash('sha256').update(capture('git', ['diff', 'HEAD', '--', 'apps/desktop', 'apps/studio', 'packages/viewer', 'scripts/serve.mjs'])).digest('hex'), files }, null, 2), { mode: 0o600 });
+        await writeFile(stampPath, JSON.stringify({ version, arch: process.arch, platform: process.platform, signed: true, commit, sourceClean, sourceChanges: createHash('sha256').update(capture('git', ['diff', 'HEAD', '--', 'apps/desktop', 'apps/studio', 'packages/viewer', 'scripts/serve.mjs'])).digest('hex'), files }, null, 2), { mode: 0o600 });
       }
     };
     if (release) await withSigningKeychain(compileApp);
@@ -133,8 +143,18 @@ const packageDesktop = async () => {
       await rm(archive);
     }
     if (['all', 'installer'].includes(phase)) {
+      const provenancePath = join(output, `desktop-${process.arch}.json`);
+      await rm(provenancePath, { force: true });
       run('xcrun', ['stapler', 'validate', application]);
       await build({ targets: Platform.MAC.createTarget(['dmg', 'zip'], arch), prepackaged: application, config, publish: 'never' });
+      const stamp = await validateApplication();
+      run('xcrun', ['stapler', 'validate', application]);
+      const files = await Promise.all(['dmg', 'dmg.blockmap', 'zip', 'zip.blockmap'].map(async extension => {
+        const file = `Arch-Studio-${version}-${process.arch}.${extension}`;
+        const bytes = await readFile(join(output, file));
+        return { file, sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
+      }));
+      await writeFile(provenancePath, JSON.stringify({ schemaVersion: 1, commit: stamp.commit, version: stamp.version, arch: stamp.arch, sourceClean: stamp.sourceClean, files }, null, 2));
     }
     console.log(`Release phase ${phase} completed: ${output}`);
   } else {

@@ -63,12 +63,15 @@ app.whenReady().then(async () => {
   updates = createDesktopUpdates({
     app, updater: autoUpdater,
     publish: state => { if (!window.isDestroyed()) window.webContents.send('desktop:update-state', state); },
-    beforeInstall: () => { quitting = true; stopServer(); },
+    beforeInstall: () => {
+      // Keep ownership of the loopback port until Squirrel actually quits us.
+      // Block renderer commands while native installation is being prepared.
+      origin = undefined;
+      window.setEnabled(false);
+    },
     recoverInstall: async () => {
-      quitting = false;
-      const url = await startServer();
-      origin = new URL(url).origin;
-      await window.loadURL(url);
+      origin = new URL(bootstrapUrl).origin;
+      window.setEnabled(true);
     },
   });
   for (const [name, method] of [['state', 'getState'], ['check', 'check'], ['download', 'download'], ['install', 'install']]) {

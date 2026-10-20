@@ -10,9 +10,8 @@ function createDesktopUpdates({ app, updater, publish, beforeInstall, recoverIns
   let available;
   let timeout;
   let interval;
-  let installTimeout;
   let disposed = false;
-  let serverStopped = false;
+  let installationPrepared = false;
   let recovering = false;
   const marker = path.join(app.getPath('userData'), 'update-install.json');
   const subscriptions = [];
@@ -48,12 +47,11 @@ function createDesktopUpdates({ app, updater, publish, beforeInstall, recoverIns
   async function restoreInstall(error) {
     if (recovering) return;
     recovering = true;
-    timers.clearTimeout(installTimeout);
-    if (serverStopped) {
+    if (installationPrepared) {
       try { await recoverInstall(); }
       catch { app.relaunch(); app.quit(); return; }
     }
-    serverStopped = false;
+    installationPrepared = false;
     await rm(marker, { force: true }).catch(() => {});
     failed('install', error);
     busy = false;
@@ -63,7 +61,7 @@ function createDesktopUpdates({ app, updater, publish, beforeInstall, recoverIns
     if (!enabled || busy || downloaded || (reason === 'background' && available)) return state;
     const previous = state;
     busy = true;
-    emit({ status: 'checking' });
+    if (reason === 'manual') emit({ status: 'checking' });
     try { await updater.checkForUpdates(); }
     catch (error) { if (reason === 'background') emit(previous); else failed('check', error); }
     finally { busy = false; }
@@ -84,11 +82,7 @@ function createDesktopUpdates({ app, updater, publish, beforeInstall, recoverIns
     try {
       await writeFile(marker, JSON.stringify({ fromVersion: app.getVersion(), targetVersion: downloaded }), { mode: 0o600 });
       await beforeInstall();
-      serverStopped = true;
-      // Squirrel has no cancellation API. Relaunch this process if it stalls,
-      // instead of leaving a late native installer callback in a recovered app.
-      installTimeout = timers.setTimeout(() => { app.relaunch(); app.quit(); }, 60_000);
-      installTimeout.unref?.();
+      installationPrepared = true;
       updater.quitAndInstall(true, true);
     } catch (error) {
       await restoreInstall(error);
@@ -109,7 +103,7 @@ function createDesktopUpdates({ app, updater, publish, beforeInstall, recoverIns
   }
   function dispose() {
     disposed = true;
-    timers.clearTimeout(timeout); timers.clearInterval(interval); timers.clearTimeout(installTimeout);
+    timers.clearTimeout(timeout); timers.clearInterval(interval);
     for (const [event, listener] of subscriptions) updater.removeListener(event, listener);
   }
   return { getState: () => state, check, download, install, start, dispose };

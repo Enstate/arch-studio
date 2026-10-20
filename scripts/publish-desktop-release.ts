@@ -47,9 +47,18 @@ export async function releaseAssets(directory: string, identity: ReturnType<type
   for (const arch of ['arm64', 'x64']) {
     const names = await readdir(join(directory, arch));
     const expected = [`Arch-Studio-${identity.version}-${arch}.dmg`, `Arch-Studio-${identity.version}-${arch}.dmg.blockmap`, `Arch-Studio-${identity.version}-${arch}.zip`, `Arch-Studio-${identity.version}-${arch}.zip.blockmap`];
+    const provenanceName = `desktop-${arch}.json`;
+    const desktopProvenance = JSON.parse((await asset(arch, provenanceName)).toString());
+    if (desktopProvenance.schemaVersion !== 1 || desktopProvenance.commit !== identity.commit || desktopProvenance.version !== identity.version || desktopProvenance.arch !== arch || desktopProvenance.sourceClean !== true || (desktopProvenance.repository !== undefined && desktopProvenance.repository !== identity.repository)) throw new Error(`Desktop provenance does not match release identity: ${arch}`);
+    if (!Array.isArray(desktopProvenance.files) || desktopProvenance.files.length !== expected.length) throw new Error(`Incomplete desktop provenance: ${arch}`);
     // electron-builder's configured artifactName is authoritative for all four files.
-    if (names.filter((name) => name !== 'latest-mac.yml').sort().join('\n') !== expected.sort().join('\n')) throw new Error(`Incomplete or unexpected ${arch} desktop assets`);
-    for (const name of expected) { await asset(arch, name); desktopNames.add(name); }
+    if (names.filter((name) => name !== 'latest-mac.yml' && name !== provenanceName).sort().join('\n') !== expected.sort().join('\n')) throw new Error(`Incomplete or unexpected ${arch} desktop assets`);
+    for (const name of expected) {
+      const bytes = await asset(arch, name);
+      const entries = desktopProvenance.files.filter((entry: { file: string }) => entry.file === name);
+      if (entries.length !== 1 || entries[0].sha256 !== hash(bytes) || entries[0].bytes !== bytes.length) throw new Error(`Desktop integrity mismatch: ${name}`);
+      desktopNames.add(name);
+    }
   }
   const manifest = parse((await asset('.', 'latest-mac.yml')).toString());
   if (manifest.version !== identity.version || !Array.isArray(manifest.files)) throw new Error('Invalid latest-mac.yml version');
@@ -63,43 +72,40 @@ export async function releaseAssets(directory: string, identity: ReturnType<type
   for (const name of desktopNames) if (!name.endsWith('.blockmap') && !seen.has(name)) throw new Error(`Missing updater file: ${name}`);
   return assets;
 }
-function gh(args: string[], input?: string, allowMissing = false): Buffer | null {
+function gh(args: string[], input?: string): Buffer {
   const result = spawnSync('gh', args, { input, maxBuffer: 512 * 1024 * 1024 });
   if (result.status !== 0) {
-    if (allowMissing && /HTTP 404\b/.test(result.stderr.toString())) return null;
     // Do not echo subprocess output, which may contain credentials or request data.
     throw new Error(`GitHub request failed (${result.status ?? 'spawn error'}); publication stopped`);
   }
   return result.stdout;
 }
-export async function publish(directory: string, env = process.env) {
+export async function publish(directory: string, env = process.env, executeGh = gh) {
   const identity = releaseIdentity(env);
   const assets = await releaseAssets(directory, identity);
   const endpoint = `repos/${identity.repository}/releases`;
-  const api = (path: string, method = 'GET', body?: unknown) => JSON.parse(gh(['api', path, '--method', method, ...(body === undefined ? [] : ['--input', '-'])], body === undefined ? undefined : JSON.stringify(body))!.toString());
-  // A missing tag is distinct from forbidden access and all other API failures.
-  gh(['api', `${endpoint}/tags/${identity.tag}`], undefined, true);
-  const releases: Release[] = JSON.parse(gh(['api', endpoint, '--paginate', '--slurp'])!.toString()).flat();
+  const api = (path: string, method = 'GET', body?: unknown) => JSON.parse(executeGh(['api', path, '--method', method, ...(body === undefined ? [] : ['--input', '-'])], body === undefined ? undefined : JSON.stringify(body))!.toString());
+  const releases: Release[] = JSON.parse(executeGh(['api', endpoint, '--paginate', '--slurp'])!.toString()).flat();
   const matches = releases.filter((release) => release.tag_name === identity.tag);
   if (matches.length > 1) throw new Error('Multiple releases have this tag');
   let release = matches[0];
   if (release && (!release.draft || release.target_commitish !== identity.commit)) throw new Error('Existing release is published or has different provenance');
   release ??= api(endpoint, 'POST', { tag_name: identity.tag, target_commitish: identity.commit, draft: true, name: identity.tag, body: `Signed and notarized native macOS apps and immutable public source packages from commit ${identity.commit}. Archive hashes and provenance are attached.` });
   const releaseId = release!.id;
-  function remoteAssets(): Asset[] { return JSON.parse(gh(['api', `${endpoint}/${releaseId}/assets`, '--paginate', '--slurp'])!.toString()).flat(); }
+  function remoteAssets(): Asset[] { return JSON.parse(executeGh(['api', `${endpoint}/${releaseId}/assets`, '--paginate', '--slurp'])!.toString()).flat(); }
   function verify(remote: Asset[]) {
     const names = new Set<string>();
     for (const item of remote) {
       const local = assets.find((candidate) => candidate.name === item.name);
       if (!local || names.has(item.name) || item.state !== 'uploaded' || item.size !== local.bytes) throw new Error(`Unexpected or incomplete remote asset: ${item.name}`);
       names.add(item.name);
-      const digest = item.digest ?? `sha256:${hash(gh(['api', `repos/${identity.repository}/releases/assets/${item.id}`, '-H', 'Accept: application/octet-stream'])!)}`;
+      const digest = item.digest ?? `sha256:${hash(executeGh(['api', `repos/${identity.repository}/releases/assets/${item.id}`, '-H', 'Accept: application/octet-stream'])!)}`;
       if (digest !== `sha256:${local.sha256}`) throw new Error(`Remote asset integrity mismatch: ${item.name}`);
     }
     return names;
   }
   const present = verify(remoteAssets());
-  for (const asset of assets) if (!present.has(asset.name)) gh(['release', 'upload', identity.tag, asset.path, '--repo', identity.repository]);
+  for (const asset of assets) if (!present.has(asset.name)) executeGh(['release', 'upload', identity.tag, asset.path, '--repo', identity.repository]);
   const final = api(`${endpoint}/${releaseId}`) as Release;
   if (!final.draft || final.tag_name !== identity.tag || final.target_commitish !== identity.commit) throw new Error('Release identity changed during upload');
   if (verify(remoteAssets()).size !== assets.length) throw new Error('Remote asset set is incomplete');
