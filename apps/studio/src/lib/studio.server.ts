@@ -1,12 +1,13 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { userInfo } from "node:os";
 import path from "node:path";
-import { addReviewNote, artifactDetails, artifactFile, buildProjectArtifact, inspectArtifact, inspectProject, listProjects, registerProject, inspectSource, viewerRuntimeHash, exportCheckpoint, importCheckpoint, restoreCheckpoint, checkpointBrief, referenceFile } from "@arch/project-tools";
+import { addReviewNote, artifactDetails, artifactFile, buildProjectArtifact, inspectArtifact, inspectProject, listProjects, registerProject, inspectSource, viewerRuntimeHash, exportCheckpoint, importCheckpoint, restoreCheckpoint, checkpointBrief, referenceFile, readProjectIntake, readCheckpointIntake } from "@arch/project-tools";
 import { initializeProject } from "@arch/project-tools/intake";
 import { z } from "zod";
 import { viewerSupportsRuntime } from "@arch/project";
 import { changeCatalog, localCatalog, requireProject } from "./local-catalog";
 import { requireStudio, studioOrigin } from "./local-session";
+import { referenceHeaders } from "./reference-headers";
 import type { StudioCatalog, StudioProjectDetails, StudioVersion } from "./model";
 export { session } from "./local-session";
 const sha = z.string().regex(/^[a-f0-9]{64}$/);
@@ -41,7 +42,7 @@ export async function createProject({ data }: { data: { clientId: string; name: 
 export async function projectDetails({ data }: { data: { projectId: string } }): Promise<StudioProjectDetails> {
   const origin = requireStudio();
   const project = requireProject(await localCatalog(), data.projectId);
-  if (!project.sourceId) return { project, source: null, versions: [], notes: [] };
+  if (!project.sourceId) return { project, source: null, intake: null, intakeError: null, versions: [], notes: [] };
   const inspection = await inspectProject(project.sourceId);
   const current = await inspectSource(inspection.project.directory);
   requireSourceIdentity(project, current);
@@ -57,9 +58,17 @@ export async function projectDetails({ data }: { data: { projectId: string } }):
       outputs = verified.artifact.outputs.map((output, index) => ({ id: `${output.kind}-${index}`, kind: output.kind === "video" ? "film" : "still", label: path.basename(output.path), url: `${urls.base}${output.path.replace(/^outputs\/artifact\//, "").split("/").map(encodeURIComponent).join("/")}` }));
     }
     const token = await capability(checkpoint.id, "reference");
-    versions.push({ id: checkpoint.id, checkpointId: checkpoint.id, createdAt: checkpoint.createdAt, hasArtifact, artifactHash, outputs, references: checkpoint.project.references.map(reference => ({ ...reference, url: referenceLocation(checkpoint.id, token, reference.path, origin) })) });
+    let checkpointIntake: StudioVersion["intake"] = null;
+    let checkpointIntakeError: string | null = null;
+    try { checkpointIntake = await readCheckpointIntake(checkpoint.id); }
+    catch (error) { checkpointIntakeError = error instanceof Error ? error.message : "Invalid saved project intake."; }
+    versions.push({ id: checkpoint.id, checkpointId: checkpoint.id, createdAt: checkpoint.createdAt, hasArtifact, artifactHash, intake: checkpointIntake, intakeError: checkpointIntakeError, outputs, references: checkpoint.project.references.map(reference => ({ ...reference, url: referenceLocation(checkpoint.id, token, reference.path, origin) })) });
   }
-  return { project, source: { ...inspection.project, manifest: current.manifest }, versions, notes: inspection.notes };
+  let intake: StudioProjectDetails["intake"] = null;
+  let intakeError: string | null = null;
+  try { intake = await readProjectIntake(current.directory); }
+  catch (error) { intakeError = error instanceof Error ? error.message : "Invalid project intake."; }
+  return { project, source: { ...inspection.project, manifest: current.manifest }, intake, intakeError, versions, notes: inspection.notes };
 }
 function requireSourceIdentity(project: StudioProjectDetails["project"], source: Pick<Awaited<ReturnType<typeof inspectSource>>, "manifest">) {
   if (project.sourceId && source.manifest.id !== project.sourceId) throw new Error("The source identity changed. Open the correct source folder.");
@@ -160,7 +169,7 @@ export async function saveNote({ data }: { data: { projectId: string; checkpoint
 }
 export async function referenceResponse(request: Request, checkpointId: string, token: string, relative: string) {
   try {
-    studioOrigin(request); sha.parse(checkpointId); sha.parse(token);
+    const origin = studioOrigin(request); sha.parse(checkpointId); sha.parse(token);
     const expected = await capability(checkpointId, "reference");
     if (!timingSafeEqual(Buffer.from(token), Buffer.from(expected))) return new Response(null, { status: 404 });
     if (!["GET", "HEAD"].includes(request.method)) return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
@@ -168,10 +177,9 @@ export async function referenceResponse(request: Request, checkpointId: string, 
     const pathname = relative;
     if (!pathname || pathname.includes("\\") || pathname.split("/").some(part => !part || part === "." || part === "..")) return new Response(null, { status: 404 });
     const content = await referenceFile({ checkpointId, path: pathname });
-    return new Response(request.method === "HEAD" ? null : new Uint8Array(content.body), { headers: {
-      "Content-Type": content.contentType, "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(path.basename(pathname)).replace(/'/g, "%27")}`,
-      "Content-Security-Policy": "sandbox; default-src 'none'; frame-ancestors 'none'", "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer", "Content-Length": String(content.body.length),
-    } });
+    const headers = referenceHeaders(pathname, content.body, content.contentType, origin, new URL(request.url).searchParams.get("inline") === "1");
+    if (!headers) return new Response(null, { status: 415 });
+    return new Response(request.method === "HEAD" ? null : new Uint8Array(content.body), { headers });
   } catch { return new Response(null, { status: 404 }); }
 }
 export async function artifactResponse(request: Request, checkpointId: string, token: string, relative: string) {
