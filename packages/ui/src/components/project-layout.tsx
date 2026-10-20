@@ -96,7 +96,7 @@ export function ProjectPage({
 }) {
   return (
     <>
-      <header className="flex h-11 shrink-0 items-center gap-1.5 pr-2.5 max-md:h-14 max-md:px-1.5">
+      <header className="flex h-11 shrink-0 items-center gap-1.5 pr-2.5 max-md:h-14 max-md:gap-0.5 max-md:px-1.5">
         {navigation}
         <div className="flex min-w-0 flex-1 items-baseline gap-2 px-1.5">
           {title === null ? (

@@ -6,7 +6,7 @@ import { type ReactNode, useCallback, useId, useMemo, useRef, useState } from "r
 import { useT } from "./locale";
 
 import type { ViewerProject } from "./types";
-import { ControlBar, RoomLabel, readStoredFlag, storeFlag, ToolsCard, ViewerHotkeys, WalkHint } from "./viewer-controls";
+import { ControlBar, focusToggle, RoomLabel, readStoredFlag, storeFlag, ToolsCard, ViewerHotkeys, WalkHint } from "./viewer-controls";
 import {
   posterFor,
   useFullscreen,
@@ -101,9 +101,15 @@ export function ViewerSurface({
     setLabelsHidden(!labelsHidden);
     storeFlag(LABELS_KEY, labelsHidden ? "on" : "off");
   };
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  const toggleDock = (next: boolean) => {
+    setDock(next);
+    focusToggle(dockRef.current, contentId, !next);
+  };
   const setDockRef = useRef(setDock);
   setDockRef.current = setDock;
   const listenForExpand = useCallback((node: HTMLDivElement | null) => {
+    dockRef.current = node;
     if (!node) return;
     // Focus requests from outside (the comments M hotkey) focus right after dispatching, before React
     // re-renders, so the content drops `inert` here first; the render then agrees.
@@ -160,7 +166,7 @@ export function ViewerSurface({
             <div
               ref={listenForExpand}
               className={cn(
-                "pointer-events-auto relative grid max-w-full origin-bottom grid-cols-1 overflow-hidden bg-popover text-popover-foreground shadow-overlay transition-[width,height,border-radius,box-shadow] duration-[420ms] ease-[cubic-bezier(0.32,0.72,0,1)] [interpolate-size:allow-keywords] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-300",
+                "pointer-events-auto relative grid max-w-full origin-bottom grid-cols-1 overflow-hidden bg-popover text-popover-foreground shadow-overlay transition-[width,height,border-radius,box-shadow] duration-[420ms] ease-[cubic-bezier(0.32,0.72,0,1)] [interpolate-size:allow-keywords] motion-reduce:transition-none motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-300",
                 collapsed ? "size-11 rounded-[22px]" : "h-auto w-fit rounded-[20px] @max-md:w-full",
               )}
             >
@@ -175,7 +181,7 @@ export function ViewerSurface({
               >
                 {above}
                 {above && <div aria-hidden="true" className="mx-2 h-px shrink-0 bg-border" />}
-                <ControlBar state={state} actions={actions} docked controlsId={contentId} onCollapse={() => setDock(true)} />
+                <ControlBar state={state} actions={actions} docked controlsId={contentId} onCollapse={() => toggleDock(true)} />
               </div>
               <button
                 type="button"
@@ -187,7 +193,7 @@ export function ViewerSurface({
                   "absolute inset-0 grid place-items-center rounded-[22px] text-muted-foreground outline-none transition-[opacity,filter,scale,color] duration-200 ease-out hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset [&_svg]:size-4",
                   collapsed ? "scale-100 opacity-100 blur-none delay-120" : "pointer-events-none scale-[0.25] opacity-0 blur-xs",
                 )}
-                onClick={() => setDock(false)}
+                onClick={() => toggleDock(false)}
               >
                 <ChevronUpIcon aria-hidden="true" />
               </button>
@@ -206,7 +212,7 @@ const LABELS_KEY = "arch-viewer-labels";
 /** Dispatch with `bubbles: true` from inside the dock to expand it before focusing. */
 export const DOCK_EXPAND_EVENT = "arch:dock-expand";
 
-const instanceKeys =new WeakMap<ViewerInstance, number>();
+const instanceKeys = new WeakMap<ViewerInstance, number>();
 let instanceCount = 0;
 function instanceKey(viewer: ViewerInstance) {
   if (!instanceKeys.has(viewer)) instanceKeys.set(viewer, ++instanceCount);

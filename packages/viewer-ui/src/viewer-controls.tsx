@@ -26,7 +26,7 @@ import {
   SunIcon,
   TagIcon,
 } from "lucide-react";
-import { type ReactElement, type ReactNode, useId, useMemo, useState } from "react";
+import { type ReactElement, type ReactNode, useId, useMemo, useRef, useState } from "react";
 
 import { type Messages, useFormat, useT } from "./locale";
 
@@ -116,7 +116,7 @@ export function ControlBar({
       role="toolbar"
       aria-label={t.viewer.toolbar}
       className={cn(
-        "pointer-events-auto flex max-w-full items-center overflow-x-auto [scrollbar-width:none] @max-md:justify-between",
+        "pointer-events-auto flex max-w-full items-center overflow-x-auto [scrollbar-width:none]",
         docked ? "gap-1 p-2" : "gap-0.5 rounded-2xl bg-popover p-1 text-popover-foreground shadow-popover",
       )}
     >
@@ -159,7 +159,7 @@ export function ControlBar({
             aria-label={t.viewer.hideControls}
             aria-expanded="true"
             aria-controls={controlsId}
-            className={pillIcon}
+            className={cn(pillIcon, "ml-auto")}
             onClick={onCollapse}
           >
             <ChevronDownIcon aria-hidden="true" />
@@ -186,6 +186,16 @@ export function storeFlag(key: string, value: string) {
   } catch {}
 }
 
+/**
+ * Moves focus to the other toggle of a collapsible card. React has not re-rendered yet, so the
+ * target still sits under `inert`; that is lifted here and the next render agrees.
+ */
+export function focusToggle(card: HTMLElement | null, contentId: string, expanded: boolean) {
+  const target = card?.querySelector<HTMLElement>(`[aria-controls="${contentId}"][aria-expanded="${expanded}"]`);
+  for (let node = target; node && node !== card; node = node.parentElement) node.inert = false;
+  target?.focus();
+}
+
 const TOOLS_KEY = "arch-viewer-tools";
 
 /** Top-right card: time of day, cut, labels, fullscreen and "Mehr". Collapses toward the right edge. */
@@ -207,10 +217,12 @@ export function ToolsCard({
 }) {
   const t = useT();
   const contentId = useId();
+  const cardRef = useRef<HTMLDivElement>(null);
   const [collapsed, setCollapsed] = useState(() => readStoredFlag(TOOLS_KEY, "collapsed"));
   const setTools = (next: boolean) => {
     setCollapsed(next);
     storeFlag(TOOLS_KEY, next ? "collapsed" : "open");
+    focusToggle(cardRef.current, contentId, !next);
   };
   const labelsLabel = labelsHidden ? t.viewer.showLabels : t.viewer.hideLabels;
   return (
@@ -223,8 +235,9 @@ export function ToolsCard({
       )}
     >
       <div
+        ref={cardRef}
         className={cn(
-          "pointer-events-auto relative grid max-w-full shrink-0 origin-right grid-cols-1 overflow-hidden bg-popover text-popover-foreground shadow-overlay transition-[width,height,border-radius] duration-[420ms] ease-[cubic-bezier(0.32,0.72,0,1)] [interpolate-size:allow-keywords] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-300",
+          "pointer-events-auto relative grid max-w-full shrink-0 origin-right grid-cols-1 overflow-hidden bg-popover text-popover-foreground shadow-overlay transition-[width,height,border-radius] duration-[420ms] ease-[cubic-bezier(0.32,0.72,0,1)] [interpolate-size:allow-keywords] motion-reduce:transition-none motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-300",
           collapsed ? "size-11 rounded-[22px]" : "h-auto w-fit rounded-[20px]",
         )}
       >
