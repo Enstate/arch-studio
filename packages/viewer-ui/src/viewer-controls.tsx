@@ -9,7 +9,14 @@ import { useIsMobile } from "@arch/ui/hooks/use-mobile";
 import { useMountEffect } from "@arch/ui/hooks/use-mount-effect";
 import { cn } from "@arch/ui/lib/utils";
 import {
+  ChevronDownIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   EllipsisIcon,
+  FootprintsIcon,
+  HouseIcon,
+  type LucideIcon,
+  MapIcon,
   MaximizeIcon,
   MinimizeIcon,
   MoonIcon,
@@ -17,6 +24,7 @@ import {
   PlayIcon,
   ScissorsIcon,
   SunIcon,
+  TagIcon,
 } from "lucide-react";
 import { type ReactElement, type ReactNode, useId, useMemo, useState } from "react";
 
@@ -32,11 +40,18 @@ import {
   VIEWER_SHORTCUTS,
   type ViewerActions,
   type ViewerInstance,
+  type ViewerMode,
   type ViewerState,
 } from "./viewer-model";
 
+const MODE_ICONS: Record<ViewerMode, LucideIcon> = {
+  plan: MapIcon,
+  dollhouse: HouseIcon,
+  walk: FootprintsIcon,
+};
+
 export const pillItem =
-  "relative inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 hover:bg-foreground/7 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.96] aria-pressed:bg-foreground/13 aria-pressed:text-foreground pointer-coarse:h-11 [&_svg]:size-3.5";
+  "relative inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-xl px-2.5 text-xs font-medium text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 ease-out hover:bg-foreground/7 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.96] aria-pressed:bg-foreground/13 aria-pressed:text-foreground pointer-coarse:h-11 [&_svg]:size-3.5";
 
 export const pillIcon = cn(pillItem, "w-7 px-0 pointer-coarse:w-11 pointer-coarse:px-0 [&_svg]:size-4");
 
@@ -75,15 +90,21 @@ function TourWord({ current }: { current: (typeof TOUR_WORDS)[number] }) {
   );
 }
 
-/** The floating pill: modes, tour, time of day, and the rest behind "Mehr". */
+/** The floating pill: view modes and the tour. */
 export function ControlBar({
-  viewer,
   state,
   actions,
+  docked = false,
+  onCollapse,
+  controlsId,
 }: {
-  viewer: ViewerInstance;
   state: ViewerState;
   actions: ViewerActions;
+  /** Inside a shared card that owns the surface. */
+  docked?: boolean;
+  /** Shows a chevron at the end that hides the card. */
+  onCollapse?: () => void;
+  controlsId?: string;
 }) {
   const t = useT();
   const { status } = state.tour;
@@ -94,22 +115,29 @@ export function ControlBar({
     <div
       role="toolbar"
       aria-label={t.viewer.toolbar}
-      className="pointer-events-auto flex max-w-full items-center gap-0.5 overflow-x-auto rounded-xl bg-popover p-1 text-popover-foreground shadow-popover [scrollbar-width:none]"
+      className={cn(
+        "pointer-events-auto flex max-w-full items-center overflow-x-auto [scrollbar-width:none] @max-md:justify-between",
+        docked ? "gap-1 p-2" : "gap-0.5 rounded-2xl bg-popover p-1 text-popover-foreground shadow-popover",
+      )}
     >
       <fieldset className="flex gap-0.5">
         <legend className="sr-only">{t.viewer.view}</legend>
-        {MODES.map(({ mode, key }) => (
-          <Hint key={mode} label={t.viewer.modes[mode]} keys={key}>
-            <button
-              type="button"
-              aria-pressed={!touring && state.mode === mode}
-              className={pillItem}
-              onClick={() => actions.setMode(mode)}
-            >
-              {t.viewer.modes[mode]}
-            </button>
-          </Hint>
-        ))}
+        {MODES.map(({ mode, key }) => {
+          const Icon = MODE_ICONS[mode];
+          return (
+            <Hint key={mode} label={t.viewer.modes[mode]} keys={key}>
+              <button
+                type="button"
+                aria-pressed={!touring && state.mode === mode}
+                className={cn(pillItem, "@md:pl-2 @max-md:w-7 @max-md:px-0 pointer-coarse:@max-md:w-11")}
+                onClick={() => actions.setMode(mode)}
+              >
+                <Icon aria-hidden="true" />
+                <span className="@max-md:sr-only">{t.viewer.modes[mode]}</span>
+              </button>
+            </Hint>
+          );
+        })}
       </fieldset>
       <span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-border" />
       <Hint label={tourLabel(status, t)} keys="T">
@@ -124,22 +152,144 @@ export function ControlBar({
           <TourWord current={playing ? "pause" : status === "paused" ? "resume" : "tour"} />
         </button>
       </Hint>
-      <div className="hidden items-center @xl:flex">
-        <TimeControl state={state} actions={actions} className="w-52 pr-2" />
-      </div>
-      <DayNightButton state={state} actions={actions} className="@max-md:hidden @xl:hidden" />
-      <Hint label={t.viewer.cut} keys="C">
+      {onCollapse && (
+        <Hint label={t.viewer.hideControls}>
+          <button
+            type="button"
+            aria-label={t.viewer.hideControls}
+            aria-expanded="true"
+            aria-controls={controlsId}
+            className={pillIcon}
+            onClick={onCollapse}
+          >
+            <ChevronDownIcon aria-hidden="true" />
+          </button>
+        </Hint>
+      )}
+    </div>
+  );
+}
+
+/** A boolean kept in localStorage; reads are safe during server rendering and in private modes. */
+export function readStoredFlag(key: string, on: string) {
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem(key) === on;
+  } catch {
+    return false;
+  }
+}
+
+export function storeFlag(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {}
+}
+
+const TOOLS_KEY = "arch-viewer-tools";
+
+/** Top-right card: time of day, cut, labels, fullscreen and "Mehr". Collapses toward the right edge. */
+export function ToolsCard({
+  viewer,
+  state,
+  actions,
+  labelsHidden,
+  onToggleLabels,
+  hidden = false,
+}: {
+  viewer: ViewerInstance;
+  state: ViewerState;
+  actions: ViewerActions;
+  labelsHidden: boolean;
+  onToggleLabels: () => void;
+  /** Out of the way while a side panel covers the right edge; the collapsed state stays as it was. */
+  hidden?: boolean;
+}) {
+  const t = useT();
+  const contentId = useId();
+  const [collapsed, setCollapsed] = useState(() => readStoredFlag(TOOLS_KEY, "collapsed"));
+  const setTools = (next: boolean) => {
+    setCollapsed(next);
+    storeFlag(TOOLS_KEY, next ? "collapsed" : "open");
+  };
+  const labelsLabel = labelsHidden ? t.viewer.showLabels : t.viewer.hideLabels;
+  return (
+    <div
+      inert={hidden}
+      aria-hidden={hidden || undefined}
+      className={cn(
+        "max-w-full shrink-0 transition-[opacity,translate] duration-200 ease-out motion-reduce:transition-none",
+        hidden ? "pointer-events-none translate-x-3 opacity-0" : "translate-x-0 opacity-100",
+      )}
+    >
+      <div
+        className={cn(
+          "pointer-events-auto relative grid max-w-full shrink-0 origin-right grid-cols-1 overflow-hidden bg-popover text-popover-foreground shadow-overlay transition-[width,height,border-radius] duration-[420ms] ease-[cubic-bezier(0.32,0.72,0,1)] [interpolate-size:allow-keywords] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-300",
+          collapsed ? "size-11 rounded-[22px]" : "h-auto w-fit rounded-[20px]",
+        )}
+      >
+        <div
+          id={contentId}
+          role="toolbar"
+          aria-label={t.viewer.tools}
+          inert={collapsed}
+          aria-hidden={collapsed || undefined}
+          className={cn(
+            "col-start-1 row-start-1 flex min-w-0 items-center gap-1 p-2 transition-[opacity,filter,scale] duration-200 ease-out",
+            collapsed ? "pointer-events-none scale-[0.96] opacity-0 blur-xs" : "blur-none scale-100 opacity-100",
+          )}
+        >
+          <Hint label={t.viewer.hideTools}>
+            <button
+              type="button"
+              aria-label={t.viewer.hideTools}
+              aria-expanded="true"
+              aria-controls={contentId}
+              className={pillIcon}
+              onClick={() => setTools(true)}
+            >
+              <ChevronRightIcon aria-hidden="true" />
+            </button>
+          </Hint>
+          <div className="hidden items-center @xl:flex">
+            <TimeControl state={state} actions={actions} className="w-52 pr-1" />
+          </div>
+          <DayNightButton state={state} actions={actions} className="@xl:hidden" />
+          <span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-border" />
+          <Hint label={t.viewer.cut} keys="C">
+            <button
+              type="button"
+              aria-label={t.viewer.cut}
+              aria-pressed={state.mode === "dollhouse" && state.cut}
+              className={cn(pillIcon, "@max-md:hidden")}
+              onClick={actions.toggleCut}
+            >
+              <ScissorsIcon />
+            </button>
+          </Hint>
+          <Hint label={labelsLabel}>
+            <button type="button" aria-label={t.viewer.hideLabels} aria-pressed={labelsHidden} className={pillIcon} onClick={onToggleLabels}>
+              <TagIcon />
+            </button>
+          </Hint>
+          <FullscreenButton />
+          <MoreMenu viewer={viewer} state={state} actions={actions} />
+        </div>
         <button
           type="button"
-          aria-label={t.viewer.cut}
-          aria-pressed={state.mode === "dollhouse" && state.cut}
-          className={cn(pillIcon, "@max-md:hidden")}
-          onClick={actions.toggleCut}
+          inert={!collapsed}
+          aria-label={t.viewer.showTools}
+          aria-expanded="false"
+          aria-controls={contentId}
+          className={cn(
+            "absolute inset-0 grid place-items-center rounded-[22px] text-muted-foreground outline-none transition-[opacity,filter,scale,color] duration-200 ease-out hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset [&_svg]:size-4",
+            collapsed ? "scale-100 opacity-100 blur-none delay-120" : "pointer-events-none scale-[0.25] opacity-0 blur-xs",
+          )}
+          onClick={() => setTools(false)}
         >
-          <ScissorsIcon />
+          <ChevronLeftIcon aria-hidden="true" />
         </button>
-      </Hint>
-      <MoreMenu viewer={viewer} state={state} actions={actions} />
+      </div>
     </div>
   );
 }
@@ -273,7 +423,7 @@ function MorePanel({
           <button
             type="button"
             className={cn(
-              "flex flex-1 items-center gap-3 rounded-lg px-2 text-left outline-none hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring",
+              "flex flex-1 items-center gap-3 rounded-lg px-2 text-left outline-none transition-[background-color] duration-150 ease-out hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring",
               rowHeight,
             )}
             onClick={toggleFullscreen}
@@ -292,7 +442,7 @@ function MorePanel({
             <button
               type="button"
               aria-pressed={state.room === room.id}
-              className="flex min-h-8 w-full items-center gap-3 rounded-lg px-2 text-left text-ui outline-none hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring aria-pressed:bg-foreground/8 pointer-coarse:min-h-11 in-data-[touch]:min-h-11"
+              className="flex min-h-8 w-full items-center gap-3 rounded-lg px-2 text-left text-ui outline-none transition-[background-color] duration-150 ease-out hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring aria-pressed:bg-foreground/8 pointer-coarse:min-h-11 in-data-[touch]:min-h-11"
               onClick={() => {
                 actions.focusRoom(room.id);
                 onRoom?.();
@@ -419,7 +569,7 @@ function WalkHintCard({ onDismiss }: { onDismiss: () => void }) {
   );
 }
 
-export function FullscreenButton() {
+export function FullscreenButton({ className }: { className?: string }) {
   const fullscreen = useFullscreen();
   const t = useT();
   if (!canFullscreen()) return null;
@@ -429,10 +579,7 @@ export function FullscreenButton() {
       <button
         type="button"
         aria-label={label}
-        className={cn(
-          pillIcon,
-          "pointer-events-auto bg-popover shadow-popover hover:bg-accent",
-        )}
+        className={cn(pillIcon, className)}
         onClick={toggleFullscreen}
       >
         {fullscreen ? <MinimizeIcon /> : <MaximizeIcon />}

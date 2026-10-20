@@ -37,6 +37,7 @@ export const de = {
       "Dieses Projekt gibt es nicht oder Sie haben keinen Zugriff darauf. Fragen Sie die Person, die Sie eingeladen hat.",
     errorTitle: "Etwas ist schiefgelaufen",
     errorBody: "Das hat nicht geklappt. Bitte versuchen Sie es noch einmal.",
+    errorDetails: "Fehlerdetails",
   },
   errors: {
     generic: "Das hat nicht geklappt. Bitte versuchen Sie es noch einmal.",
@@ -95,6 +96,7 @@ export const en: Translation<typeof de> = {
     projectNotFoundBody: "This project doesn't exist or you don't have access. Ask the person who invited you.",
     errorTitle: "Something went wrong",
     errorBody: "That didn't work. Please try again.",
+    errorDetails: "Error details",
   },
   errors: {
     generic: "That didn't work. Please try again.",

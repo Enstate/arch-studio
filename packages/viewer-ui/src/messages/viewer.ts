@@ -1,7 +1,7 @@
 import type { Translation } from "../types";
 
 export const de = {
-  modes: { plan: "Grundriss", dollhouse: "Puppenhaus", walk: "Begehen" },
+  modes: { plan: "Plan", dollhouse: "3D", walk: "Gehen" },
   toolbar: "3D-Ansicht",
   view: "Ansicht",
   tour: {
@@ -16,6 +16,13 @@ export const de = {
   timeOfDay: "Tageszeit",
   clock: (time: string) => `${time} Uhr`,
   more: "Mehr Optionen",
+  hideControls: "Ausblenden",
+  showControls: "Einblenden",
+  tools: "Werkzeuge",
+  hideTools: "Werkzeuge ausblenden",
+  showTools: "Werkzeuge einblenden",
+  hideLabels: "Beschriftungen ausblenden",
+  showLabels: "Beschriftungen einblenden",
   moreTitle: "Ansicht anpassen",
   moreDescription: "Schnitt, Tageszeit, Räume und Vollbild",
   cut: "Schnitt",
@@ -104,10 +111,23 @@ export const de = {
     prepare: "Vorbereiten",
     mockFile: (name: string) => `Arch Vorschau-Export: ${name}\nDiese Datei ist ein Platzhalter.\n`,
   },
+  share: {
+    trigger: "Teilen",
+    title: "Mit Gästen teilen",
+    description: "Laden Sie Gäste ein, teilen Sie den Link oder betten Sie den Rundgang ein.",
+    guests: "Gäste",
+    emailPlaceholder: "name@firma.de",
+    invite: "Einladen",
+    invitePending: "Gast-Einladungen sind noch nicht verfügbar. Bis dahin teilen Sie den Link.",
+    link: "Link",
+    embed: "Einbetten",
+    preview: "Vorschau",
+    unpublished: "Der Link wird verfügbar, sobald diese Version veröffentlicht ist.",
+  },
 };
 
 export const en: Translation<typeof de> = {
-  modes: { plan: "Floor plan", dollhouse: "Dollhouse", walk: "Walk" },
+  modes: { plan: "Plan", dollhouse: "3D", walk: "Walk" },
   toolbar: "3D view",
   view: "View",
   tour: {
@@ -121,6 +141,13 @@ export const en: Translation<typeof de> = {
   timeOfDay: "Time of day",
   clock: (time: string) => time,
   more: "More options",
+  hideControls: "Hide",
+  showControls: "Show",
+  tools: "Tools",
+  hideTools: "Hide tools",
+  showTools: "Show tools",
+  hideLabels: "Hide labels",
+  showLabels: "Show labels",
   moreTitle: "Adjust view",
   moreDescription: "Cutaway, time of day, rooms and full screen",
   cut: "Cutaway",
@@ -208,5 +235,18 @@ export const en: Translation<typeof de> = {
     saveFile: "Save file",
     prepare: "Prepare",
     mockFile: (name: string) => `Arch preview export: ${name}\nThis file is a placeholder.\n`,
+  },
+  share: {
+    trigger: "Share",
+    title: "Share with guests",
+    description: "Invite guests, share the link or embed the tour.",
+    guests: "Guests",
+    emailPlaceholder: "name@company.com",
+    invite: "Invite",
+    invitePending: "Guest invitations aren't available yet. Until then, share the link.",
+    link: "Link",
+    embed: "Embed",
+    preview: "Preview",
+    unpublished: "The link becomes available once this version is published.",
   },
 };
