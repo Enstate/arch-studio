@@ -1,4 +1,4 @@
-import type { ReviewNote, StudioProject } from "@arch/project";
+import type { ProjectIntakePlan, ReviewNote, StudioProject } from "@arch/project";
 
 export type StudioClient = { id: string; name: string };
 export type StudioProjectSummary = {
@@ -18,12 +18,16 @@ export type StudioVersion = {
   createdAt: string;
   hasArtifact: boolean;
   artifactHash: string | null;
+  intake: ProjectIntakePlan | null;
+  intakeError: string | null;
   outputs: { id: string; kind: "still" | "film"; label: string; url: string }[];
   references: { path: string; label: string; kind: "floorplan" | "moodboard" | "other"; url: string }[];
 };
 export type StudioProjectDetails = {
   project: StudioProjectSummary;
   source: StudioProject | null;
+  intake: ProjectIntakePlan | null;
+  intakeError: string | null;
   versions: StudioVersion[];
   notes: ReviewNote[];
 };
