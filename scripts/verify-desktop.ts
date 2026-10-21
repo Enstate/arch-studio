@@ -25,7 +25,9 @@ try {
   page.on('pageerror', error => console.error('Renderer error:',error.message));
   page.on('console', message => {if(message.type()==='error') console.error('Renderer console:',message.text());});
   page.setDefaultTimeout(30000);
-  await page.getByRole('button', {name:'Sample house',exact:true}).waitFor().catch(async error=>{console.error('Renderer body:',await page.locator('body').innerText());throw error;});
+  // Studio opens the demo's thread on its Rounds view; the model has its own view.
+  const view = (name: string) => page.locator(`[data-studio-view="${name}"]:visible`).first();
+  await view('preview').click().catch(async error=>{console.error('Renderer body:',await page.locator('body').innerText());throw error;});
   origin = new URL(page.url()).origin;
   assert.equal(new URL(page.url()).hash, '');
   await page.locator('[data-studio-preview="ready"]').waitFor({timeout:120000});
@@ -56,10 +58,9 @@ try {
   const png=await page.screenshot({path:path.join(root,'evidence/desktop/sample-house.png'),scale:'device'});
   assert.equal(png.readUInt32BE(16),Math.round(viewport.width*scaling));
   console.log(JSON.stringify({nativeUiScale:scaling,captureWidth:png.readUInt32BE(16),captureHeight:png.readUInt32BE(20)}));
-  await page.getByRole('button',{name:/^(Projektinformationen und Werkzeuge|Project details and tools)$/}).click();
-  await page.getByRole('menuitemradio',{name:/^(Dateien|Files)$/}).click();
+  await view('files').click();
   await electron.evaluate(({session}) => { session.defaultSession.on('will-download', (_event,item)=>item.setSavePath(`${process.env.ARCH_HOME}/desktop-reference.json`)); });
-  await page.getByRole('link',{name:'sample-house.json',exact:true}).click();
+  await page.getByRole('link',{name:/sample-house\.json/}).first().click();
   const download=path.join(home,'desktop-reference.json');
   for(let i=0;i<100;i++){try{await readFile(download);break;}catch{await new Promise(resolve=>setTimeout(resolve,50));}}
   const manifest=JSON.parse(await readFile(path.join(home,'examples/sample-house/arch.project.json'),'utf8'));
