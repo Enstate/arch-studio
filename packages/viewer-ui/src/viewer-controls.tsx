@@ -173,6 +173,61 @@ export function ControlBar({
   );
 }
 
+/**
+ * Storeys stacked as they stand, top floor first. Plan cuts the chosen floor, the dollhouse shows it
+ * and everything below, and walk mode moves there. Hidden for a single-storey plan.
+ */
+export function LevelPicker({ viewer, state, actions }: { viewer: ViewerInstance; state: ViewerState; actions: ViewerActions }) {
+  const t = useT();
+  const levels = useMemo(() => viewer.levels().reverse(), [viewer]);
+  if (levels.length < 2) return null;
+  return (
+    <fieldset
+      data-viewer-levels=""
+      className="pointer-events-auto flex min-w-0 flex-col gap-0.5 rounded-2xl border-0 bg-popover p-1 text-popover-foreground shadow-popover motion-safe:animate-in motion-safe:fade-in-0"
+    >
+      <legend className="sr-only">{t.viewer.floors}</legend>
+      {levels.map((level) => (
+        <button
+          key={level.id}
+          type="button"
+          aria-pressed={state.level === level.id}
+          className={cn(pillItem, "max-w-40 justify-start")}
+          onClick={() => actions.setLevel(level.id)}
+        >
+          <span className="truncate">{level.name}</span>
+        </button>
+      ))}
+    </fieldset>
+  );
+}
+
+/** The plan's design options, one look each; switching keeps the view. Hidden for a plan without options. */
+export function DesignOptionPicker({ viewer, state, actions }: { viewer: ViewerInstance; state: ViewerState; actions: ViewerActions }) {
+  const t = useT();
+  const options = useMemo(() => viewer.designOptions(), [viewer]);
+  if (options.length < 2) return null;
+  return (
+    <fieldset
+      data-viewer-design-options=""
+      className="pointer-events-auto flex min-w-0 flex-col gap-0.5 rounded-2xl border-0 bg-popover p-1 text-popover-foreground shadow-popover motion-safe:animate-in motion-safe:fade-in-0"
+    >
+      <legend className="float-left px-2.5 pt-1 pb-0.5 text-2xs font-medium text-muted-foreground">{t.viewer.designOption}</legend>
+      {options.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          aria-pressed={state.designOption === option.id}
+          className={cn(pillItem, "max-w-40 justify-start")}
+          onClick={() => actions.setDesignOption(option.id)}
+        >
+          <span className="truncate">{option.name}</span>
+        </button>
+      ))}
+    </fieldset>
+  );
+}
+
 /** A boolean kept in localStorage; reads are safe during server rendering and in private modes. */
 export function readStoredFlag(key: string, on: string) {
   if (typeof window === "undefined") return false;
@@ -283,6 +338,19 @@ export function ToolsCard({
               <ScissorsIcon />
             </button>
           </Hint>
+          {state.roof !== null && (
+            <Hint label={state.roof ? t.viewer.hideRoof : t.viewer.showRoof} keys="R">
+              <button
+                type="button"
+                aria-label={t.viewer.roof}
+                aria-pressed={state.mode === "dollhouse" && state.roof}
+                className={cn(pillIcon, "@max-md:hidden")}
+                onClick={actions.toggleRoof}
+              >
+                <RoofIcon />
+              </button>
+            </Hint>
+          )}
           <Hint label={labelsLabel}>
             <button type="button" aria-label={t.viewer.hideLabels} aria-pressed={labelsHidden} className={pillIcon} onClick={onToggleLabels}>
               <TagIcon />
@@ -414,7 +482,10 @@ function MorePanel({
   const id = useId();
   const t = useT();
   const format = useFormat();
-  const rooms = useMemo(() => viewer.rooms(), [viewer]);
+  const allRooms = useMemo(() => viewer.rooms(), [viewer]);
+  const floor = useMemo(() => viewer.levels().find((level) => level.id === state.level), [viewer, state.level]);
+  // A multi-storey plan lists the rooms of the floor on show.
+  const rooms = floor ? allRooms.filter((room) => room.level === floor.id) : allRooms;
   const fullscreen = useFullscreen();
   const keys = !touch;
   return (
@@ -430,6 +501,15 @@ function MorePanel({
           onCheckedChange={actions.toggleCut}
         />
       </PanelRow>
+      {state.roof !== null && (
+        <PanelRow>
+          <label htmlFor={`${id}-roof`} className="flex-1">
+            {t.viewer.roof}
+          </label>
+          {keys && <Kbd className="pointer-coarse:hidden">R</Kbd>}
+          <Switch id={`${id}-roof`} checked={state.roof} onCheckedChange={actions.setRoof} />
+        </PanelRow>
+      )}
       <PanelRow>
         <label htmlFor={`${id}-furniture`} className="flex-1">
           {t.viewer.furniture}
@@ -458,8 +538,8 @@ function MorePanel({
         </PanelRow>
       )}
 
-      <PanelHeading>{t.viewer.rooms}</PanelHeading>
-      <ul aria-label={t.viewer.rooms} className="flex flex-col">
+      <PanelHeading>{floor ? t.viewer.roomsOn(floor.name) : t.viewer.rooms}</PanelHeading>
+      <ul aria-label={floor ? t.viewer.roomsOn(floor.name) : t.viewer.rooms} className="flex flex-col">
         {rooms.map((room) => (
           <li key={room.id}>
             <button
@@ -548,6 +628,16 @@ function writeFlag(key: string) {
   }
 }
 
+/** A pitched roof over the walls; lucide has no roof symbol. */
+function RoofIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 17 12 8l10 9" />
+      <path d="M15.5 10.7V6.5h3v6.9" />
+    </svg>
+  );
+}
+
 /** Highlight the physical mouse button, alongside the action's rotate or pan symbol. */
 function MouseButtonIcon({ button }: { button: "left" | "right" }) {
   return (
@@ -572,12 +662,26 @@ export function NavigationHint({ state }: { state: ViewerState }) {
         <span>{plan ? hint.pan : hint.rotate}</span>
         <span className="sr-only">{plan ? hint.leftPan : hint.leftRotate}</span>
       </span>
-      <span className="inline-flex items-center gap-1.5" title={plan ? hint.rightPan : hint.panAlternative}>
-        <MouseButtonIcon button="right" /><MoveIcon aria-hidden="true" className="size-3.5" />
-        <span>{hint.pan}</span>
-        {!plan && <span aria-hidden="true" className="inline-flex items-center gap-1 @max-lg:hidden">/ <Kbd>Shift</Kbd> + <MouseButtonIcon button="left" /></span>}
-        <span className="sr-only">{plan ? hint.rightPan : hint.panAlternative}</span>
-      </span>
+      {plan ? (
+        <span className="inline-flex items-center gap-1.5" title={hint.rightPan}>
+          <MouseButtonIcon button="right" /><MoveIcon aria-hidden="true" className="size-3.5" />
+          <span>{hint.pan}</span>
+          <span className="sr-only">{hint.rightPan}</span>
+        </span>
+      ) : (
+        <>
+          <span className="inline-flex items-center gap-1.5 @max-lg:hidden" title={hint.panAlternative}>
+            <Kbd>Shift</Kbd> + <MouseButtonIcon button="left" /><MoveIcon aria-hidden="true" className="size-3.5" />
+            <span>{hint.pan}</span>
+            <span className="sr-only">{hint.panAlternative}</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5" title={hint.rightFly}>
+            <MouseButtonIcon button="right" /><Kbd>W A S D</Kbd>
+            <span>{hint.fly}</span>
+            <span className="sr-only">{hint.rightFly}</span>
+          </span>
+        </>
+      )}
       <span className="inline-flex items-center gap-1.5 @max-md:hidden"><ZoomInIcon aria-hidden="true" className="size-3.5" />{hint.zoom}</span>
     </fieldset>
   );
@@ -656,6 +760,7 @@ export function ViewerHotkeys({ actions }: { actions: ViewerActions }) {
   useHotkey("t", on(actions.toggleTour));
   useHotkey("l", on(actions.toggleNight));
   useHotkey("c", on(actions.toggleCut));
+  useHotkey("r", on(actions.toggleRoof));
   useHotkey("h", on(actions.toggleFurniture));
   useHotkey("[", on(() => actions.nudgeTime(-1)));
   useHotkey("]", on(() => actions.nudgeTime(1)));

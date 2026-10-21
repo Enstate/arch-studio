@@ -1,4 +1,7 @@
 import { validatePlan } from "@arch/viewer/plan/validate";
+import { compressArtifactModels } from "./compress.ts";
+import { cameraView } from "@arch/viewer/plan/levels";
+import { applyEdits, hasEdits, type PlanEdits } from "@arch/viewer/plan/edits";
 import type { Plan } from "@arch/viewer/plan/schema";
 import { spawn } from "node:child_process";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
@@ -11,6 +14,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
+import { planEditsSchema } from "./hand-edits.ts";
 import {
   artifactManifestSchema,
   type ArtifactManifest,
@@ -1415,6 +1419,7 @@ async function validatedArtifactPlan(directory:string, files:ArtifactManifest["f
     furniture:z.array(z.object({...named,type:z.string(),position:pair,size:z.tuple([z.number(),z.number(),z.number()]).optional(),model:z.string().optional(),fixture:z.boolean().optional()}).passthrough()).optional(),
     cameras:z.array(z.object({...named,position:pair,lookAt:pair,height:z.number().optional(),lookAtHeight:z.number().optional(),fov:z.number().optional(),photo:z.string().optional()}).passthrough()).optional(),
     materials:z.record(z.string(),material).optional(),environment:z.string().optional(),
+    designOptions:z.array(z.object({...named,materials:z.record(z.string(),material).optional()}).passthrough()).optional(),
     source:z.object({image:z.string(),pxPerMeter:z.number(),overall:pair.optional()}).passthrough().optional()
   }).passthrough();
   const plan=shape.parse(raw) as unknown as Plan;
@@ -1431,8 +1436,10 @@ async function validatedArtifactPlan(directory:string, files:ArtifactManifest["f
   if(plan.source?.image)local(plan.source.image);
   for(const camera of plan.cameras??[])if(camera.photo)local(camera.photo);
   for(const item of plan.furniture??[])if(item.model)local(item.model);
-  for(const material of Object.values(plan.materials??{}))if(material.texture)local(material.texture);
-  const pbr=Object.values(plan.materials??{}).flatMap(m=>m.pbr?[m.pbr]:[]);
+  // Design options replace finishes by key, so their textures must be bundled too.
+  const finishes=[...Object.values(plan.materials??{}),...(plan.designOptions??[]).flatMap(o=>Object.values(o.materials??{}))];
+  for(const material of finishes)if(material.texture)local(material.texture);
+  const pbr=[...new Set(finishes.flatMap(m=>m.pbr?[m.pbr]:[]))];
   const hasLibrary=paths.has("outputs/artifact/library/index.json");
   if(pbr.length || plan.environment || (plan.furniture??[]).some(f=>f.model?.startsWith("@lib/"))){
     if(!hasLibrary)throw new Error("Plan requires a bundled asset library");
@@ -1455,6 +1462,126 @@ async function validatedArtifactPlan(directory:string, files:ArtifactManifest["f
     }
   }
   return plan;
+}
+const handEditsPath = "source/edits.json";
+const maximumHandEditsBytes = 2 * 1024 * 1024;
+/** The hand edits a project folder holds; none when it has no `source/edits.json`. */
+export async function handEdits(directory: string): Promise<PlanEdits> {
+  let file: string;
+  try {
+    file = await safeFile(directory, handEditsPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1 };
+    throw error;
+  }
+  if ((await fs.stat(file)).size > maximumHandEditsBytes) throw new Error("source/edits.json exceeds the 2 MiB limit.");
+  const parsed = planEditsSchema.safeParse(JSON.parse(await fs.readFile(file, "utf8")));
+  if (!parsed.success) throw new Error(`source/edits.json is not valid hand edits: ${z.prettifyError(parsed.error)}`);
+  return parsed.data;
+}
+/** A file to write under a folder, refusing links anywhere along the way, which a generator could plant. */
+async function writableFile(directory: string, relative: string): Promise<string> {
+  relativeProjectPath.parse(relative);
+  if ((await fs.lstat(directory)).isSymbolicLink() || (await fs.realpath(directory)) !== directory)
+    throw new Error("File root contains symlinks");
+  let current = directory;
+  for (const part of relative.split("/")) {
+    current = path.join(current, part);
+    const stat = await fs.lstat(current).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+    if (!stat) break;
+    if (stat.isSymbolicLink()) throw new Error(`Symlink rejected: ${relative}`);
+  }
+  const file = path.join(directory, relative);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  return file;
+}
+/** Library ids hand edits use: models of placed pieces and PBR textures of painted finishes. */
+export function handEditAssets(edits: PlanEdits): { models: string[]; textures: string[] } {
+  const models = (edits.added ?? []).flatMap(piece => piece.model?.match(/^@lib\/models\/(.+)\.glb$/)?.slice(1) ?? []);
+  const finishes = [...Object.values(edits.materials ?? {}), ...Object.values(edits.designOptions ?? {}).flatMap(option => Object.values(option))];
+  return { models: [...new Set(models)], textures: [...new Set(finishes.flatMap(finish => finish.pbr ? [finish.pbr] : []))] };
+}
+const libraryId = z.string().regex(/^[a-zA-Z0-9_-]+$/);
+const libraryIndexSchema = z.object({
+  version: z.number().int().positive(),
+  textures: z.record(libraryId, z.object({ res: z.array(z.number().int().positive()).min(1), maps: z.array(libraryId).min(1) }).passthrough()),
+  models: z.record(libraryId, z.unknown()),
+  hdris: z.record(libraryId, z.unknown()),
+}).passthrough();
+/** A library folder: `index.json`, `models/` and `textures/`, at `library` under `root`. */
+type LibraryFolder = { root: string; library: string };
+const inLibrary = (folder: LibraryFolder, file: string) => folder.library ? `${folder.library}/${file}` : file;
+async function libraryIndex(folder: LibraryFolder) {
+  let file: string;
+  try {
+    file = await safeFile(folder.root, inLibrary(folder, "index.json"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  return libraryIndexSchema.parse(JSON.parse(await fs.readFile(file, "utf8")));
+}
+/**
+ * Copies library models and textures with their index entries into another library folder,
+ * skipping files it already holds. The target index is created when missing.
+ */
+export async function bundleLibraryAssets(from: LibraryFolder, to: LibraryFolder, assets: { models: string[]; textures: string[] }): Promise<void> {
+  if (!assets.models.length && !assets.textures.length) return;
+  const source = await libraryIndex(from);
+  const target = (await libraryIndex(to)) ?? { version: 2, textures: {}, models: {}, hdris: {} };
+  const copy = async (file: string) => {
+    const destination = await writableFile(to.root, inLibrary(to, file));
+    if (await fs.lstat(destination).then(() => true, () => false)) return;
+    await fs.copyFile(await safeFile(from.root, inLibrary(from, file)), destination);
+  };
+  for (const id of assets.models) {
+    libraryId.parse(id);
+    const entry = target.models[id] ?? source?.models[id];
+    if (!entry) throw new Error(`Hand edits place library model ${id}, which the library they come from does not hold.`);
+    await copy(`models/${id}.glb`);
+    target.models[id] = entry;
+  }
+  for (const id of assets.textures) {
+    libraryId.parse(id);
+    const entry = target.textures[id] ?? source?.textures[id];
+    if (!entry) throw new Error(`Hand edits paint with library texture ${id}, which the library they come from does not hold.`);
+    for (const resolution of entry.res) for (const map of entry.maps) await copy(`textures/${id}/${resolution}/${map}.webp`);
+    target.textures[id] = entry;
+  }
+  await atomic(await writableFile(to.root, inLibrary(to, "index.json")), target);
+}
+/**
+ * Lays a project's hand edits over the plan its generator wrote and bundles the library assets
+ * they use from the project's `assets/library/`. Writes `outputs/artifact/hand-edits.json` with
+ * the edits that no longer apply. Null when the project has no hand edits.
+ */
+export async function applyHandEdits(directory: string): Promise<{ dropped: string[] } | null> {
+  const edits = await handEdits(directory);
+  if (!hasEdits(edits)) return null;
+  let planFile: string;
+  try {
+    planFile = await safeFile(directory, "outputs/artifact/plan.json");
+  } catch (error) {
+    // The build reports a generator that wrote no plan.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  let merged: ReturnType<typeof applyEdits>;
+  try {
+    merged = applyEdits(JSON.parse(await fs.readFile(planFile, "utf8")) as Plan, edits);
+  } catch (error) {
+    throw new Error(`Could not lay source/edits.json over the generated plan: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  await bundleLibraryAssets({ root: directory, library: "assets/library" }, { root: directory, library: "outputs/artifact/library" }, handEditAssets(edits));
+  await atomic(planFile, merged.plan);
+  await atomic(await writableFile(directory, "outputs/artifact/hand-edits.json"), { dropped: merged.dropped });
+  return { dropped: merged.dropped };
+}
+/** Saves hand edits beside a project's source, first copying the library assets they use from `library` into `assets/library/`. */
+export async function saveHandEdits(directory: string, edits: PlanEdits, library: string | null): Promise<void> {
+  const checked = planEditsSchema.parse(edits);
+  if (library) await bundleLibraryAssets({ root: await fs.realpath(library), library: "" }, { root: directory, library: "assets/library" }, handEditAssets(checked));
+  await atomic(await writableFile(directory, handEditsPath), checked);
 }
 const artifactBuilds=new Set<string>();
 const sourceBuildProcesses = new Set<() => void>();
@@ -1528,11 +1655,15 @@ export async function buildProjectArtifact(projectId: string, options: { authori
       code===0?resolve():reject(new Error(`Generator failed (${code})${detail ? `: ${detail}` : ""}${diagnosticTruncated ? "\n[stderr truncated at 4 KiB]" : ""}`));
     });
   });
+  // Hand edits from the viewer win over the generated plan; edits whose target is gone are listed.
+  await applyHandEdits(current.directory);
+  // Generated models ship compressed, so clients download about half as much.
+  await compressArtifactModels(output);
   const files = await Promise.all((await projectFiles(current.directory,"outputs/artifact")).map(async p=>{const b=await fs.readFile(await safeFile(current.directory,p));return {path:p,sha256:digest(b),size:b.length}}));
   const plan = "outputs/artifact/plan.json";
   if (!files.some(f=>f.path===plan)) throw new Error("Generator did not produce plan.json");
   const generatedPlan = await validatedArtifactPlan(current.directory, files);
-  const artifact = artifactManifestSchema.parse({schemaVersion:1,projectId,runtime:current.manifest.runtime,runtimeHash:await viewerRuntimeHash(),sources,plan,files,cameras:(generatedPlan.cameras ?? []).map(c=>({id:c.id,position:[c.position[0],c.height??1.6,c.position[1]],target:[c.lookAt[0],c.lookAtHeight??1.2,c.lookAt[1]]})),outputs:files.filter(f=>f.path.startsWith("outputs/artifact/stills/")||f.path.startsWith("outputs/artifact/videos/")).map(f=>({kind:f.path.startsWith("outputs/artifact/stills/")?"still":"video",path:f.path}))});
+  const artifact = artifactManifestSchema.parse({schemaVersion:1,projectId,runtime:current.manifest.runtime,runtimeHash:await viewerRuntimeHash(),sources,plan,files,cameras:(generatedPlan.cameras ?? []).map(c=>({id:c.id,...cameraView(generatedPlan,c)})),outputs:files.filter(f=>f.path.startsWith("outputs/artifact/stills/")||f.path.startsWith("outputs/artifact/videos/")).map(f=>({kind:f.path.startsWith("outputs/artifact/stills/")?"still":"video",path:f.path}))});
   for (const source of sources) if (digest(await fs.readFile(await safeFile(current.directory,source.path))) !== source.sha256) throw new Error("Source changed during build");
   await atomic(path.join(current.directory,"outputs/artifact.json"),artifact);
   const saved = await saveBranchCheckpoint(projectId, line.name);
@@ -1567,6 +1698,12 @@ export async function inspectArtifact(target: {projectId: string}|{checkpointId:
   for (const file of [...details.artifact.sources, ...details.artifact.files])
     await verifiedBlob(path.join(archiveDirectory(),"blobs/sha256"),file);
   return details;
+}
+/** Hand edits a built version could not lay over its plan, from its `hand-edits.json`. */
+export async function droppedHandEdits(artifact: ArtifactManifest): Promise<string[]> {
+  const file = artifact.files.find(f => f.path === "outputs/artifact/hand-edits.json");
+  if (!file) return [];
+  return z.object({ dropped: z.array(z.string()) }).parse(JSON.parse((await verifiedBlob(path.join(archiveDirectory(), "blobs/sha256"), file)).toString())).dropped;
 }
 const artifactManifests=new Map<string,Promise<Map<string,ArtifactManifest["files"][number]>>>();
 export async function artifactFile(checkpointId:string, relative:string):Promise<Buffer> {

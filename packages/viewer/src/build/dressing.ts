@@ -1,7 +1,8 @@
 import * as THREE from 'three/webgpu';
 import type { Plan, Vec2, Wall, Opening } from '../plan/schema.ts';
 import { withDefaults } from '../plan/schema.ts';
-import { wallDir, wallLength, wallThickness, roomAt, pointSegment } from '../plan/geom.ts';
+import { wallDir, wallLength, wallThickness, roomAt, pointSegment, ceilingAt, slopeDirection, pointInPolygon } from '../plan/geom.ts';
+import { stairFlights } from '../plan/levels.ts';
 import { FURNITURE_DEFAULT_SIZE } from '../plan/furnitureSizes.ts';
 import type { MaterialLibrary } from './materials.ts';
 
@@ -40,8 +41,11 @@ export function buildDressing(plan: Plan, lib: MaterialLibrary, mat: MatFn) {
       // Curtains: a pleated panel parked each side of the opening, hanging from a rod just
       // under the ceiling. Skipped where the wall ends or furniture stands in the way.
       const panelW = Math.max(0.45, Math.min(0.75, o.width * 0.35));
-      const top = (d.wallHeight ?? 2.6) - 0.06;
       const face = t / 2 + 0.09;
+      // The rod hangs just under the ceiling of the room it faces, which may be lower or sloped.
+      const rodAt: Vec2 = [mid[0] + inward[0] * face, mid[1] + inward[1] * face];
+      const facing = roomAt(plan, rodAt);
+      const top = Math.min(d.wallHeight ?? 2.6, facing ? ceilingAt(plan, facing, rodAt) : Infinity) - 0.06;
       const rodHalf = o.width / 2 + panelW + 0.1;
       const room = rodHalf < Math.min(o.offset, L - o.offset) - 0.08;
       if (room) {
@@ -108,31 +112,44 @@ export function buildDressing(plan: Plan, lib: MaterialLibrary, mat: MatFn) {
     const art = framedArt(artW, artH, seed++, mat);
     art.position.set(p.x, Math.max(h, 0.9) + 0.35 + artH / 2, p.z);
     art.rotation.y = rot;
-    // Hangs over the bed, so it leaves with the loose furniture.
+    // Hangs over the bed, so it leaves with the loose furniture and belongs to the bed's design options.
+    if (f.designOptions) art.userData.designOptions = f.designOptions;
     art.userData.loose = true;
     group.add(art);
   }
 
   // Recessed downlights: a slim white ring on each ceiling, laid out on a ~1.8 m grid.
   const ringGeo = new THREE.CylinderGeometry(0.055, 0.055, 0.01, 40);
+  const flights = stairFlights(plan);
   const lensMat = mat('bulb');
   for (const r of plan.rooms ?? []) {
     const xs = r.polygon.map((q) => q[0]), ys = r.polygon.map((q) => q[1]);
     const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
     const nx = Math.max(1, Math.round((x1 - x0) / 1.8)), ny = Math.max(1, Math.round((y1 - y0) / 1.8));
-    const h = (r.ceilingHeight ?? d.wallHeight) - 0.012;
+    // Each light sits flush in the ceiling over it, tilted with a sloped ceiling.
+    const tilt = new THREE.Quaternion();
+    if (r.ceilingSlope) {
+      const [dx, dz] = slopeDirection(r.ceilingSlope.toward);
+      tilt.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(-r.ceilingSlope.rise * dx, 1, -r.ceilingSlope.rise * dz).normalize());
+    }
     for (let i = 0; i < nx; i++)
       for (let j = 0; j < ny; j++) {
         const q: Vec2 = [x0 + ((i + 0.5) * (x1 - x0)) / nx, y0 + ((j + 0.5) * (y1 - y0)) / ny];
         if (roomAt(plan, q)?.id !== r.id) continue;
         if (plan.walls.some((wl) => pointSegment(q, wl.a, wl.b).d < 0.4)) continue;
+        // Nothing hangs over a flight: its ceiling is open, or a walker passes right under it.
+        if (flights.some((f) => pointInPolygon(q, f.footprint) || f.footprint.some((c) => Math.hypot(c[0] - q[0], c[1] - q[1]) < 0.3))) continue;
+        const light = new THREE.Group();
+        light.position.set(q[0], ceilingAt(plan, r, q) - 0.012, q[1]);
+        light.quaternion.copy(tilt);
+        // Part of the ceiling: shown and hidden with it, so the dollhouse never shows lights in mid-air.
+        light.userData.ceiling = true;
         const ring = new THREE.Mesh(ringGeo, white);
-        ring.position.set(q[0], h, q[1]);
-        group.add(ring);
         const lens = new THREE.Mesh(new THREE.CircleGeometry(0.04, 32), lensMat);
         lens.rotation.x = Math.PI / 2;
-        lens.position.set(q[0], h - 0.006, q[1]);
-        group.add(lens);
+        lens.position.y = -0.006;
+        light.add(ring, lens);
+        group.add(light);
       }
   }
   return group;

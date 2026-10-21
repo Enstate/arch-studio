@@ -12,13 +12,14 @@ import { useIsMobile } from "@arch/ui/hooks/use-mobile";
 import { UiLabelsProvider } from "@arch/ui/lib/ui-labels";
 import { useTheme } from "@arch/ui/lib/theme";
 import { cn } from "@arch/ui/lib/utils";
-import { ViewerSurface, ViewerLocaleProvider, type ViewerInstance } from "@arch/viewer-ui";
+import { ASSET_BASE, ViewerSurface, ViewerLocaleProvider, type ViewerEditing, type ViewerInstance } from "@arch/viewer-ui";
+import { hasEdits, type PlanEdits } from "@arch/viewer/plan/edits";
 import { useForm } from "@tanstack/react-form";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpRightIcon, CheckIcon, ChevronsUpDownIcon, HammerIcon, FolderOpenIcon, FolderPlusIcon, LanguagesIcon, MoreHorizontalIcon, PaletteIcon, MenuIcon, PanelLeftIcon, PlusIcon, SearchIcon, SettingsIcon, SquarePenIcon } from "lucide-react";
 import { type ReactNode, useCallback, useId, useRef, useState } from "react";
-import { revealInFolder, brief, buildGrant, buildVersion, catalog, createClient, createThread, threadList, updateThread, grantBuilds, handoff, makePrimary, openProjectFolder, openVersion, projectDetails, restoreSource, revokeBuilds, saveNote } from "../lib/server";
-import type { StudioProjectSummary, StudioThread, StudioVersion } from "../lib/model";
+import { revealInFolder, brief, buildGrant, buildVersion, catalog, projectEdits, saveEdits, createClient, createThread, threadList, updateThread, grantBuilds, handoff, makePrimary, openProjectFolder, openVersion, projectDetails, restoreSource, revokeBuilds, saveNote } from "../lib/server";
+import { VIEWER_MISMATCH, type StudioProjectSummary, type StudioThread, type StudioVersion } from "../lib/model";
 import { type Locale, studioText } from "../lib/messages";
 import { useStudioLocale } from "../lib/locale";
 import { SourceSetup } from "./source-setup";
@@ -102,7 +103,8 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
   const toggleSidebar = () => isMobile ? setMobileOpen(open => !open) : setSidebarOpen(open => !open);
   useHotkey("mod+b", toggleSidebar);
   useHotkey("mod+k", () => {if (isMobile) setMobileOpen(true); else setSidebarOpen(true); requestAnimationFrame(() => searchInput.current?.focus());});
-  useHotkey("n", event => {if (!(event.target instanceof Element && event.target.closest("[role=dialog],[role=menu],[role=listbox]"))) {if (targetProject) newThread(targetProject); else openNewProject();}});
+  // A plain letter would fire while moving around the 3D view with the keyboard, creating stray threads.
+  useHotkey("mod+shift+o", event => {if (!(event.target instanceof Element && event.target.closest("[role=dialog],[role=menu],[role=listbox]"))) {if (targetProject) newThread(targetProject); else openNewProject();}});
   const query = search.trim().toLocaleLowerCase();
   const visible = all.filter(item => (filter.kind === "all" || (filter.kind === "client" ? item.clientId === filter.id : item.projectId === filter.id)) && (!query || `${item.title} ${item.projectName} ${item.clientName}`.toLocaleLowerCase().includes(query)));
   const unconnected = (data?.projects ?? []).filter(item => !item.sourceId && (filter.kind === "all" || (filter.kind === "client" ? item.clientId === filter.id : item.id === filter.id)) && (!query || item.name.toLocaleLowerCase().includes(query)));
@@ -206,6 +208,23 @@ function Project({project, thread, threads, openThread, openVariant, t, navigati
   const intakeError = details.data?.intakeError ?? null;
   const assumptions = source?.manifest.assumptions ?? [];
   const build = useMutation({mutationFn: () => buildVersion({data: {sourceId: source!.manifest.id, projectId: project.id, branch: branch!.name, authorizeSourceExecution: true}}), onSuccess: async () => {setVersionId(undefined); setSection("preview"); await queryClient.invalidateQueries();}});
+  // Hand edits belong to the branch folder; the viewer edits its latest version only.
+  const edits = useQuery({queryKey: ["studio-edits", project.id, branch?.name], queryFn: () => projectEdits({data: {projectId: project.id, branch: branch!.name}}), enabled: !!branch && !!source});
+  const [drafted, setDrafted] = useState<string>();
+  const storeHandEdits = async (next: PlanEdits) => {
+    await saveEdits({data: {projectId: project.id, branch: branch!.name, edits: next}});
+    setVersionId(undefined);
+    await queryClient.invalidateQueries();
+  };
+  const saveHandEdits = async (next: PlanEdits) => {
+    const granted = await buildGrant({data: {projectId: project.id, branch: branch!.name}}).then(value => value.granted, () => false);
+    if (granted) return storeHandEdits(next);
+    // Saving builds a version, so it waits for the build grant and then goes ahead by itself.
+    ensureGrant(() => void storeHandEdits(next));
+    throw new Error(t.grantBeforeSaving);
+  };
+  const editing: ViewerEditing | undefined = branch && source && edits.data && version?.id === latestVersion?.id ? {saved: edits.data, catalogBase: ASSET_BASE, save: saveHandEdits} : undefined;
+  const adopt = edits.data && hasEdits(edits.data) && thread ? () => {setDrafted(t.adoptHandEditsRequest); setSection("rounds");} : undefined;
   const grant = useMutation({mutationFn: () => grantBuilds({data: {projectId: project.id, branch: branch!.name}}), onSuccess: () => {const then = grantFor; setGrantFor(null); then?.();}});
   const revoke = useMutation({mutationFn: () => revokeBuilds({data: {projectId: project.id}})});
   const primary = useMutation({mutationFn: () => makePrimary({data: {projectId: project.id, name: branch!.name}}), onSuccess: () => queryClient.invalidateQueries()});
@@ -238,8 +257,8 @@ function Project({project, thread, threads, openThread, openVariant, t, navigati
   </>;
   const tool = (content: ReactNode) => <ScrollPage><h2 className="text-lg font-medium">{t[view as typeof toolSections[number]]}</h2>{content}</ScrollPage>;
   const content = details.isError ? <div className="m-auto grid gap-3"><p role="alert">{details.error.message}</p><Button onClick={() => {void details.refetch();}}>{t.retry}</Button></div>
-    : view === "preview" && version ? <VersionPreview key={version.id} version={version} t={t} />
-    : view === "rounds" && branch && thread ? <Rounds projectId={project.id} threadId={thread.id} branch={branch} versions={allVersions} versionLabel={versionLabel} openVersion={showVersion} compare={compare} forkFrom={checkpointId => newThread({fromCheckpoint: checkpointId})} ensureGrant={ensureGrant} t={t} />
+    : view === "preview" && version ? <VersionPreview key={version.id} version={version} editing={editing} adopt={adopt} rebuild={source && branch ? () => ensureGrant(() => build.mutate()) : undefined} rebuilding={build.isPending} t={t} />
+    : view === "rounds" && branch && thread ? <Rounds projectId={project.id} threadId={thread.id} branch={branch} versions={allVersions} versionLabel={versionLabel} openVersion={showVersion} compare={compare} forkFrom={checkpointId => newThread({fromCheckpoint: checkpointId})} ensureGrant={ensureGrant} initialRequest={edits.data && hasEdits(edits.data) ? drafted : undefined} t={t} />
     : view === "compare" ? <Compare projectId={project.id} versions={versions} base={compared?.base} target={compared?.target} select={(base, target) => setCompared({base, target})} versionLabel={versionLabel} t={t} />
     : details.isPending ? <p role="status" className="m-auto text-ui text-muted-foreground">{t.loading}</p>
     : view === "intake" ? <ScrollPage>
@@ -256,8 +275,10 @@ function Project({project, thread, threads, openThread, openVariant, t, navigati
   const client = details.data?.source?.manifest.client.name;
   return <><ProjectPage title={thread?.title ?? project.name} meta={thread ? `${project.name}${client ? ` · ${client}` : ""}` : undefined} navigation={navigation} actions={actions}>{views("shrink-0 border-b px-2 py-1.5 lg:hidden")}{content}</ProjectPage><Dialog open={exportOpen} onOpenChange={setExportOpen}><DialogContent><DialogHeader><DialogTitle>{t.export}</DialogTitle></DialogHeader><Handoff key={version?.id} checkpointId={version?.checkpointId} t={t} /></DialogContent></Dialog><Dialog open={!!grantFor} onOpenChange={value => {if (!value && !grant.isPending) setGrantFor(null);}}><DialogContent><DialogHeader><DialogTitle>{t.grantTitle}</DialogTitle><DialogDescription>{t.executionConfirmation} {t.grantHint}</DialogDescription></DialogHeader><p className="break-all font-mono text-xs">{branch?.directory}</p>{grant.error && <p role="alert" className="text-destructive">{grant.error.message}</p>}<div className="flex justify-end gap-2"><Button variant="ghost" disabled={grant.isPending} onClick={() => setGrantFor(null)}>{t.cancel}</Button><Button disabled={!branch || grant.isPending} onClick={() => grant.mutate()}>{grant.isPending ? t.loading : t.authorizeBuild}</Button></div></DialogContent></Dialog></>;
 }
-function VersionPreview({version, t}: {version: StudioVersion; t: Copy}) {
+function VersionPreview({version, editing, adopt, rebuild, rebuilding, t}: {version: StudioVersion; editing?: ViewerEditing; adopt?: () => void; rebuild?: () => void; rebuilding: boolean; t: Copy}) {
   const preview = useQuery({queryKey: ["studio-preview", version.checkpointId], queryFn: () => openVersion({data: {checkpointId: version.checkpointId}}), staleTime: 60_000, retry: false});
+  // Built for a viewer this Studio cannot open: the project folder can be built again here.
+  const mismatch = preview.isError && preview.error.message === VIEWER_MISMATCH;
   const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
   const currentViewer = useRef<ViewerInstance | null>(null);
@@ -270,8 +291,8 @@ function VersionPreview({version, t}: {version: StudioVersion; t: Copy}) {
       if (currentViewer.current === viewer) setError(t.error);
     });
   }, [t.error]);
-  const status = <p role="status" className="pointer-events-none rounded-lg bg-background/90 px-3 py-2 text-xs shadow-sm">{error || (ready ? t.ready : t.preparing)}</p>;
-  return <div data-studio-preview={error ? "error" : ready ? "ready" : "pending"} className="relative size-full min-h-0">{preview.data ? <ViewerSurface planUrl={preview.data.planUrl} assetBase={preview.data.assetBase} artifactId={preview.data.artifactHash} onViewer={onViewer} top={status} /> : <div className="grid size-full place-items-center p-6"><div className="grid gap-3 text-center text-ui"><p role={preview.isError ? "alert" : "status"}>{preview.isError ? preview.error.message : t.preparing}</p>{preview.isError && <Button onClick={() => {void preview.refetch();}}>{t.retry}</Button>}</div></div>}</div>;
+  const status = <div className="flex items-center gap-2"><p role="status" className="pointer-events-none rounded-lg bg-background/90 px-3 py-2 text-xs shadow-sm">{error || (ready ? t.ready : t.preparing)}</p>{adopt && ready && <Button size="xs" variant="outline" className="pointer-events-auto" onClick={adopt}>{t.adoptHandEdits}</Button>}</div>;
+  return <div data-studio-preview={error ? "error" : ready ? "ready" : "pending"} className="relative size-full min-h-0">{preview.data ? <ViewerSurface planUrl={preview.data.planUrl} assetBase={preview.data.assetBase} artifactId={preview.data.artifactHash} onViewer={onViewer} top={status} editing={editing && {...editing, dropped: preview.data.handEditsDropped}} /> : <div className="grid size-full place-items-center p-6"><div className="grid gap-3 text-center text-ui"><p role={preview.isError ? "alert" : "status"}>{mismatch ? t.viewerMismatch : preview.isError ? preview.error.message : t.preparing}</p>{mismatch && rebuild ? <Button disabled={rebuilding} onClick={rebuild}>{rebuilding ? t.loading : t.rebuildHere}</Button> : preview.isError && <Button onClick={() => {void preview.refetch();}}>{t.retry}</Button>}</div></div>}</div>;
 }
 function VersionMedia({version, t}: {version: StudioVersion; t: Copy}) {
   if (!version.outputs.length) return <p className="text-muted-foreground">{t.noOutputs}</p>;

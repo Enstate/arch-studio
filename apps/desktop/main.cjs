@@ -48,8 +48,11 @@ function startServer() {
 app.on('before-quit', () => { quitting = true; updates?.dispose(); stopServer(); });
 app.on('window-all-closed', () => app.quit());
 app.whenReady().then(async () => {
-  session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  session.defaultSession.setPermissionCheckHandler(() => false);
+  // Every permission is refused except pointer lock for Studio's own page: walk mode and the
+  // dollhouse's free look keep the mouse inside the viewer while it turns the camera.
+  const studioPage = url => { try { return !!origin && new URL(url).origin === origin; } catch { return false; } };
+  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback, details) => callback(permission === 'pointerLock' && studioPage(details.requestingUrl)));
+  session.defaultSession.setPermissionCheckHandler((_contents, permission, requestingOrigin) => permission === 'pointerLock' && studioPage(requestingOrigin));
   const dev = !app.isPackaged && process.env.ARCH_STUDIO_DEV_URL;
   const bootstrapUrl = dev || await startServer();
   if (!validBootstrapUrl(bootstrapUrl)) throw new Error('Invalid local Studio bootstrap URL');

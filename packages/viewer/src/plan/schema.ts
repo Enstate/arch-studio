@@ -18,12 +18,22 @@ export interface Plan {
   description?: string;
   source?: PlanSource;
   defaults?: Partial<PlanDefaults>;
+  /**
+   * Storeys, bottom to top. Walls, rooms, furniture and cameras name their storey with `level`;
+   * anything without one stands on the lowest. Omit for a single-storey plan.
+   */
+  levels?: Level[];
   walls: Wall[];
   openings?: Opening[];
   rooms?: Room[];
   furniture?: Furniture[];
   /** Named materials that rooms, walls and furniture can reference by key. */
   materials?: Record<string, MaterialDef>;
+  /**
+   * Alternative looks over the same architecture, which a viewer switches between in place. Each
+   * one replaces finishes by material key and shows the furniture made for it.
+   */
+  designOptions?: DesignOption[];
   /** Fixed viewpoints. The critic loop renders each one and compares it with `photo`. */
   cameras?: CameraDef[];
   /** Guided tour order: room ids, or camera ids to show a room from that camera. */
@@ -78,8 +88,32 @@ export const DEFAULTS: PlanDefaults = {
   ceiling: 'paint-white',
 };
 
+/**
+ * One storey. Heights of the walls, rooms, furniture and cameras on it are measured
+ * from its finished floor, so a storey can be authored as if it stood on the ground.
+ */
+/** One look of the house: its finishes and its own furniture, over the architecture all options share. */
+export interface DesignOption {
+  id: string;
+  name: string;
+  /** The look a viewer opens with. At most one option sets it; otherwise the first is the default. */
+  default?: boolean;
+  /** Finishes this option uses in place of the plan's, by material key. */
+  materials?: Record<string, MaterialDef>;
+}
+
+export interface Level {
+  id: string;
+  name: string;
+  /** Finished floor height above the ground floor, in meters. */
+  elevation: number;
+  /** Floor to floor height, the default height of its walls. Defaults to `defaults.wallHeight`. */
+  height?: number;
+}
+
 export interface Wall {
   id: string;
+  level?: string;
   /** Centerline start. */
   a: Vec2;
   /** Centerline end. */
@@ -87,6 +121,8 @@ export interface Wall {
   thickness?: number;
   height?: number;
   exterior?: boolean;
+  /** Finish of the faces with no room beside them. Defaults to the exterior or interior finish. */
+  outsideFinish?: string;
 }
 
 export type OpeningType = 'door' | 'double-door' | 'sliding-door' | 'window' | 'opening' | 'garage-door';
@@ -112,17 +148,32 @@ export interface Opening {
 
 export interface Room {
   id: string;
+  level?: string;
   name: string;
   /** Closed polygon along the inside faces or wall centerlines. Do not repeat the first point. */
   polygon: Vec2[];
   floor?: string;
   ceiling?: string;
   wallFinish?: string;
+  /** Finishes of single walls on this room's side, by wall id, in place of `wallFinish`. */
+  wallFinishes?: Record<string, string>;
+  /** Ceiling height above the room's floor; with `ceilingSlope`, its height at the low side. */
   ceilingHeight?: number;
+  /** A ceiling that rises in one direction, as under a mono-pitch roof. Omit for a flat ceiling. */
+  ceilingSlope?: CeilingSlope;
   /** Area printed on the plan in m², checked by the validator. */
   areaLabel?: number;
   /** Ceiling light color temperature in Kelvin. Omit for no ceiling light. */
   lightK?: number;
+}
+
+export interface CeilingSlope {
+  /** Rise in metres per metre of run: 0.12 for a 12% pitch. */
+  rise: number;
+  /** Direction the ceiling rises toward, in degrees clockwise from the top of the plan. 90 rises to the right. */
+  toward: number;
+  /** Plan point where the ceiling is exactly `ceilingHeight`. Defaults to the room's lowest corner. */
+  from?: Vec2;
 }
 
 export type FurnitureType =
@@ -136,6 +187,11 @@ export type FurnitureType =
 export interface Furniture {
   id: string;
   type: FurnitureType;
+  /**
+   * Storey the piece stands on. A `stairs` piece climbs from it by its height, and cuts its
+   * footprint out of the ceilings above it and the floor it arrives at.
+   */
+  level?: string;
   /** Stays visible when loose furniture is hidden. Overrides the type's fixture default. */
   fixture?: boolean;
   /** Center of the footprint in plan coordinates. */
@@ -156,6 +212,13 @@ export interface Furniture {
   room?: string;
   /** Height above floor of the bottom of the piece. Used for wall cabinets. */
   elevation?: number;
+  /**
+   * A roof the plan supplies, usually a `model`. Roofs never collide, show in walk mode, can be hidden
+   * in 3D, and replace the flat slab the viewer would otherwise add over the top storey.
+   */
+  roof?: boolean;
+  /** Design options that show this piece. Omit for a piece every option shares. */
+  designOptions?: string[];
 }
 
 export interface MaterialDef {
@@ -200,6 +263,7 @@ export interface MaterialDef {
 
 export interface CameraDef {
   id: string;
+  level?: string;
   room?: string;
   position: Vec2;
   /** Eye height in meters. Default 1.6. */

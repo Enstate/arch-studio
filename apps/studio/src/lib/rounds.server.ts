@@ -1,13 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { AgentEvent, AgentProvider, AgentProviderStatus, AgentTurn } from "@arch/agent";
-import { buildProjectArtifact, createBranch, projectBranches, saveAttachment, saveBranchCheckpoint, saveRound, studioStoreDirectory } from "@arch/project-tools";
+import { buildProjectArtifact, createBranch, handEdits, projectBranches, saveAttachment, saveBranchCheckpoint, saveHandEdits, saveRound, studioStoreDirectory } from "@arch/project-tools";
+import { refreshProjectRules } from "@arch/project-tools/intake";
+import { hasEdits, type PlanEdits } from "@arch/viewer/plan/edits";
+import type { Plan } from "@arch/viewer/plan/schema";
+import { validatePlan } from "@arch/viewer/plan/validate";
 import type { RoundAttachment } from "@arch/project";
 import { localCatalog, requireProject } from "./local-catalog";
 import { requireStudio } from "./local-session";
 import type { RoundActivity, RoundEvent, RoundSummary, StudioThread } from "./model";
+import { buildVersion } from "./studio.server";
 
 /** Studio-run rounds build after the turn, so the project's CLI build steps do not apply. */
 const roundInstructions = `You are working inside an Arch Studio project folder, one round at a time.
@@ -20,6 +25,56 @@ const critiqueInstructions = `You are a fresh critic for an Arch Studio project 
 Read AGENTS.md, BUILDERS.md, arch.context.json, the references under reference/ and the built artifact under outputs/artifact/.
 Compare geometry and style against the references and the brief. Report concrete findings, most consequential first, each with the element ID and the fix you would ask a builder for.`;
 const buildRetries = 2;
+
+/**
+ * The CC0 library Studio serves, filled by `bun run fetch-assets`: textures, models and skies a
+ * round or a hand edit can use. The packaged app has it beside its client; development serves public/.
+ */
+function sharedLibrary() {
+  const client = process.env.ARCH_CLIENT_ROOT;
+  const directory = client ? path.join(client, "viewer/library") : path.resolve("public/viewer/library");
+  return existsSync(path.join(directory, "index.json")) ? directory : null;
+}
+function libraryInstructions() {
+  const directory = sharedLibrary();
+  if (!directory) return "";
+  return `
+- Shared asset library: ${directory}. Its index.json lists CC0 textures, furniture models and skies with their files, and CREDITS.md their sources. Copy only what you use into assets/library/ at the same paths, add those entries to assets/library/index.json, and record the credits in the project.`;
+}
+
+/**
+ * Tells a request round about the person's hand edits, which the build lays over its plan, and
+ * about any the latest build could no longer apply.
+ */
+async function handEditInstructions(directory: string) {
+  // An unreadable edits file fails the build, which reports it to the agent.
+  if (!hasEdits(await handEdits(directory).catch(() => ({ version: 1 as const })))) return "";
+  let dropped: string[] = [];
+  try {
+    const listed: unknown = JSON.parse(await fs.readFile(path.join(directory, "outputs/artifact/hand-edits.json"), "utf8")).dropped;
+    if (Array.isArray(listed)) dropped = listed.map(String);
+  } catch { /* No build since the edits were saved. */ }
+  const lines = `
+- The person edited this design by hand in Studio. The edits are in source/edits.json and the build lays them over the plan your source generates, so they win over source. Keep them: never change, move or delete that file unless the request asks to adopt the hand edits. BUILDERS.md "Hand edits" explains each entry.
+- To adopt the hand edits, fold every edit into source so the generated plan matches the edited one, then write {"version":1} to source/edits.json.`;
+  if (!dropped.length) return lines;
+  return `${lines}
+- The latest version could no longer apply these hand edits, because what they changed is gone:
+${dropped.map(line => `  - ${line}`).join("\n")}
+  Carry their intent over in source where it makes sense, and say what you did.`;
+}
+
+/** Storey and stair warnings in a built plan. A build passes with them, so the agent would never see them. */
+async function storeyWarnings(directory: string) {
+  try {
+    const plan = JSON.parse(await fs.readFile(path.join(directory, "outputs/artifact/plan.json"), "utf8")) as Plan;
+    return validatePlan(plan)
+      .filter(issue => issue.level === "warn" && (issue.where.startsWith("level ") || /\b(stairs|storey)/.test(issue.message)))
+      .map(issue => `${issue.where}: ${issue.message}`);
+  } catch {
+    return [];
+  }
+}
 
 // Running rounds live on the process, not the module. Development reloads re-evaluate this
 // module and must not orphan an agent that is still working.
@@ -293,7 +348,12 @@ async function runRound(round: { id: string; sourceId: string; threadId: string;
     }
   };
   try {
-    let input = { provider: round.provider, model: round.model, settings: round.settings, cwd: round.line.directory, resumeCursor: resume ? String(resume.resume_cursor) : null, prompt: round.prompt, attachments: round.attachments.filter(item => item.image).map(item => ({ path: item.path, mimeType: item.mimeType, name: item.name })), instructions: round.kind === "critique" ? critiqueInstructions : roundInstructions, permission: round.kind === "critique" ? "read-only" as const : "full" as const };
+    // Unedited stock rules from an older Studio are replaced, so the agent reads current guidance.
+    // The refresh is saved with this round's version.
+    if (round.kind === "request") await refreshProjectRules(round.line.directory);
+    const handEditNote = round.kind === "request" ? await handEditInstructions(round.line.directory) : "";
+    let input = { provider: round.provider, model: round.model, settings: round.settings, cwd: round.line.directory, resumeCursor: resume ? String(resume.resume_cursor) : null, prompt: round.prompt, attachments: round.attachments.filter(item => item.image).map(item => ({ path: item.path, mimeType: item.mimeType, name: item.name })), instructions: round.kind === "critique" ? critiqueInstructions : roundInstructions + libraryInstructions() + handEditNote, permission: round.kind === "critique" ? "read-only" as const : "full" as const };
+    let warned = false;
     for (let attempt = 0; ; attempt++) {
       const turn = await agentTurn(round.id, input, round.threadId);
       if (turn.status === "interrupted") return stopped(turn.summary);
@@ -307,6 +367,16 @@ async function runRound(round: { id: string; sourceId: string; threadId: string;
       try {
         const built = await onBranch(round.sourceId, round.branch, () => buildProjectArtifact(round.sourceId, { authorizeSourceExecution: true, branch: round.branch }));
         append(round.id, { type: "build", status: "completed", error: null, checkpointId: built.checkpoint.id });
+        const warnings = warned || state.interrupted ? [] : await storeyWarnings(round.line.directory);
+        if (warnings.length) {
+          // One follow-up only: the version is saved, and the agent gets one turn to fix its storeys.
+          warned = true;
+          const cursor = rounds().prepare("SELECT resume_cursor FROM thread_sessions WHERE thread_id=? AND provider=?").get(round.threadId, round.provider);
+          const followUp = `Studio built and saved your change, but the plan's storeys need attention:\n\n${warnings.map(warning => `- ${warning}`).join("\n")}\n\nFix these in source, following BUILDERS.md "Storeys and stairs". Keep the requested change.`;
+          append(round.id, { type: "retry", attempt: attempt + 1, prompt: followUp, reason: "storeys" });
+          input = { ...input, resumeCursor: cursor ? String(cursor.resume_cursor) : input.resumeCursor, prompt: followUp, attachments: [] };
+          continue;
+        }
         await sidecar(built.checkpoint.id, turn.summary);
         return finish(round.id, { status: "completed", checkpointId: built.checkpoint.id, summary: turn.summary });
       } catch (error) {
@@ -329,6 +399,23 @@ async function runRound(round: { id: string; sourceId: string; threadId: string;
   } catch (error) {
     finish(round.id, { status: "failed", error: error instanceof Error ? error.message : String(error) });
   }
+}
+
+/**
+ * Saves hand edits from the viewer as a new version: the library assets they use join the
+ * project, then the branch builds as Build does. Never while a round works on the branch.
+ */
+export async function saveEdits({ data }: { data: { projectId: string; branch: string; edits: PlanEdits } }) {
+  requireStudio();
+  const sourceId = await sourceOf(data.projectId);
+  const line = await branchLine(sourceId, data.branch);
+  if (!(await buildGrant({ data: { projectId: data.projectId, branch: data.branch } })).granted) throw new Error("Allow local builds for this project before saving hand edits.");
+  const running = rounds().prepare("SELECT id FROM rounds WHERE source_id=? AND branch=? AND status='running'").all(sourceId, data.branch).some(row => active.has(String(row.id)));
+  if (running) throw new Error("A round is working on this design. Save your hand edits when it finishes.");
+  return onBranch(sourceId, data.branch, async () => {
+    await saveHandEdits(line.directory, data.edits, sharedLibrary());
+    return buildVersion({ data: { sourceId, projectId: data.projectId, branch: data.branch, authorizeSourceExecution: true } });
+  });
 }
 
 /** Files join the branch between rounds, never under an agent that is editing the folder. */

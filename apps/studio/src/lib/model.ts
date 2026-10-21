@@ -2,6 +2,8 @@ import type { AgentEvent, AgentProvider } from "@arch/agent";
 import type { CheckpointComparison, ProjectBranch, ProjectIntakePlan, ReviewNote, RoundAttachment, StudioProject } from "@arch/project";
 
 export type StudioClient = { id: string; name: string };
+/** openVersion's error when a version was built for a viewer this Studio cannot open. Studio offers a rebuild. */
+export const VIEWER_MISMATCH = "viewer-runtime-mismatch";
 export type StudioProjectSummary = {
   id: string;
   clientId: string;
@@ -37,7 +39,8 @@ export type StudioProjectDetails = {
 export type RoundEvent =
   | AgentEvent
   | { type: "build"; status: "started" | "completed" | "failed" | "skipped"; error: string | null; checkpointId: string | null }
-  | { type: "retry"; attempt: number; prompt: string }
+  /** Sent back to the agent after a build: its error, or the built plan's storey warnings. */
+  | { type: "retry"; attempt: number; prompt: string; reason?: "storeys" }
   | { type: "image"; itemId: string; sha256: string; name: string };
 export type RoundSummary = {
   id: string;

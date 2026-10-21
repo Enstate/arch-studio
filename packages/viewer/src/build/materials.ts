@@ -3,41 +3,8 @@ import { abs, dot, float, normalView, positionViewDirection } from 'three/tsl';
 import type { MaterialDef, Plan } from '../plan/schema.ts';
 import { withDefaults } from '../plan/schema.ts';
 
-/**
- * Built-in finishes used when a plan references a key it does not define.
- * Plans can override any of these in `plan.materials`.
- */
-export const BUILTIN: Record<string, MaterialDef> = {
-  'paint-white': { color: '#f2efe9', roughness: 0.92 },
-  'render-white': { color: '#ece8e0', pattern: 'plaster', roughness: 0.95 },
-  oak: { color: '#c49a6c', pattern: 'planks', module: [1.4, 0.19], seam: '#8a6440', roughness: 0.55 },
-  'tile-grey': { color: '#bdb8b0', pattern: 'large-tiles', module: [0.6, 0.6], seam: '#9d978e', roughness: 0.4 },
-  concrete: { color: '#b3afa8', pattern: 'concrete', roughness: 0.85 },
-  carpet: { color: '#b9b1a4', pattern: 'carpet', roughness: 1 },
-  fabric: { color: '#9a9a92', pattern: 'fabric', roughness: 0.95 },
-  wood: { color: '#a7825c', roughness: 0.55 },
-  'dark-wood': { color: '#5e3d27', roughness: 0.5 },
-  white: { color: '#f3f1ec', roughness: 0.5 },
-  ceramic: { color: '#f6f5f2', roughness: 0.12, clearcoat: 0.8, clearcoatRoughness: 0.04 },
-  steel: { color: '#c9cbcc', roughness: 0.25, metalness: 1 },
-  'black-steel': { color: '#1d1d1d', roughness: 0.4, metalness: 0.6 },
-  chrome: { color: '#dadada', roughness: 0.15, metalness: 1 },
-  glass: { color: '#e4eef0', roughness: 0.02, opacity: 0.07 },
-  'frame-white': { color: '#f0eee9', roughness: 0.45 },
-  'frame-anthracite': { color: '#383a3c', roughness: 0.45, metalness: 0.2 },
-  'door-white': { color: '#f1efea', roughness: 0.5 },
-  leaf: { color: '#4f6b3c', roughness: 0.8 },
-  pot: { color: '#d8d2c8', roughness: 0.75 },
-  screen: { color: '#0c0c0d', roughness: 0.15, metalness: 0.2 },
-  ground: { color: '#a4a594', pattern: 'concrete', roughness: 1 },
-  slab: { color: '#d8d4cc', roughness: 0.9 },
-  skirting: { color: '#f4f2ee', roughness: 0.5 },
-  'cushion-velvet': { color: '#9c5a3c', roughness: 1, sheen: 1, sheenRoughness: 0.35, sheenColor: '#e0a07a', specularIntensity: 0.1 },
-  'cushion-linen': { color: '#d8d0c2', roughness: 1, sheen: 0.7, sheenRoughness: 0.6, specularIntensity: 0.12 },
-  worktop: { color: '#2f2d2a', roughness: 0.28 },
-  linen: { color: '#e8e2d7', pattern: 'fabric', roughness: 0.95 },
-  bulb: { color: '#fff6e4', roughness: 1, emissive: '#fff1d6' },
-};
+export { BUILTIN } from '../plan/finishes.ts';
+import { BUILTIN } from '../plan/finishes.ts';
 
 const HEX = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
 /** Opacity clear glass adds at grazing view, on top of its own. */
@@ -254,6 +221,8 @@ export class MaterialLibrary {
   /** Maps by URL and repeat: wall paints that share a texture set share its textures too. */
   private maps = new Map<string, THREE.Texture>();
   private disposed = false;
+  /** The design option whose finishes replace the plan's, by material key. */
+  private option: { id: string; materials: Record<string, MaterialDef> } | null = null;
 
   constructor(
     plan: Plan,
@@ -316,12 +285,59 @@ export class MaterialLibrary {
 
   def(key: string): MaterialDef {
     if (HEX.test(key)) return { color: key, roughness: 0.6 };
-    return this.plan.materials?.[key] ?? BUILTIN[key] ?? { color: '#ff00ff', roughness: 0.5 };
+    return this.option?.materials[key] ?? this.plan.materials?.[key] ?? BUILTIN[key] ?? { color: '#ff00ff', roughness: 0.5 };
+  }
+
+  /** Identifies the material a key gives under the current design option; options cache their own. */
+  variant(key: string) {
+    return this.option && key in this.option.materials ? `${key}@${this.option.id}` : key;
+  }
+
+  /**
+   * Uses a design option's finishes from now on. Returns the keys whose material may differ, those
+   * the previous or the new option replaces. Materials already made for either stay cached.
+   */
+  applyDesignOption(option: { id: string; materials?: Record<string, MaterialDef> } | null) {
+    const before = Object.keys(this.option?.materials ?? {});
+    this.option = option ? { id: option.id, materials: option.materials ?? {} } : null;
+    return [...new Set([...before, ...Object.keys(this.option?.materials ?? {})])];
+  }
+
+  /**
+   * Takes up a plan's finishes as they stand after hand edits, and forgets the materials made for
+   * keys whose finish changed, so the next `get` makes them anew. Returns those keys.
+   */
+  updateFinishes(plan: Plan) {
+    const finishes = (p: Plan) => ({ base: p.materials ?? {}, options: Object.fromEntries((p.designOptions ?? []).map((o) => [o.id, o.materials ?? {}])) });
+    const was = finishes(this.plan), now = finishes(plan);
+    const changed = new Set<string>();
+    const compare = (a: Record<string, MaterialDef>, b: Record<string, MaterialDef>) => {
+      for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) if (JSON.stringify(a[key]) !== JSON.stringify(b[key])) changed.add(key);
+    };
+    compare(was.base, now.base);
+    for (const id of new Set([...Object.keys(was.options), ...Object.keys(now.options)])) compare(was.options[id] ?? {}, now.options[id] ?? {});
+    this.plan = plan;
+    if (this.option) this.option = { id: this.option.id, materials: now.options[this.option.id] ?? {} };
+    const d = withDefaults(plan);
+    for (const r of plan.rooms ?? []) this.floors.add(r.floor ?? d.floor);
+    for (const variant of [...this.cache.keys()]) if (changed.has(variant.split('@')[0])) this.cache.delete(variant);
+    return [...changed];
+  }
+
+  /** Material keys the current design option replaces. */
+  optionKeys() {
+    return Object.keys(this.option?.materials ?? {});
+  }
+
+  /** The material already made for a key under the current option, without making one. */
+  peek(key: string) {
+    return this.cache.get(this.variant(key));
   }
 
   /** Returns a shared material for a key or hex color. */
   get(key: string): THREE.MeshStandardMaterial {
-    const hit = this.cache.get(key);
+    const variant = this.variant(key);
+    const hit = this.cache.get(variant);
     if (hit) return hit;
     const d = this.def(key);
     // Cloth sheen, lacquer coats and specular control need the physical material; it costs
@@ -404,7 +420,7 @@ export class MaterialLibrary {
       // The canvas already carries the base color; keep the tint neutral.
       mat.color.set('#ffffff');
     }
-    this.cache.set(key, mat);
+    this.cache.set(variant, mat);
     return mat;
   }
 

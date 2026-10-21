@@ -53,7 +53,7 @@ function useRoundActivity(roundId: string | undefined, live: boolean) {
 }
 
 /** The project's working surface: what was asked, what the agent did and what each round rendered. */
-export function Rounds({projectId, threadId, branch, versions, versionLabel, openVersion, compare, forkFrom, ensureGrant, t}: {projectId: string; threadId: string; branch: StudioBranch; versions: StudioVersion[]; versionLabel: (version: StudioVersion) => string; openVersion: (id: string) => void; compare: (base: string, target: string) => void; forkFrom: (checkpointId: string) => void; ensureGrant: (then: () => void) => void; t: Copy}) {
+export function Rounds({projectId, threadId, branch, versions, versionLabel, openVersion, compare, forkFrom, ensureGrant, initialRequest = "", t}: {projectId: string; threadId: string; branch: StudioBranch; versions: StudioVersion[]; versionLabel: (version: StudioVersion) => string; openVersion: (id: string) => void; compare: (base: string, target: string) => void; forkFrom: (checkpointId: string) => void; ensureGrant: (then: () => void) => void; /** A drafted request, such as adopting the hand edits. */ initialRequest?: string; t: Copy}) {
   const timeline = useQuery({queryKey: ["studio-rounds", projectId], queryFn: () => roundTimeline({data: {projectId}}), refetchInterval: query => query.state.data?.some(round => round.status === "running") ? 2000 : 5000});
   const lineage = branchVersions(versions, branch.headId);
   const rounds = (timeline.data ?? []).filter(round => round.threadId === threadId);
@@ -67,7 +67,7 @@ export function Rounds({projectId, threadId, branch, versions, versionLabel, ope
   const forkPoint = branch.forkedFrom ? versions.find(version => version.id === branch.forkedFrom) : undefined;
   const version = (id: string | null) => versions.find(item => item.id === id);
   // The draft lives here so a critique can become the next request.
-  const [draft, setDraft] = useState<{threadId: string; text: string}>({threadId, text: ""});
+  const [draft, setDraft] = useState<{threadId: string; text: string}>({threadId, text: initialRequest});
   const request = draft.threadId === threadId ? draft.text : "";
   const setRequest = (text: string) => setDraft({threadId, text});
   return <div className="flex min-h-0 flex-1 flex-col">
@@ -225,7 +225,7 @@ function workEntries(events: WorkEvent[], live: boolean, cwd: string, t: Copy): 
       if (event.status === "started") build = index;
       entries.set(`build:${build}`, {id: `build:${build}`, icon: event.status === "failed" ? CircleAlertIcon : HammerIcon, heading: event.status === "started" ? t.buildStarted : event.status === "completed" ? t.buildCompleted : event.status === "skipped" ? t.buildSkipped : t.buildFailed, preview: event.error?.split("\n")[0] ?? null, body: event.error && event.error.includes("\n") ? event.error : null, state: event.status === "started" ? live ? "running" : "none" : event.status === "failed" ? "failed" : "done", error: event.status === "failed"});
     } else if (event.type === "retry") {
-      entries.set(`retry:${index}`, {id: `retry:${index}`, icon: MessageCircleIcon, heading: t.retrying, preview: null, body: event.prompt, state: "none"});
+      entries.set(`retry:${index}`, {id: `retry:${index}`, icon: MessageCircleIcon, heading: event.reason === "storeys" ? t.storeyWarnings : t.retrying, preview: null, body: event.prompt, state: "none"});
     }
   }
   return [...entries.values()];

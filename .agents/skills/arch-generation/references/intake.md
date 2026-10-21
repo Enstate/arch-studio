@@ -31,7 +31,7 @@ Read this when a project starts from a documents folder, when `source/intake.jso
 
 ## Levels
 
-Plan v1 renders one floor plane, with no storey stacked on another. An intake project can group every storey of a building before modeling. Before authoring, split it into one level project, artifact and piece set per storey, sharing the same reference context. Initialize each level with copies of the same reference inputs under a new project ID. Carry over the inspected document classifications and only that level's pieces, keeping dependencies within that new plan. Record shared stair and void positions as assumptions in each level. Never flatten storeys into one plan and never change the viewer to stack them.
+Plan v1 stacks storeys with `levels`. An intake project groups every storey of a building, and the authored plan keeps them together. List each storey in `levels` with its floor elevation and floor-to-floor height, then give each wall, room, furniture piece and camera its `level`. Heights on a storey count from its own floor. Draw each flight as one `stairs` piece on its lower storey, inside one room, rising to the floor above; the viewer opens the ceiling and floor over it, and walk mode climbs it. Take stair and void positions from the drawings, keep pieces within one storey so builders stay bounded, and never flatten storeys into one floor. A project that already fakes an upper storey with raised furniture or a storey-sized model gets one conversion piece, owned by the lead, before other pieces continue.
 
 ## Done
 

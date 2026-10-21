@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { constants, promises as fs } from "node:fs";
 import path from "node:path";
 import { continuationBriefSchema, projectIntakeSchema, viewerProjectManifestSchema } from "@arch/project";
@@ -83,7 +84,7 @@ When asked to organize or plan, stop after intake and a saved source checkpoint.
 
 source/intake.json has version:1, brief:string, style:string, documents:[] and pieces:[]. Each document has id, path, page (1-based), label, optional level and revision, and role (primary, supporting, duplicate or unresolved). A duplicate also has duplicateOf naming a nonduplicate document. Paths must match manifest references. Use one entry per page; a composite sheet's level can list several storeys. Each piece has id, label, scope, documentIds:[], dependsOn:[], status (planned, blocked or ready) and nextAction. IDs use lowercase letters, digits and hyphens; document and piece links must resolve, and dependencies cannot cycle. Keep within 1000 document pages, 100 pieces and 2 MiB; split larger input sets without dropping pages. The full schema is packages/project/src/intake.ts in the Arch checkout. Assumptions stay in arch.project.json and continuation in arch.context.json.
 
-Plan v1 has one floor plane. Intake may group a whole building; author one storey per artifact. Before modeling, initialize separate level projects from copies of the same references, then carry over the inspected documents and relevant pieces. Do not flatten storeys or change the viewer. Preserve printed dimensions, door swings, stair and void positions. If photos are absent, judge geometry against the plans and design against the user's written brief. Do not claim a photo match or invent photographic references. Use one builder per room or bounded piece and a separate fresh critic; the shared entry, geometry and palette have one owner.
+A building's storeys share one plan: list them in levels and give every wall, room, furniture piece and camera its level. Do not flatten storeys into one floor or change the viewer. Preserve printed dimensions, door swings, stair and void positions. If photos are absent, judge geometry against the plans and design against the user's written brief. Do not claim a photo match or invent photographic references. Use one builder per room or bounded piece and a separate fresh critic; the shared entry, geometry and palette have one owner.
 
 ## Authoring when requested
 
@@ -96,20 +97,69 @@ Plan v1 has one floor plane. Intake may group a whole building; author one store
 
 Continue from the current registered folder when staying on this machine. For another machine, import a verified export and restore to a new folder; activate only when intentionally switching that project's registered source. Read the restored rules, brief and review notes before editing. Save the next checkpoint as a child of the restored one.
 
+## Storeys and stairs
+
+All storeys of a building live in one plan. List them in levels, bottom to top, and give every wall, room, furniture piece and camera its level; openings follow their wall. Author each storey as if it stood on the ground: wall height, ceilingHeight, furniture elevation and camera height all count from that storey's floor. Set each level's height to the floor-to-floor height from the sections, so its walls meet the slab above.
+
+Draw a straight flight as one stairs piece on the storey it starts from, inside one room, with size [width, run, rise] and the rise equal to the height of the floor it reaches. At rotation 0 the bottom step faces +plan-y and the flight climbs toward -plan-y. A stair with a half landing is two flights and a box landing piece: the upper flight's elevation is the landing height. Studio cuts each flight out of the ceiling above it and the floor it reaches, guards that opening on the upper floor and lets walk mode climb it. Keep ordinary ceiling heights in the stair room; do not raise ceilings or walls to fake a void.
+
+Never fake an upper storey with raised furniture, a storey-sized model, tall walls or one floor plane. When a project already does, convert it in one bounded change: create levels, move that storey's walls, openings, rooms, furniture and cameras onto its level with heights measured from its floor, rebuild the storey as real walls and rooms instead of a model, replace the stair with flights as above, and remove workarounds such as tall stair-room ceilings, raised wall heights or camera heights that add the floor elevation. Keep IDs of unchanged elements, record the conversion in arch.context.json, and keep the existing palette and furniture choices unless the user asks otherwise.
+
+Fix every validator warning about stairs before review: a flight that lands where no storey has its floor, or that does not fit inside one room. Then check each storey with the viewer's floor picker in plan, 3D and walk, and climb each flight in walk mode.
+
+## Roofs and sloped ceilings
+
+A room under a pitched roof keeps a ceiling of its own: set ceilingHeight to the low side and ceilingSlope to {rise, toward, from?}. rise is metres per metre (0.12 for 12%), toward is the direction the ceiling rises in degrees clockwise from the top of the plan (90 rises to the right), and from is the plan point where the ceiling equals ceilingHeight, by default the room's lowest corner. Take both from the sections. The viewer slopes the walk-mode ceiling, the ceiling lamp and the recessed lights with it, and curtains hang below it. Never model a ceiling as a custom surface or raise ceilingHeight to clear one. Walls under a sloped ceiling stay flat-topped, so draw those rooms' polygons on wall centrelines, which closes each ceiling over the wall tops, and keep any sloped wall-top infill a wall needs to reach the ceiling.
+
+Model each roof as a piece with roof:true, usually a model on the storey it covers, with its real eaves and pitch. Roofs never collide; the ceilings are what a walker meets. As soon as a plan has one roof piece, the viewer stops adding its own flat slab over the top storey, so give every covered part of the house a roof piece, including single-storey wings and porches. Viewers can hide roofs in 3D with the roof toggle; walk mode always shows them.
+
+When a project already builds sloped ceilings as models or uses placeholder ceiling heights, convert it in one bounded change: replace each ceiling model with ceilingHeight and ceilingSlope on the rooms below it, mark the roof models roof:true, and remove the placeholders. Check every storey in 3D with the roof on and off, and in walk mode by day and in the evening: no lights above the roof or hanging below the slope, and no slab above the eaves.
+
+## Design options
+
+A house can be offered in several looks over one architecture, for example Nordic and Mediterranean. List them in designOptions as {id, name, default?, materials?}; viewers switch between them in place with the Style picker, keeping the view. Exactly one look opens first: mark it default:true, or the first option is used. An option changes finishes and furniture only. Walls, openings, roof shapes and room layouts are shared; a different architecture is a separate variant (branch), not an option.
+
+An option's materials replace the plan's materials by key, so give each surface that should change between looks its own key (for example living-floor or kitchen-wall) and define the shared look in the plan's materials. Roof finishes count as materials. A furniture piece that belongs to some looks lists them in designOptions; pieces without it are shared by every look, such as kitchens, baths and stairs. Decor the viewer adds over a bed follows that bed's options.
+
+Each option is one bounded piece with one builder, who edits only that option's materials and furniture; the shared architecture and base materials keep their single owner. Render every fixed view once per option, critique each option against its own brief, and treat a version as ready for review only when every option passes. Adding an option later is a round that touches only its own piece.
+
+## Hand edits
+
+People can change a version by hand in Studio's viewer: move, turn, remove or place furniture, and paint surfaces. Studio saves those changes in source/edits.json and every build lays them over the plan the generator writes, so hand edits win over source. Read the file before changing the design and respect what it says. Never edit, move or delete it unless the request asks to adopt the hand edits.
+
+source/edits.json is {version:1, furniture?, added?, surfaces?, materials?, designOptions?}. furniture maps a plan piece ID to {position?, rotation?, removed?:true}. added lists whole pieces placed by hand, often library models (@lib/models/<id>.glb). surfaces maps a surface ID to the material key it now uses: floor:<room>, ceiling:<room>, wall:<room>:<wall> for that room's side of a wall, outside:<wall> for a wall's faces with no room beside them, and furniture:<piece>:material or furniture:<piece>:accent. A painted wall side becomes the room's wallFinishes[wallId]; a painted outside face becomes the wall's outsideFinish. materials holds the finishes painting made, under keys paint-<n>, and designOptions holds those keys' finishes in particular design options, by option ID. Never name your own materials paint-<n>. Studio has already copied the library models and textures the edits use into assets/library/.
+
+An edit whose piece, room, wall or level no longer exists is dropped when the build lays the edits over the plan, and outputs/artifact/hand-edits.json lists it. Keep IDs stable so hand edits keep applying. When a change removes or renames an element on purpose, carry the dropped edit's intent over in source where it makes sense.
+
+To adopt the hand edits, fold every entry into source so the generated plan matches the edited one: move, turn, remove and add the pieces; give each surface its key through floor, ceiling, wallFinishes, outsideFinish or the piece's material and accent; and copy the paint-<n> materials and their design option finishes into the plan. Then write {"version":1} to source/edits.json and rebuild. The version should look the same before and after.
+
+## Performance
+
+Clients open the viewer on ordinary laptops and phones, and every look downloads and draws everything it shows. Keep each design option within these budgets:
+
+- Download: the whole artifact under 15 MB. Studio's build compresses the GLBs your generator writes (meshopt, welded and deduplicated), which roughly halves their geometry, so leave models uncompressed in source. The shared library's models are compressed already. Textures are not compressed for you, see below.
+- Triangles: under 500,000 for a look in walk mode, under 40,000 for one piece and under 20,000 for one person. Simplify scans, character exports and plants before bundling them. Detail nobody sees from eye height is cost with no benefit.
+- Textures: WebP embedded at 1024 px or less, and 512 px for small pieces and repeating fabrics. Each GLB embeds its own copy of a texture, so a fabric used by five sofas downloads five times.
+- Shading: sheen, clearcoat and specular extensions make a material physical, which costs more for every pixel it covers. Use them on surfaces seen up close, such as upholstery, lacquer and polished stone, and not as a default.
+- Lamps: only the six largest rooms' lamps cast shadows. Give every room the light it needs.
+
+Check these before review: the size of outputs/artifact and of each GLB, and the triangle count of each GLB. In a development build of Studio, viewer.stats().scene reports the meshes, triangles, materials, physical materials and shadowing lamps of the view on show. Read it in walk mode, by day and in the evening, for each design option.
+
 ## Portable authoring contract: Plan v1
 
 This is the starter contract, independent of any existing customer or example project. The complete authoritative types and validation rules are packages/viewer/src/plan/schema.ts and packages/viewer/src/plan/validate.ts in the Arch checkout. Consult those files for optional features; use the supplied references for every design decision.
 
-All lengths are metres. Plan points are [x,y], x right and y down the plan. World coordinates map to [x,height,y], with world y up. Furniture sizes are [width,depth,height]; rotation is degrees clockwise in plan view, with the object's front facing +plan-y at zero. north is degrees clockwise from the top of the plan. IDs are stable, unique across walls, openings, rooms, furniture and cameras; use lowercase letters, digits and hyphens, at most 80 characters.
+All lengths are metres. Plan points are [x,y], x right and y down the plan. World coordinates map to [x,height,y], with world y up. Furniture sizes are [width,depth,height]; rotation is degrees clockwise in plan view, with the object's front facing +plan-y at zero. north is degrees clockwise from the top of the plan. IDs are stable, unique across levels, walls, openings, rooms, furniture and cameras; use lowercase letters, digits and hyphens, at most 80 characters.
 
-The JSON root has version:1, name:string and walls:Wall[] (at least one). Optional fields: description, source, defaults, openings, rooms, furniture, materials, cameras, tour and north. A procedural first scene leaves environment absent. Specify defaults.wallHeight, exteriorThickness, interiorThickness, doorHeight, windowSill and windowHeight from confirmed dimensions or listed assumptions. Never treat the runtime's defaults as customer facts.
+The JSON root has version:1, name:string and walls:Wall[] (at least one). Optional fields: description, source, defaults, levels, designOptions, openings, rooms, furniture, materials, cameras, tour and north. A procedural first scene leaves environment absent. Specify defaults.wallHeight, exteriorThickness, interiorThickness, doorHeight, windowSill and windowHeight from confirmed dimensions or listed assumptions. Never treat the runtime's defaults as customer facts.
 
-- Wall: {id,a:[x,y],b:[x,y],thickness?,height?,exterior?}. a and b are wall centerline ends, not outside faces. Use connected walls and avoid duplicate or overlapping collinear segments.
+- Level: {id,name,elevation,height?}. levels lists storeys bottom to top, at least 2m apart. elevation is the finished floor height above the ground floor; height is floor to floor and sets the storey's default wall height. Walls, rooms, furniture and cameras take level (a level id) and default to the lowest storey; openings follow their wall. Every height on a storey (wall height, ceilingHeight, furniture elevation, camera height) counts from its own floor. A flight is one stairs piece on its lower storey, inside one room, with size height equal to the rise to the next floor. The viewer cuts its footprint out of the ceiling above and the floor it reaches, and walk mode climbs it. Upper floors need no hand-made slab or model.
+- Wall: {id,level?,a:[x,y],b:[x,y],thickness?,height?,exterior?,outsideFinish?}. a and b are wall centerline ends, not outside faces. outsideFinish is a material key for the faces with no room beside them, in place of the exterior or interior default. Use connected walls and avoid duplicate or overlapping collinear segments.
 - Opening: {id,wall:wallId,type,offset,width,height?,sill?,hinge?,swing?,openAngle?,frame?}. type is door, double-door, sliding-door, window, opening or garage-door. offset is distance along the wall from wall.a to opening CENTER. Width must exceed 0.2m; keep the entire opening at least 0.05m from each wall end and its top at least 0.05m below the wall top. Openings on one wall must not overlap. sill applies to windows. hinge is start or end, swing left or right, relative to wall.a looking toward wall.b. In plan coordinates, for unit direction [dx,dy] from a to b, right is [-dy,dx] and left is [dy,-dx]. A wall directed east has right on the south side; a wall directed west has right on the north side. openAngle is the initial hinged-door angle in degrees and defaults to 75. An authored 0 starts closed and toggles open to 75 degrees. Other authored angles remain the open endpoint and retain their positive or negative swing direction. Confirm door swings from the plan.
-- Room: {id,name,polygon:[[x,y],...],floor?,ceiling?,wallFinish?,ceilingHeight?,areaLabel?,lightK?}. Polygon needs at least three points, never repeats its first point, and must not cross itself. Use inside wall faces or consistent centerlines and check net area against printed square metres. floor, ceiling and wallFinish reference material keys. lightK is a ceiling light's Kelvin temperature.
-- Furniture: {id,type,position:[x,y],rotation?,size:[width,depth,height],material?,accent?,model?,room?,elevation?,fixture?}. position is footprint center; elevation is bottom height above floor. Material and accent accept a material key or hex colour. Built-in procedural types include bed, nightstand, wardrobe, dresser, sofa, armchair, coffee-table, tv-unit, tv, rug, bookshelf, floor-lamp, plant, dining-table, chair, desk, office-chair, kitchen-base, kitchen-tall, kitchen-wall, island, fridge, hob, sink, toilet, basin, vanity, bathtub, shower, washer, stairs and box. Use real dimensions and keep openings and walking paths clear. Custom GLB uses type box plus model and size; prefer embedded buffers/textures. fixture is an optional boolean: true keeps the piece visible when loose furniture is hidden, false hides it, overriding the built-in type default. Author it explicitly for custom built-ins, including lighting; model filenames do not determine fixture status.
+- Room: {id,level?,name,polygon:[[x,y],...],floor?,ceiling?,wallFinish?,wallFinishes?,ceilingHeight?,ceilingSlope?,areaLabel?,lightK?}. ceilingSlope is {rise,toward,from?} for a ceiling under a pitched roof; see Roofs and sloped ceilings. Polygon needs at least three points, never repeats its first point, and must not cross itself. Use inside wall faces or consistent centerlines and check net area against printed square metres. floor, ceiling and wallFinish reference material keys; wallFinishes maps a wall ID to the key for this room's side of that one wall, in place of wallFinish. lightK is a ceiling light's Kelvin temperature.
+- Furniture: {id,level?,type,position:[x,y],rotation?,size:[width,depth,height],material?,accent?,model?,room?,elevation?,fixture?,roof?,designOptions?}. roof:true marks a roof; see Roofs and sloped ceilings. designOptions lists the design options that show the piece; see Design options. position is footprint center; elevation is bottom height above floor. Material and accent accept a material key or hex colour. Built-in procedural types include bed, nightstand, wardrobe, dresser, sofa, armchair, coffee-table, tv-unit, tv, rug, bookshelf, floor-lamp, plant, dining-table, chair, desk, office-chair, kitchen-base, kitchen-tall, kitchen-wall, island, fridge, hob, sink, toilet, basin, vanity, bathtub, shower, washer, stairs and box. Use real dimensions and keep openings and walking paths clear. Custom GLB uses type box plus model and size; prefer embedded buffers/textures. fixture is an optional boolean: true keeps the piece visible when loose furniture is hidden, false hides it, overriding the built-in type default. Author it explicitly for custom built-ins, including lighting; model filenames do not determine fixture status.
 - materials is an object keyed by material name. Each value has color (hex), optional roughness and metalness (0..1), optional pattern (planks, herringbone, tiles, large-tiles, carpet, concrete, plaster or fabric), scale (metres per texture repeat), module:[width,depth] and seam (hex). For procedural planks/tiles, module sets board/tile dimensions; scale sets image/PBR texture repeat size and some fine procedural patterns. Advanced optional fields include pbr, pbrColor, normalScale, sheen, sheenColor, sheenRoughness, clearcoat, clearcoatRoughness, specularIntensity, texture, opacity and emissive. Procedural patterns need no downloaded images. Set defaults.exteriorFinish, interiorFinish, floor and ceiling to authored material keys; rooms can override them.
-- Camera: {id,room?,position:[x,y],height?,lookAt:[x,y],lookAtHeight?,fov?,photo?,note?}. Height defaults to 1.6m. Set lookAtHeight explicitly for reproducible views; the guided tour defaults it to 1.2m. lookAt must be at least 0.1m from position. Use confirmed eye heights and fixed positions suited to review. Match each fixed camera to manifest views:{id,label,piece}; piece is the room or authored object owned by a builder, usually its stable ID. tour is an ordered array of room or camera IDs.
+- Camera: {id,level?,room?,position:[x,y],height?,lookAt:[x,y],lookAtHeight?,fov?,photo?,note?}. Height defaults to 1.6m above its storey's floor. Set lookAtHeight explicitly for reproducible views; the guided tour defaults it to 1.2m. lookAt must be at least 0.1m from position. Use confirmed eye heights and fixed positions suited to review. Match each fixed camera to manifest views:{id,label,piece}; piece is the room or authored object owned by a builder, usually its stable ID. tour is an ordered array of room or camera IDs.
 - source, when used, is {image,pxPerMeter,originPx?,calibratedFrom?,overall?}. image must be bundled beside the artifact's plan-relative assets; pxPerMeter comes from a printed dimension, originPx maps that pixel to plan [0,0], and overall is printed outside dimensions [width,depth]. Preserve the original source separately under reference/.
 
 Asset paths are relative to the artifact's plan.json: assets/models/chair.glb becomes ./models/chair.glb. No absolute paths, parent traversal, remote URLs or data outside the artifact. Library model syntax is @lib/models/<id>.glb; PBR pbr and environment fields refer to IDs in the bundled library/index.json. The starter index is {version:2,textures:{},models:{},hdris:{}} and supports procedural materials/furniture with no HDRI. Add a library ID only when its actual delivery files are present: models/<id>.glb; textures/<id>/<resolution>/<map>.webp for all indexed maps and resolutions; hdri/<id>-env.hdr and hdri/<id>.hdr. Texture metadata carries size:[width,depth] in metres, maps:[color,normal,orm] as applicable and res:[pixelResolution,...]; model metadata carries size:[width,depth,height] and optional front; HDRI metadata carries sun:[x,y,z]. Keep this index limited to bundled, used assets.
@@ -141,6 +191,51 @@ await fs.copyFile('assets/plan.json', path.join(output, 'plan.json'));
 `;
 
 /** Copy customer references into a new authoring source. Never executes those inputs. */
+/** Earlier stock rules, by SHA-256. A project still holding one of these exact files has not customized it. */
+const retiredRules: Record<"AGENTS.md" | "BUILDERS.md", string[]> = {
+  "AGENTS.md": [
+    "c5c0437469132ed01da9e491133dd28a2a8c4744b5496c851d532042c959484c",
+    "677dd7b4ce1ca33eff3b4f9c5b11c5c3dde329229f50429b19f45fc4dc3b0ca0",
+  ],
+  "BUILDERS.md": [
+    "772a7e94099515f022537ac5aa642b9e5eaab35f23e1401d6c7c9e9a7dc36d1d",
+    "554f5203f62346647d082e0c3c5ea25e565a16da1295dd7dc4c946f8062251d3",
+    "f720682fc56521b5525573537d168ed4cf1c30bc92673ebf1012c98bb4177779",
+    // One floor plane per artifact, before storeys and stairs.
+    "5804284a5cfcbbd089ace84387ac5d9fe50d3a55130cad714749d389c9a792db",
+    // Storeys and stairs, before roofs and sloped ceilings.
+    "4b5994b35e6529094cbf6f91bd94b8adf7863f58c894d2244d4e77178d41dc49",
+    // Roofs and sloped ceilings, before design options.
+    "d342cd169fd952eb5f4bb96f99f6256dcfa62f81da6a119d48531fc791bfbdff",
+    // Design options, before hand edits.
+    "150ba6adfd66a742d95dac9b30e75160cf37ace45093d4635f26729b92e33e82",
+    // Hand edits, before performance budgets.
+    "1e648fd212382aa854239eedda24abb79b6f18ccca5840566e3a905db929b77a",
+    // Performance budgets, before the build compressed models itself.
+    "3621b651a526b4150f84853d0f6068bd5d1d26fa51f11e9f8077bc7771ef5f22",
+  ],
+};
+
+/**
+ * Brings a project's stock rules up to date. Only files identical to an earlier stock version
+ * are replaced; edited rules stay as the project wrote them. Returns the files it replaced.
+ */
+export async function refreshProjectRules(directory: string) {
+  const current = { "AGENTS.md": projectRules, "BUILDERS.md": builderRules };
+  const replaced: string[] = [];
+  for (const name of ["AGENTS.md", "BUILDERS.md"] as const) {
+    const file = path.join(directory, name);
+    // Rules are plain files in the project; never follow a link out of it.
+    if (!(await fs.lstat(file).catch(() => null))?.isFile()) continue;
+    const text = await fs.readFile(file, "utf8").catch(() => null);
+    if (text === null || text === current[name]) continue;
+    if (!retiredRules[name].includes(createHash("sha256").update(text).digest("hex"))) continue;
+    await fs.writeFile(file, current[name]);
+    replaced.push(name);
+  }
+  return replaced;
+}
+
 export async function initializeProject(options: ProjectIntake) {
   const inputsDirectory = options.inputsDirectory === undefined ? null : path.resolve(options.inputsDirectory);
   const directory = path.resolve(options.directory);
