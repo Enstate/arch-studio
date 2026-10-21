@@ -9,9 +9,14 @@
     "serve": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
+    "@arch/agent": "workspace:*",
+    "@arch/project": "workspace:*",
+    "@arch/project-tools": "workspace:*",
     "@arch/ui": "workspace:*",
     "@arch/viewer": "workspace:*",
+    "@arch/viewer-ui": "workspace:*",
     "@tailwindcss/vite": "^4.3.3",
+    "@tanstack/react-form": "catalog:",
     "@tanstack/react-query": "^5.104.2",
     "@tanstack/react-router": "^1.170.44",
     "@tanstack/react-router-ssr-query": "^1.167.3",
@@ -19,12 +24,11 @@
     "lucide-react": "^1.56.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
+    "react-markdown": "^10.1.0",
+    "remark-breaks": "^4.0.0",
+    "remark-gfm": "^4.0.1",
     "tailwindcss": "catalog:",
-    "zod": "catalog:",
-    "@arch/project": "workspace:*",
-    "@arch/project-tools": "workspace:*",
-    "@arch/viewer-ui": "workspace:*",
-    "@tanstack/react-form": "catalog:"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@arch/config": "workspace:*",

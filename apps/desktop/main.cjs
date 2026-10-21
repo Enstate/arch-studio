@@ -138,7 +138,11 @@ app.whenReady().then(async () => {
     if (!trustedFrame(event)) return;
     try { if (new URL(url).protocol === 'https:') void shell.openExternal(url); } catch {}
   });
-  window.webContents.on('will-frame-navigate', event => { if (new URL(event.url).origin !== origin) event.preventDefault(); });
+  // Chromium's built-in PDF viewer renders inside its own extension frame. Allow only that
+  // extension, so reference PDFs display while every other foreign frame stays blocked.
+  // Extension URLs have an opaque "null" origin, so match the scheme and extension ID.
+  const pdfViewer = url => url.protocol === 'chrome-extension:' && url.host === 'mhjfbmdgcfjbbpaeojofohoefgiehjai';
+  window.webContents.on('will-frame-navigate', event => { const target = new URL(event.url); if (target.origin !== origin && !pdfViewer(target)) event.preventDefault(); });
   window.webContents.on('will-navigate', (event, url) => {
     if (new URL(url).protocol === 'https:') { event.preventDefault(); }
   });

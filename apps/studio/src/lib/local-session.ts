@@ -2,7 +2,10 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { getRequest } from "@tanstack/react-start/server";
 import { studioSessionHeader } from "./browser-session";
 
-const secret = randomBytes(32).toString("hex");
+// One secret per server process. Development module reloads must not unpair open windows.
+const processState = globalThis as typeof globalThis & { archStudioSessionSecret?: string };
+processState.archStudioSessionSecret ??= randomBytes(32).toString("hex");
+const secret = processState.archStudioSessionSecret;
 export function studioOrigin(request: Request) {
   const url = new URL(request.url);
   if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) throw new Error("Studio requires HTTP loopback.");

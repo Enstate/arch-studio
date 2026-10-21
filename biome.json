@@ -9,6 +9,7 @@
     "includes": [
       "**",
       "!**/_generated",
+      "!packages/agent/src/codex-app-server",
       "!**/routeTree.gen.ts",
       "!**/env.ts",
       "!**/*.d.ts",

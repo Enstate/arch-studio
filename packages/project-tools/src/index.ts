@@ -28,6 +28,14 @@ import {
   type ProjectManifest,
   type ReviewNote,
   type PreviewSession,
+  projectId as projectIdSchema,
+  branchName,
+  projectBranchesSchema,
+  roundSchema,
+  type ProjectBranch,
+  type ProjectBranches,
+  type Round,
+  type CheckpointComparison,
 } from "@arch/project";
 /** One authoring store shared by the CLI and Studio, independent of a checkout. */
 export function studioStoreDirectory(): string {
@@ -411,7 +419,8 @@ async function projectFiles(
     await fs.readdir(path.join(directory, relative), { withFileTypes: true })
   ).sort((a, b) => a.name.localeCompare(b.name))) {
     // These non-source root entries are intentionally absent from checkpoints.
-    if (!relative && [".git", "node_modules", ".DS_Store", "AGENT_BRIEF.md"].includes(entry.name))
+    // .claude and .codex hold agent-local session and sandbox state, never project source.
+    if (!relative && [".git", "node_modules", ".DS_Store", "AGENT_BRIEF.md", ".claude", ".codex"].includes(entry.name))
       continue;
     const name = relative ? `${relative}/${entry.name}` : entry.name;
     if ((!relative && !allowed.has(entry.name)) || excluded.test(entry.name))
@@ -440,95 +449,309 @@ export async function saveCheckpoint(
   return locked(async (value) => {
     const previous = value.projects.find((p) => p.manifest.id === projectId);
     if (!previous) throw new Error("Unknown project");
-    const current = await projectAt(previous.directory);
-    await projectIntake(current.directory, current.manifest);
-    if (current.manifest.id !== projectId)
-      throw new Error("Registered project ID changed");
-    const brief = continuationBriefSchema.parse(
-      await fileContents(path.join(current.directory, "arch.context.json")),
-    );
-    const entries: CheckpointManifest["files"] = [];
-    for (const relative of await projectFiles(current.directory)) {
-      const data = await fs.readFile(
-        await safeFile(current.directory, relative),
-      );
-      if (relative === intakePath) projectIntakePlan(data, current.manifest);
-      const sha256 = digest(data);
-      const blob = path.join(archiveDirectory(), "blobs", "sha256", sha256);
-      await fs.mkdir(path.dirname(blob), { recursive: true });
-      try {
-        await fs.writeFile(blob, data, { flag: "wx" });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        if (digest(await fs.readFile(blob)) !== sha256)
-          throw new Error("Existing blob integrity failure");
-      }
-      entries.push({ path: relative, sha256, size: data.length });
-    }
-    for (const [name, expected] of [
-      ["arch.project.json", current.manifest],
-      ["arch.context.json", brief],
-    ] as const) {
-      const entry = entries.find((file) => file.path === name);
-      if (!entry) throw new Error(`Missing metadata: ${name}`);
-      const captured = JSON.parse(
-        await fs.readFile(
-          path.join(archiveDirectory(), "blobs", "sha256", entry.sha256),
-          "utf8",
-        ),
-      );
-      const parsed =
-        name === "arch.project.json"
-          ? projectManifestSchema.parse(captured)
-          : continuationBriefSchema.parse(captured);
-      if (canonical(parsed) !== canonical(expected))
-        throw new Error(
-          "Project changed while checkpoint was being saved. Retry.",
-        );
-    }
-    const dependencies = new Map<string, string>();
-    for (const file of entries.filter((file) =>
-      ["package.json", "bun.lock", "package-lock.json"].includes(file.path),
-    ))
-      dependencies.set(
-        file.path,
-        (
-          await verifiedBlob(
-            path.join(archiveDirectory(), "blobs", "sha256"),
-            file,
-          )
-        ).toString(),
-      );
-    requireDependencies(current.manifest, dependencies);
-    if (previous.checkpointId) {
-      const last = await checkpoint(previous.checkpointId);
-      if (
-        canonical(last.files) === canonical(entries) &&
-        canonical(last.project) === canonical(current.manifest) &&
-        canonical(last.brief) === canonical(brief)
-      ) {
-        await writeCheckpointBrief(current.directory, last, value.notes);
-        return last;
-      }
-    }
-    const content = {
-      schemaVersion: 1 as const,
-      projectId,
-      parentId: previous.checkpointId,
-      createdAt: new Date().toISOString(),
-      project: current.manifest,
-      brief,
-      files: entries,
-    };
-    const result = { ...content, id: digest(canonical(content)) };
-    await atomic(checkpointPath(result.id), result);
-    Object.assign(previous, current, {
-      checkpointId: result.id,
-      stage: "draft",
-    });
-    await writeCheckpointBrief(current.directory, result, value.notes);
-    return result;
+    const { saved, current } = await snapshot(value, projectId, previous.directory, previous.checkpointId);
+    if (saved.id !== previous.checkpointId)
+      Object.assign(previous, current, { checkpointId: saved.id, stage: "draft" });
+    return saved;
   });
+}
+/** Save one branch folder against its own head. The primary branch keeps the catalog in step. */
+export async function saveBranchCheckpoint(
+  projectId: string,
+  branch: string,
+): Promise<CheckpointManifest> {
+  return locked(async (value) => {
+    const stored = await branchesIn(value, projectId);
+    const line = requireBranch(stored, branch);
+    const { saved, current } = await snapshot(value, projectId, line.directory, line.headId);
+    if (stored.primary === branch) {
+      const entry = value.projects.find((p) => p.manifest.id === projectId)!;
+      if (saved.id !== entry.checkpointId)
+        Object.assign(entry, current, { checkpointId: saved.id, stage: "draft" });
+      return saved;
+    }
+    line.headId = saved.id;
+    await atomic(branchesPath(projectId), stored);
+    return saved;
+  });
+}
+function branchesPath(projectId: string) {
+  return path.join(archiveDirectory(), "branches", `${projectIdSchema.parse(projectId)}.json`);
+}
+function requireBranch(stored: ProjectBranches, name: string): ProjectBranch {
+  const line = stored.branches.find((branch) => branch.name === name);
+  if (!line) throw new Error("Unknown branch");
+  return line;
+}
+async function branchesIn(value: Catalog, projectId: string): Promise<ProjectBranches> {
+  const entry = value.projects.find((p) => p.manifest.id === projectId);
+  if (!entry) throw new Error("Unknown project");
+  let stored: ProjectBranches;
+  try {
+    stored = projectBranchesSchema.parse(await fileContents(branchesPath(projectId)));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    stored = { schemaVersion: 1, projectId, primary: "main", branches: [{ name: "main", directory: entry.directory, headId: entry.checkpointId, forkedFrom: null, createdAt: entry.updatedAt, archived: false }] };
+  }
+  if (stored.projectId !== projectId) throw new Error("Branch list belongs to another project");
+  // The catalog owns the primary line, so CLI builds and folder switches stay authoritative.
+  const primary = requireBranch(stored, stored.primary);
+  primary.directory = entry.directory;
+  primary.headId = entry.checkpointId;
+  return stored;
+}
+/** Every local working line of a project. Projects without a branch list have one, "main". */
+export async function projectBranches(projectId: string): Promise<ProjectBranches> {
+  return branchesIn(await catalog(), projectId);
+}
+/** Start a new line from any saved checkpoint. Heads never move backwards; going back forks. */
+export async function createBranch(
+  projectId: string,
+  input: { name: string; from: string },
+): Promise<ProjectBranch> {
+  const name = branchName.parse(input.name);
+  const saved = await checkpoint(input.from);
+  if (saved.projectId !== projectId) throw new Error("Checkpoint belongs to another project");
+  const target = path.join(archiveDirectory(), "projects", projectId, "branches", name);
+  const parent = path.dirname(target);
+  await fs.mkdir(parent, { recursive: true, mode: 0o700 });
+  if ((await fs.realpath(parent)) !== parent) throw new Error("Branch parent contains symlinks");
+  const temporary = await fs.mkdtemp(path.join(parent, ".arch-branch-"));
+  try {
+    await materializeCheckpoint(saved, temporary);
+    return await locked(async (value) => {
+      const stored = await branchesIn(value, projectId);
+      if (stored.branches.some((branch) => branch.name === name)) throw new Error("A branch with this name already exists.");
+      await writeCheckpointBrief(temporary, saved, value.notes);
+      await fs.mkdir(target);
+      try {
+        for (const entry of await fs.readdir(temporary))
+          await fs.rename(path.join(temporary, entry), path.join(target, entry));
+      } catch (error) {
+        await fs.rm(target, { recursive: true, force: true });
+        throw error;
+      }
+      const line: ProjectBranch = { name, directory: target, headId: saved.id, forkedFrom: saved.id, createdAt: new Date().toISOString(), archived: false };
+      stored.branches.push(line);
+      await atomic(branchesPath(projectId), stored);
+      return line;
+    });
+  } finally {
+    await fs.rm(temporary, { recursive: true, force: true });
+  }
+}
+/** Point the project's catalog entry, and so its default view and exports, at another branch. */
+export async function makePrimaryBranch(projectId: string, name: string): Promise<ProjectBranches> {
+  return locked(async (value) => {
+    const stored = await branchesIn(value, projectId);
+    const line = requireBranch(stored, name);
+    if (line.archived) throw new Error("Restore the archived branch before making it primary.");
+    const current = await projectAt(line.directory);
+    if (current.manifest.id !== projectId) throw new Error("Branch source identity changed");
+    const entry = value.projects.find((p) => p.manifest.id === projectId)!;
+    Object.assign(entry, current, { checkpointId: line.headId, stage: "draft" });
+    stored.primary = name;
+    await atomic(branchesPath(projectId), stored);
+    return stored;
+  });
+}
+export async function archiveBranch(projectId: string, name: string, archived: boolean): Promise<ProjectBranches> {
+  return locked(async (value) => {
+    const stored = await branchesIn(value, projectId);
+    if (stored.primary === name) throw new Error("The primary branch cannot be archived.");
+    requireBranch(stored, name).archived = archived;
+    await atomic(branchesPath(projectId), stored);
+    return stored;
+  });
+}
+/** Return a branch folder to its head. Installed dependencies and version control stay in place. */
+export async function discardBranchChanges(projectId: string, name: string): Promise<ProjectBranch> {
+  const line = requireBranch(await projectBranches(projectId), name);
+  if (!line.headId) throw new Error("This branch has no saved checkpoint to return to.");
+  const saved = await checkpoint(line.headId);
+  const parent = path.dirname(line.directory);
+  const temporary = await fs.mkdtemp(path.join(parent, ".arch-discard-"));
+  try {
+    await materializeCheckpoint(saved, temporary);
+    return await locked(async (value) => {
+      const current = requireBranch(await branchesIn(value, projectId), name);
+      if (current.directory !== line.directory || current.headId !== line.headId) throw new Error("The branch changed. Try again.");
+      await writeCheckpointBrief(temporary, saved, value.notes);
+      for (const kept of [".git", "node_modules", ".claude", ".codex"]) {
+        try { await fs.rename(path.join(line.directory, kept), path.join(temporary, kept)); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
+      const discarded = `${temporary}-discarded`;
+      await fs.rename(line.directory, discarded);
+      await fs.rename(temporary, line.directory);
+      await fs.rm(discarded, { recursive: true, force: true });
+      return current;
+    });
+  } finally {
+    await fs.rm(temporary, { recursive: true, force: true });
+  }
+}
+function roundsDirectory(projectId: string) {
+  return path.join(archiveDirectory(), "rounds", projectIdSchema.parse(projectId));
+}
+/** Keep request attachments as content-addressed blobs so rounds can travel with checkpoints. */
+export async function saveAttachment(data: Uint8Array): Promise<{ sha256: string; size: number; path: string }> {
+  const sha256 = digest(data);
+  const blob = path.join(archiveDirectory(), "blobs", "sha256", sha256);
+  await fs.mkdir(path.dirname(blob), { recursive: true });
+  try {
+    await fs.writeFile(blob, data, { flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if (digest(await fs.readFile(blob)) !== sha256) throw new Error("Existing blob integrity failure");
+  }
+  return { sha256, size: data.length, path: blob };
+}
+export async function saveRound(input: Round): Promise<Round> {
+  const round = roundSchema.parse(input);
+  const saved = await checkpoint(round.checkpointId);
+  if (saved.projectId !== round.projectId) throw new Error("Round checkpoint belongs to another project");
+  for (const attachment of round.attachments)
+    await verifiedBlob(path.join(archiveDirectory(), "blobs", "sha256"), { path: attachment.name, sha256: attachment.sha256, size: attachment.size });
+  await atomic(path.join(roundsDirectory(round.projectId), `${round.id}.json`), round);
+  return round;
+}
+export async function projectRounds(projectId: string): Promise<Round[]> {
+  let names: string[] = [];
+  try {
+    names = await fs.readdir(roundsDirectory(projectId));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const rounds = await Promise.all(names.filter((name) => /^[0-9a-f-]{36}\.json$/.test(name)).map(async (name) => roundSchema.parse(await fileContents(path.join(roundsDirectory(projectId), name)))));
+  return rounds.filter((round) => round.projectId === projectId).sort((a, b) => a.completedAt.localeCompare(b.completedAt));
+}
+const comparedPlanParts = ["walls", "openings", "rooms", "furniture", "cameras", "materials"] as const;
+/** Compare two checkpoints of one project by file hash and generated plan element. */
+export async function compareCheckpoints(base: string, target: string): Promise<CheckpointComparison> {
+  const [from, to] = await Promise.all([checkpoint(base), checkpoint(target)]);
+  if (from.projectId !== to.projectId) throw new Error("Checkpoints belong to different projects");
+  const before = new Map(from.files.map((file) => [file.path, file.sha256]));
+  const after = new Map(to.files.map((file) => [file.path, file.sha256]));
+  const files: CheckpointComparison["files"] = [];
+  for (const file of [...new Set([...before.keys(), ...after.keys()])].sort()) {
+    if (!before.has(file)) files.push({ path: file, change: "added" });
+    else if (!after.has(file)) files.push({ path: file, change: "removed" });
+    else if (before.get(file) !== after.get(file)) files.push({ path: file, change: "modified" });
+  }
+  const planOf = async (saved: CheckpointManifest) => {
+    const file = saved.files.find((entry) => entry.path === "outputs/artifact/plan.json");
+    return file ? JSON.parse((await verifiedBlob(path.join(archiveDirectory(), "blobs", "sha256"), file)).toString()) as Record<string, unknown> : null;
+  };
+  const [planBefore, planAfter] = await Promise.all([planOf(from), planOf(to)]);
+  let plan: CheckpointComparison["plan"] = null;
+  if (planBefore && planAfter) {
+    // Lists are keyed by element ID; materials are a map keyed by name.
+    const elements = (value: unknown) => Array.isArray(value)
+      ? new Map(value.filter((item): item is { id: string } => typeof item?.id === "string").map((item) => [item.id, canonical(item)]))
+      : new Map(value && typeof value === "object" ? Object.entries(value).map(([key, item]) => [key, canonical(item)]) : []);
+    plan = Object.fromEntries(comparedPlanParts.map((part) => {
+      const a = elements(planBefore[part]);
+      const b = elements(planAfter[part]);
+      return [part, {
+        added: [...b.keys()].filter((id) => !a.has(id)),
+        removed: [...a.keys()].filter((id) => !b.has(id)),
+        modified: [...b.keys()].filter((id) => a.has(id) && a.get(id) !== b.get(id)),
+      }];
+    })) as NonNullable<CheckpointComparison["plan"]>;
+  }
+  return { base, target, files, plan };
+}
+async function snapshot(
+  value: Catalog,
+  projectId: string,
+  directory: string,
+  parentId: string | null,
+): Promise<{ saved: CheckpointManifest; current: StudioProject }> {
+  const current = await projectAt(directory);
+  await projectIntake(current.directory, current.manifest);
+  if (current.manifest.id !== projectId)
+    throw new Error("Registered project ID changed");
+  const brief = continuationBriefSchema.parse(
+    await fileContents(path.join(current.directory, "arch.context.json")),
+  );
+  const entries: CheckpointManifest["files"] = [];
+  for (const relative of await projectFiles(current.directory)) {
+    const data = await fs.readFile(
+      await safeFile(current.directory, relative),
+    );
+    if (relative === intakePath) projectIntakePlan(data, current.manifest);
+    const sha256 = digest(data);
+    const blob = path.join(archiveDirectory(), "blobs", "sha256", sha256);
+    await fs.mkdir(path.dirname(blob), { recursive: true });
+    try {
+      await fs.writeFile(blob, data, { flag: "wx" });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (digest(await fs.readFile(blob)) !== sha256)
+        throw new Error("Existing blob integrity failure");
+    }
+    entries.push({ path: relative, sha256, size: data.length });
+  }
+  for (const [name, expected] of [
+    ["arch.project.json", current.manifest],
+    ["arch.context.json", brief],
+  ] as const) {
+    const entry = entries.find((file) => file.path === name);
+    if (!entry) throw new Error(`Missing metadata: ${name}`);
+    const captured = JSON.parse(
+      await fs.readFile(
+        path.join(archiveDirectory(), "blobs", "sha256", entry.sha256),
+        "utf8",
+      ),
+    );
+    const parsed =
+      name === "arch.project.json"
+        ? projectManifestSchema.parse(captured)
+        : continuationBriefSchema.parse(captured);
+    if (canonical(parsed) !== canonical(expected))
+      throw new Error(
+        "Project changed while checkpoint was being saved. Retry.",
+      );
+  }
+  const dependencies = new Map<string, string>();
+  for (const file of entries.filter((file) =>
+    ["package.json", "bun.lock", "package-lock.json"].includes(file.path),
+  ))
+    dependencies.set(
+      file.path,
+      (
+        await verifiedBlob(
+          path.join(archiveDirectory(), "blobs", "sha256"),
+          file,
+        )
+      ).toString(),
+    );
+  requireDependencies(current.manifest, dependencies);
+  if (parentId) {
+    const last = await checkpoint(parentId);
+    if (
+      canonical(last.files) === canonical(entries) &&
+      canonical(last.project) === canonical(current.manifest) &&
+      canonical(last.brief) === canonical(brief)
+    ) {
+      await writeCheckpointBrief(current.directory, last, value.notes);
+      return { saved: last, current };
+    }
+  }
+  const content = {
+    schemaVersion: 1 as const,
+    projectId,
+    parentId,
+    createdAt: new Date().toISOString(),
+    project: current.manifest,
+    brief,
+    files: entries,
+  };
+  const result = { ...content, id: digest(canonical(content)) };
+  await atomic(checkpointPath(result.id), result);
+  await writeCheckpointBrief(current.directory, result, value.notes);
+  return { saved: result, current };
 }
 export async function inspectProject(
   projectId: string,
@@ -563,6 +786,33 @@ export async function inspectProject(
     notes: value.notes.filter((n) => n.projectId === projectId),
   };
 }
+/** Write verified checkpoint bytes into an empty folder and validate the result as a source. */
+async function materializeCheckpoint(
+  saved: CheckpointManifest,
+  directory: string,
+): Promise<StudioProject> {
+  for (const file of saved.files) {
+    const blob = await verifiedBlob(
+      path.join(archiveDirectory(), "blobs", "sha256"),
+      file,
+    );
+    if (blob.length !== file.size || digest(blob) !== file.sha256)
+      throw new Error(`Blob integrity failure: ${file.path}`);
+    const destination = path.join(directory, file.path);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.writeFile(destination, blob, { flag: "wx" });
+  }
+  const restored = await projectAt(directory);
+  await projectIntake(restored.directory, restored.manifest);
+  if (
+    canonical(restored.manifest) !== canonical(saved.project) ||
+    canonical(
+      await fileContents(path.join(directory, "arch.context.json")),
+    ) !== canonical(saved.brief)
+  )
+    throw new Error("Checkpoint metadata differs from source");
+  return restored;
+}
 export async function restoreCheckpoint(
   checkpointId: string,
   targetDirectory: string,
@@ -582,26 +832,7 @@ export async function restoreCheckpoint(
   }
   const temporary = await fs.mkdtemp(path.join(parent, ".arch-restore-"));
   try {
-    for (const file of saved.files) {
-      const blob = await verifiedBlob(
-        path.join(archiveDirectory(), "blobs", "sha256"),
-        file,
-      );
-      if (blob.length !== file.size || digest(blob) !== file.sha256)
-        throw new Error(`Blob integrity failure: ${file.path}`);
-      const destination = path.join(temporary, file.path);
-      await fs.mkdir(path.dirname(destination), { recursive: true });
-      await fs.writeFile(destination, blob, { flag: "wx" });
-    }
-    const restored = await projectAt(temporary);
-    await projectIntake(restored.directory, restored.manifest);
-    if (
-      canonical(restored.manifest) !== canonical(saved.project) ||
-      canonical(
-        await fileContents(path.join(temporary, "arch.context.json")),
-      ) !== canonical(saved.brief)
-    )
-      throw new Error("Checkpoint metadata differs from source");
+    const restored = await materializeCheckpoint(saved, temporary);
     return await locked(async (value) => {
       const existing = value.projects.find(
         (p) => p.manifest.id === saved.projectId,
@@ -961,6 +1192,12 @@ export async function exportCheckpoint(
     const briefContents = continuationText(saved, notes);
     await fs.writeFile(path.join(temporary, "review-notes.json"), noteContents);
     await fs.writeFile(path.join(temporary, "AGENT_BRIEF.md"), briefContents);
+    // Rounds are optional sidecars. Older importers ignore the file and the extra hash.
+    const rounds = (await projectRounds(saved.projectId)).filter((round) => round.checkpointId === saved.id);
+    const roundContents = JSON.stringify(rounds, null, 2);
+    for (const attachment of rounds.flatMap((round) => round.attachments))
+      await fs.writeFile(path.join(temporary, "blobs", attachment.sha256), await verifiedBlob(path.join(archiveDirectory(), "blobs", "sha256"), { path: attachment.name, sha256: attachment.sha256, size: attachment.size }));
+    if (rounds.length) await fs.writeFile(path.join(temporary, "rounds.json"), roundContents);
     await fs.writeFile(
       path.join(temporary, "bundle.json"),
       JSON.stringify(
@@ -969,6 +1206,7 @@ export async function exportCheckpoint(
           checkpointId: saved.id,
           reviewNotesSha256: digest(noteContents),
           agentBriefSha256: digest(briefContents),
+          ...(rounds.length ? { roundsSha256: digest(roundContents) } : {}),
         },
         null,
         2,
@@ -1036,6 +1274,7 @@ export async function importCheckpoint(
     checkpointId?: unknown;
     reviewNotesSha256?: unknown;
     agentBriefSha256?: unknown;
+    roundsSha256?: unknown;
   };
   const noteContents = await fs.readFile(
     await safeFile(directory, "review-notes.json"),
@@ -1053,6 +1292,18 @@ export async function importCheckpoint(
   const noteValues: unknown = JSON.parse(noteContents.toString());
   if (!Array.isArray(noteValues)) throw new Error("Invalid review notes");
   const notes = noteValues.map((value) => reviewNoteSchema.parse(value));
+  let rounds: Round[] = [];
+  if (bundle.roundsSha256 !== undefined) {
+    const roundContents = await fs.readFile(await safeFile(directory, "rounds.json"));
+    if (bundle.roundsSha256 !== digest(roundContents)) throw new Error("Portable bundle integrity failure");
+    const roundValues: unknown = JSON.parse(roundContents.toString());
+    if (!Array.isArray(roundValues)) throw new Error("Invalid rounds");
+    rounds = roundValues.map((value) => roundSchema.parse(value));
+    for (const round of rounds) {
+      if (round.checkpointId !== saved.id || round.projectId !== saved.projectId) throw new Error("Imported round target mismatch");
+      for (const attachment of round.attachments) await verifiedBlob(path.join(directory, "blobs"), { path: attachment.name, sha256: attachment.sha256, size: attachment.size });
+    }
+  }
   const noteIds = new Map<string, string>();
   for (const note of notes) {
     const previous = noteIds.get(note.id);
@@ -1105,6 +1356,16 @@ export async function importCheckpoint(
       if (existing && canonical(existing) !== canonical(note))
         throw new Error("Review note ID collision");
       if (!existing) value.notes.push(note);
+    }
+    for (const round of rounds) {
+      for (const attachment of round.attachments) await saveAttachment(await verifiedBlob(path.join(directory, "blobs"), { path: attachment.name, sha256: attachment.sha256, size: attachment.size }));
+      const file = path.join(roundsDirectory(round.projectId), `${round.id}.json`);
+      try {
+        if (canonical(roundSchema.parse(await fileContents(file))) !== canonical(round)) throw new Error("Round ID collision");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        await atomic(file, round);
+      }
     }
     await fs.mkdir(path.join(archiveDirectory(), "briefs"), {
       recursive: true,
@@ -1223,15 +1484,17 @@ function releaseSourceBuildShutdown(): void {
   sourceBuildShutdownBound = false;
 }
 /** Explicit local authoring operation. This subprocess is bounded, not a security sandbox. */
-export async function buildProjectArtifact(projectId: string, options: { authorizeSourceExecution: true }): Promise<{artifact: ArtifactManifest; checkpoint: CheckpointManifest; artifactHash: string}> {
+export async function buildProjectArtifact(projectId: string, options: { authorizeSourceExecution: true; branch?: string }): Promise<{artifact: ArtifactManifest; checkpoint: CheckpointManifest; artifactHash: string}> {
   if (options?.authorizeSourceExecution !== true) throw new Error("Explicit local source execution authorization required");
   if (sourceBuildsStopping) throw new Error("Source builds are stopping");
-  if(artifactBuilds.has(projectId))throw new Error("Artifact build already running for this project");
-  artifactBuilds.add(projectId);
+  const branches = await projectBranches(projectId);
+  const line = requireBranch(branches, options.branch ?? branches.primary);
+  const key = `${projectId}:${line.name}`;
+  if(artifactBuilds.has(key))throw new Error("Artifact build already running for this branch");
+  artifactBuilds.add(key);
   bindSourceBuildShutdown();
   try {
-  const project = await registered(projectId);
-  const current = await projectAt(project.directory);
+  const current = await projectAt(line.directory);
   if (current.manifest.schemaVersion !== 2) throw new Error("Artifact builds require a viewer project");
   const sourcePaths = (await projectFiles(current.directory)).filter(p => p.startsWith("source/") || p.startsWith("assets/"));
   if (!sourcePaths.includes(current.manifest.entry)) throw new Error("Generator entry must be editable source/");
@@ -1272,9 +1535,9 @@ export async function buildProjectArtifact(projectId: string, options: { authori
   const artifact = artifactManifestSchema.parse({schemaVersion:1,projectId,runtime:current.manifest.runtime,runtimeHash:await viewerRuntimeHash(),sources,plan,files,cameras:(generatedPlan.cameras ?? []).map(c=>({id:c.id,position:[c.position[0],c.height??1.6,c.position[1]],target:[c.lookAt[0],c.lookAtHeight??1.2,c.lookAt[1]]})),outputs:files.filter(f=>f.path.startsWith("outputs/artifact/stills/")||f.path.startsWith("outputs/artifact/videos/")).map(f=>({kind:f.path.startsWith("outputs/artifact/stills/")?"still":"video",path:f.path}))});
   for (const source of sources) if (digest(await fs.readFile(await safeFile(current.directory,source.path))) !== source.sha256) throw new Error("Source changed during build");
   await atomic(path.join(current.directory,"outputs/artifact.json"),artifact);
-  const saved = await saveCheckpoint(projectId);
+  const saved = await saveBranchCheckpoint(projectId, line.name);
   return {artifact,checkpoint:saved,artifactHash:digest(canonical(artifact))};
-  }finally{artifactBuilds.delete(projectId);releaseSourceBuildShutdown();}
+  }finally{artifactBuilds.delete(key);releaseSourceBuildShutdown();}
 }
 /** Verify immutable artifact metadata for listings without reading every asset.
  * Use inspectArtifact to verify all bytes before opening or exporting a version.

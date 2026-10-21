@@ -14,6 +14,7 @@ const children = new Set<ChildProcess>();
 const offMachine = new Set<string>();
 let browser: Browser | undefined;
 let temporary: string | undefined;
+let failurePage: (() => Page) | undefined;
 const checks: string[] = [];
 async function cleanup() {
   await Promise.allSettled([browser?.close(), ...[...children].map(stop)]);
@@ -152,7 +153,7 @@ try {
   await access(chrome);
   temporary = await realpath(await mkdtemp(path.join(tmpdir(), "arch-standalone-")));
   await mkdir(evidence, { recursive: true });
-  const home = path.join(temporary, "store"); const source = path.join(temporary, "source"); const inputs = path.join(temporary, "inputs");
+  const home = path.join(temporary, "store"); const inputs = path.join(temporary, "inputs");
   await mkdir(inputs);
   const reference = '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><rect x="10" y="10" width="580" height="380" fill="white" stroke="black"/><text x="40" y="80">Synthetic studio: 6 m x 4 m, height 2.6 m</text><script>globalThis.__referenceExecuted = true;</script></svg>';
   await writeFile(path.join(inputs, "dimensions.svg"), reference);
@@ -162,6 +163,7 @@ try {
   let running = await server(home);
   browser = await chromium.launch({ executablePath: chrome, headless: true, args: ["--enable-unsafe-swiftshader"] });
   let session = await context(running.origin); let page = await session.newPage();
+  failurePage = () => page;
   page.setDefaultTimeout(15000);
   const artifacts = new Set<string>();
   page.on("request", request => { if (request.url().includes("/api/artifacts/")) artifacts.add(request.url()); });
@@ -173,7 +175,7 @@ try {
   passed("unpaired loopback browser cannot acquire a Studio session");
   const metadataRequest = page.waitForRequest(request => request.method() === "GET" && Boolean(request.headers()["x-arch-studio-session"]));
   await page.goto(running.bootstrapUrl);
-  await page.getByRole("button", { name: "Create client", exact: true }).first().waitFor();
+  await page.getByRole("button", { name: "New project", exact: true }).first().waitFor();
   assert.equal(new URL(page.url()).hash, "");
   const metadata = await metadataRequest;
   const secret = await page.evaluate(() => sessionStorage.getItem("arch-studio-session"));
@@ -189,22 +191,31 @@ try {
   await unpaired.close();
   await otherPort(page, secret!, new URL(running.bootstrapUrl).hash.slice("#studio=".length));
   await page.goto(running.origin);
-  await page.getByRole("button", { name: "Create client", exact: true }).first().waitFor();
+  await page.getByRole("button", { name: "New project", exact: true }).first().waitFor();
   passed("origin-scoped bearer protects metadata, survives navigation, and never reaches another loopback port");
-  await page.getByRole("button", { name: "Create client", exact: true }).first().click();
-  let dialog = page.getByRole("dialog");
-  await dialog.getByLabel("Company name", { exact: true }).fill("Synthetic verification");
-  await dialog.getByLabel("Client key", { exact: true }).fill("synthetic-verification");
-  await dialog.getByRole("button", { name: "Create client", exact: true }).click();
-  await dialog.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "New project", exact: true }).first().click();
-  dialog = page.getByRole("dialog");
+  let dialog = page.getByRole("dialog");
   await dialog.getByLabel("Project name", { exact: true }).fill("Standalone room");
+  await dialog.getByRole("combobox").click();
+  await page.getByRole("option", { name: "New client…", exact: true }).click();
+  await dialog.getByLabel("Company name", { exact: true }).fill("Synthetic verification");
+  await dialog.locator("#new-project-references").setInputFiles([path.join(inputs, "dimensions.svg"), path.join(inputs, "floor-plan.pdf"), path.join(inputs, "brief.txt")]);
+  await dialog.getByText("brief.txt", { exact: true }).waitFor();
+  // Verification never starts a real agent, even when the machine has one signed in.
+  const startIntake = dialog.getByLabel("Review the references now", { exact: false });
+  if (await startIntake.count()) await startIntake.uncheck();
   await dialog.getByRole("button", { name: "Create project", exact: true }).click();
-  await page.getByRole("button", { name: "Start from documents", exact: true }).click();
-  await page.getByLabel("Documents folder", { exact: true }).fill(inputs);
-  await page.getByLabel("New destination folder", { exact: true }).fill(source);
-  await page.getByRole("button", { name: "Prepare project", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
+  const created = JSON.parse(await cli(home, "list")).find((project: {manifest: {name: string}}) => project.manifest.name === "Standalone room");
+  assert.ok(created, "New project registers a source");
+  const source: string = created.directory;
+  assert.equal(source, path.join(home, "projects", created.manifest.id, "branches/main"), "New project sources live in the managed store");
+  assert.equal(created.manifest.client.id, "synthetic-verification");
+  assert.equal(await readFile(path.join(source, "reference/dimensions.svg"), "utf8"), reference);
+  // The initialized source is the first saved version; rounds start from it.
+  await page.getByText("Saved version · Version 1", { exact: false }).waitFor();
+  await page.getByRole("textbox", { name: "Describe the next change, or attach a marked-up render…", exact: true }).waitFor();
+  await section(page, "Project overview");
   await page.locator("[data-studio-intake]").waitFor();
   assert.equal(await page.locator("[data-viewer] canvas").count(), 0);
   const intakePath = path.join(source, "source/intake.json");
@@ -221,13 +232,18 @@ try {
   await cli(home, "continue", source);
   const savedSource = JSON.parse(await cli(home, "list")).find((project: {directory: string}) => project.directory === source);
   assert.ok(savedSource?.checkpointId);
+  // Variant and version live in the floating design-line panel.
   await page.locator("[data-studio-version]").click();
+  await page.getByRole("button", { name: "Versions", exact: true }).click();
   await page.getByRole("menuitemradio").filter({hasText: savedSource.checkpointId.slice(0, 7)}).click();
   await page.getByText(intake.brief, { exact: true }).waitFor();
   await page.locator("[data-studio-questions]").getByText("Confirm ceiling height before building.", { exact: true }).waitFor();
   await page.getByText("Ground floor", { exact: false }).waitFor();
-  const intakeDocument = page.getByRole("link", { name: "Download: Dimensioned room", exact: true });
+  // Originals download from the file viewer; list rows only open it.
+  await page.locator("[data-studio-intake]").getByRole("button", { name: "Dimensioned room", exact: false }).first().click();
+  const intakeDocument = page.locator("[data-studio-file-viewer]").getByRole("link", { name: "Download: Dimensioned room", exact: true });
   const intakeDocumentUrl = await intakeDocument.getAttribute("href");
+  await section(page, "Project overview");
   assert.ok(intakeDocumentUrl);
   const intakeReference = await session.request.get(intakeDocumentUrl);
   assert.equal(intakeReference.status(), 200);
@@ -273,15 +289,44 @@ try {
   const checkpoint = await page.locator("[data-studio-version]").getAttribute("data-studio-version");
   assert.ok(checkpoint);
   assert.match(checkpoint, /^[a-f0-9]{64}$/);
-  assert.ok((await page.locator("[data-studio-version]").innerText()).includes(checkpoint.slice(0,7)));
-  assert.ok((await page.locator("[data-studio-version]").getAttribute("aria-label"))!.includes(checkpoint.slice(0,7)));
+  // The header names the design line and version for people; hashes stay in the version list.
+  assert.match(await page.locator("[data-studio-version]").innerText(), /Main design · Version \d+/);
   await page.screenshot({ path: path.join(evidence, "desktop.png") });
   const narrowContext = await context(running.origin, { width: 390, height: 844 });
   const narrow = await narrowContext.newPage();
-  await narrow.goto(running.bootstrapUrl); await viewer(narrow);
+  await narrow.goto(running.bootstrapUrl); await section(narrow, "View project"); await viewer(narrow);
   await narrow.screenshot({ path: path.join(evidence, "narrow.png") });
   await narrowContext.close();
   passed("confirmed source execution and actual desktop/narrow viewer");
+  // Threads are agent sessions. A thread can work on a new branch forked from the current version.
+  const mainThread = await page.locator("[data-studio-thread][aria-current] , [data-studio-thread]:has([aria-current])").first().getAttribute("data-studio-thread");
+  assert.ok(mainThread, "The project opens on its main thread");
+  await page.locator("[data-studio-branch]").click();
+  await page.getByRole("button", { name: "Variants", exact: true }).click();
+  await page.getByRole("menuitem", { name: "New variant from this version", exact: true }).click();
+  await page.locator('[data-studio-branch]:not([data-studio-branch="main"])').waitFor();
+  await page.getByText("Forked from", { exact: false }).waitFor();
+  assert.equal(await page.locator("li[data-studio-thread]").count(), 2, "Both threads show in the sidebar");
+  const variantBranch = (await page.locator("[data-studio-branch]").getAttribute("data-studio-branch"))!;
+  const branchFolder = path.join(home, "projects", created.manifest.id, "branches", variantBranch);
+  assert.equal(await readFile(path.join(branchFolder, "assets/plan.json"), "utf8"), JSON.stringify(plan));
+  await writeFile(path.join(branchFolder, "assets/plan.json"), JSON.stringify({ ...plan, materials: { ...plan.materials, blue: { color: "#2f5f8a", roughness: 0.8 } } }));
+  await page.getByRole("button", { name: "Build", exact: true }).click();
+  await viewer(page);
+  const variant = await page.locator("[data-studio-version]").getAttribute("data-studio-version");
+  assert.ok(variant && variant !== checkpoint, "The branch builds its own version without asking again");
+  assert.equal(JSON.parse(await cli(home, "list")).find((project: {manifest: {id: string}}) => project.manifest.id === created.manifest.id).checkpointId, checkpoint, "Branch builds leave the primary line unchanged");
+  await section(page, "Compare");
+  await page.getByText("Changed files", { exact: false }).waitFor();
+  await page.locator("li", { hasText: "assets/plan.json" }).first().waitFor();
+  await page.getByText("Changed blue", { exact: true }).waitFor();
+  await page.screenshot({ path: path.join(evidence, "compare.png") });
+  await page.locator(`li[data-studio-thread="${mainThread}"] [role="button"]`).click();
+  await page.locator('[data-studio-branch="main"]').waitFor();
+  await section(page, "View project");
+  await viewer(page);
+  assert.equal(await page.locator("[data-studio-version]").getAttribute("data-studio-version"), checkpoint);
+  passed("threads fork a branch from a version, build under the existing grant, compare, and keep the primary line");
   await writeFile(intakePath, "{");
   await section(page, "Project overview");
   await page.getByText("The project plan is invalid. Have your agent correct the errors below.", { exact: true }).waitFor();
@@ -306,7 +351,11 @@ try {
   passed("artifact capability, origin, HEAD and byte-range boundary");
   await section(page, "Files");
   const row = page.locator(`[data-studio-file="${drawing.id}"]`);
-  const link = row.getByRole("link", { name: "Download: Dimensioned room", exact: true });
+  await row.getByRole("button").click();
+  assert.equal(await row.getByRole("link").count(), 0, "List rows no longer download");
+  await page.locator(`[data-studio-file-viewer="${drawing.id}"]`).getByRole("button", { name: "Show in folder: Dimensioned room", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Show project folder", exact: true }).waitFor();
+  const link = page.locator(`[data-studio-file-viewer="${drawing.id}"]`).getByRole("link", { name: "Download: Dimensioned room", exact: true });
   const href = await link.getAttribute("href"); assert.ok(href);
   const attachment = await session.request.get(href);
   assert.equal(attachment.status(), 200); assert.equal(await attachment.text(), reference);
@@ -335,7 +384,8 @@ try {
   const pdfDrawing = intake.documents.find((document: {path: string}) => document.path === "reference/floor-plan.pdf");
   assert.ok(pdfDrawing);
   const pdfRow = page.locator(`[data-studio-file="${pdfDrawing.id}"]`);
-  const pdfUrl = await pdfRow.getByRole("link").getAttribute("href"); assert.ok(pdfUrl);
+  await pdfRow.getByRole("button").click();
+  const pdfUrl = await page.locator(`[data-studio-file-viewer="${pdfDrawing.id}"]`).getByRole("link", { name: /^Download: / }).getAttribute("href"); assert.ok(pdfUrl);
   const inlinePdf = await session.request.get(pdfUrl + "?inline=1");
   assert.equal(inlinePdf.status(), 200);
   assert.deepEqual(await inlinePdf.body(), floorPlanPdf);
@@ -374,11 +424,15 @@ try {
   const note = "Synthetic private note: preserve the 6 by 4 metre room.";
   await section(page, "Review notes"); await page.getByLabel("Checkpoint review note").fill(note);
   await page.getByRole("button", { name: "Save note", exact: true }).click(); await page.getByText(note, { exact: true }).waitFor();
-  await section(page, "Handoff");
-  const bundle = path.join(temporary, "handoff");
-  await page.getByRole("textbox", { name: "New destination folder", exact: true }).first().fill(bundle);
+  // Export lives in the design-line panel and opens as a dialog.
+  await page.locator("[data-studio-version]").click();
   await page.getByRole("button", { name: "Export handoff", exact: true }).click();
-  await page.locator("pre").filter({ hasText: bundle }).waitFor();
+  const exportDialog = page.getByRole("dialog");
+  const bundle = path.join(temporary, "handoff");
+  await exportDialog.getByRole("textbox", { name: "New destination folder", exact: true }).first().fill(bundle);
+  await exportDialog.getByRole("button", { name: "Export handoff", exact: true }).click();
+  await exportDialog.locator("pre").filter({ hasText: bundle }).waitFor();
+  await page.keyboard.press("Escape");
   const independent = path.join(temporary, "independent-store"); const restored = path.join(temporary, "restored");
   await cli(independent, "import", bundle);
   await cli(independent, "restore", checkpoint, restored);
@@ -389,10 +443,13 @@ try {
   passed("UI export and independent CLI import, restore, source bytes and private note");
   await session.close(); await stop(running.child); running = await server(home);
   session = await context(running.origin); page = await session.newPage();
-  await page.goto(running.bootstrapUrl); await viewer(page);
+  await page.goto(running.bootstrapUrl);
+  // Studio reopens the most recent thread. The main thread holds the reviewed version.
+  await page.locator(`li[data-studio-thread="${mainThread}"] [role="button"]`).click();
+  await section(page, "View project"); await viewer(page);
   assert.equal(await page.locator("[data-studio-version]").getAttribute("data-studio-version"), checkpoint);
   await section(page, "Review notes"); await page.getByText(note, { exact: true }).waitFor();
-  assert.equal(await page.getByRole("button", { name: "Standalone room", exact: true }).count(), 1);
+  assert.ok(await page.locator('[aria-label$=", Standalone room"]').count() >= 1, "The project's threads survive a restart");
   passed("restart preserves project, selected immutable version and private note");
   // Open a separate source while Notes is selected. It must open its own preview,
   // preserve its client, and register without evaluating source code.
@@ -408,18 +465,17 @@ try {
   await folderDialog.getByLabel("Project folder", {exact:true}).fill(openedSource);
   await folderDialog.getByRole("button", {name:"Open",exact:true}).click();
   await folderDialog.waitFor({state:"hidden"});
-  await page.getByRole("heading", {name:"Opened folder",exact:true}).waitFor();
-  await page.getByRole("heading", {name:"Project overview",exact:true}).waitFor();
+  await page.locator("main header").getByText("Opened folder", {exact:false}).waitFor();
+  await page.getByText("No rounds yet", {exact:true}).waitFor();
   assert.equal(await access(executionMarker).then(()=>true,()=>false),false);
+  // The project filter narrows the cross-project thread list to one project and back.
   await page.getByRole("button", {name:"Filter projects",exact:true}).click();
-  const filterItem = page.getByRole("menuitem", {name:"Without local source",exact:true});
-  await filterItem.waitFor();
-  assert.equal(await filterItem.evaluate(element=>getComputedStyle(element).whiteSpace),"nowrap");
-  await filterItem.click();
-  await page.getByText("No matching projects.",{exact:true}).waitFor();
+  await page.getByRole("menuitem", {name:"Opened folder",exact:true}).click();
+  await page.locator('[aria-label$=", Standalone room"]').waitFor({state:"hidden"});
+  await page.locator('[aria-label$=", Opened folder"]').first().waitFor();
   await page.getByRole("button", {name:"Filter projects",exact:true}).click();
   await page.getByRole("menuitem", {name:"All projects",exact:true}).click();
-  await page.getByRole("button", {name:"Opened folder",exact:true}).waitFor();
+  await page.locator('[aria-label$=", Standalone room"]').first().waitFor();
   // A changed client binding is rejected before the registry is rewritten.
   openedManifest.client = {id:"different-client",name:"Different client"};
   await writeFile(path.join(openedSource,"arch.project.json"),JSON.stringify(openedManifest));
@@ -434,12 +490,37 @@ try {
   await page.getByRole("dialog").waitFor({state:"hidden"});
   assert.equal(await page.getByRole("alert").count(),0,"Closing the folder dialog must clear its error");
   passed("folder button submits, selects the source preview, never executes source, preserves client binding, and filters without wrapping");
+  await page.getByRole("button", { name: "New project", exact: true }).first().click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Project name", { exact: true }).fill("Name only");
+  assert.equal(await dialog.getByLabel("Review the references now", { exact: false }).count(), 0, "No intake offer without references");
+  await dialog.getByRole("button", { name: "Create project", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
+  await page.locator("main header").getByText("Name only", { exact: false }).waitFor();
+  assert.equal(await page.locator('[data-studio-round="running"]').count(), 0, "Creating a project never starts a round");
+  await section(page, "Files");
+  await page.getByText("No references yet.", { exact: false }).waitFor();
+  await page.locator('input[type="file"][accept^=".pdf"]').setInputFiles(path.join(inputs, "brief.txt"));
+  await page.getByRole("button", { name: "brief.txt", exact: false }).first().waitFor();
+  const nameOnly = JSON.parse(await cli(home, "list")).find((project: {manifest: {name: string}}) => project.manifest.name === "Name only");
+  assert.deepEqual(nameOnly.manifest.references.map((reference: {path: string}) => reference.path), ["reference/brief.txt"]);
+  passed("name-only project starts idle and takes references later as a new version");
+  await page.getByRole("button", { name: "Filter projects", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Create client", exact: true }).click();
+  dialog = page.getByRole("dialog");
+  assert.equal(await dialog.getByRole("textbox").count(), 1, "Clients need only a name");
+  await dialog.getByLabel("Company name", { exact: true }).fill("Lindenhof Wohnbau");
+  await dialog.getByRole("button", { name: "Create client", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "Filter projects", exact: true }).getByText("Lindenhof Wohnbau", { exact: true }).waitFor();
+  passed("clients are created from a name alone");
   assert.deepEqual([...offMachine], [], "App attempted off-machine network access");
   passed("zero off-machine app requests");
-  await writeFile(path.join(evidence, "checks.json"), JSON.stringify({ ok: true, checks, screenshots: ["desktop.png", "narrow.png", "intake-desktop.png", "intake-narrow.png", "intake-invalid.png", "file-preview-desktop.png", "file-preview-narrow.png"] }, null, 2));
+  await writeFile(path.join(evidence, "checks.json"), JSON.stringify({ ok: true, checks, screenshots: ["desktop.png", "narrow.png", "intake-desktop.png", "intake-narrow.png", "intake-invalid.png", "file-preview-desktop.png", "file-preview-narrow.png", "compare.png"] }, null, 2));
   console.log(JSON.stringify({ ok: true, checks, evidence }));
 } catch (error) {
   await mkdir(evidence, { recursive: true });
+  await failurePage?.().screenshot({ path: path.join(evidence, "failure.png") }).catch(() => undefined);
   await writeFile(path.join(evidence, "checks.json"), JSON.stringify({ ok: false, checks, error: error instanceof Error ? error.message : "Verification failed", offMachine: [...offMachine] }, null, 2));
   console.error(error instanceof Error ? error.stack : "Verification failed"); process.exitCode = 1;
 } finally {

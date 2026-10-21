@@ -3,8 +3,12 @@ import { buttonVariants } from "@arch/ui/components/button";
 import { projectIconButton } from "@arch/ui/components/project-layout";
 import { cn } from "@arch/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeftIcon, ChevronLeftIcon, ChevronRightIcon, DownloadIcon, FileIcon, FileTextIcon, ImageIcon } from "lucide-react";
-import { useState, useSyncExternalStore } from "react";
+import { ArrowLeftIcon, ChevronLeftIcon, ChevronRightIcon, DownloadIcon, FileIcon, FileTextIcon, FolderOpenIcon, ImageIcon } from "lucide-react";
+import { type ReactNode, useRef, useState, useSyncExternalStore } from "react";
+import { Button } from "@arch/ui/components/button";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { PlusIcon } from "lucide-react";
+import { addReferences } from "../lib/server";
 import type { studioText } from "../lib/messages";
 import type { StudioVersion } from "../lib/model";
 
@@ -79,7 +83,7 @@ export function projectFiles(intake: ProjectIntakePlan | null, references: Studi
 function roleTag(file: ProjectFile, t: Copy) {
   if (file.role === "duplicate") return t.intakeDuplicateTag;
   if (file.role === "supporting") return t.intakeSupporting;
-  if (file.role === "unresolved") return t.intakeUnresolved;
+  // Unclassified is the normal state of new files, not something to act on.
   return undefined;
 }
 
@@ -97,12 +101,7 @@ export function FileSource({ versionLabel, error, t, className }: { versionLabel
   </div>;
 }
 
-function DownloadLink({ file, t, className }: { file: ProjectFile; t: Copy; className?: string }) {
-  if (!file.url) return null;
-  return <a href={file.url} download aria-label={`${t.download}: ${file.label}`} title={t.download} className={className ?? projectIconButton}><DownloadIcon /></a>;
-}
-
-/** A single compact row: the name opens the in-app viewer, the icon downloads the original. */
+/** A single compact row: the name opens the in-app viewer. Originals live in the project folder. */
 export function FileRow({ file, active, open, t }: { file: ProjectFile; active?: boolean; open: () => void; t: Copy }) {
   const tag = roleTag(file, t);
   return <li data-studio-file={file.key} className="flex items-center gap-0.5">
@@ -112,10 +111,9 @@ export function FileRow({ file, active, open, t }: { file: ProjectFile; active?:
         <span className="truncate text-ui">{file.label}</span>
         {file.detail && <span className="truncate text-xs text-muted-foreground">{file.detail}</span>}
       </span>
-      {tag && <span className={cn("shrink-0 text-xs", file.role === "unresolved" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>{tag}</span>}
+      {tag && <span className="shrink-0 text-xs text-muted-foreground">{tag}</span>}
       {!file.url && <span className="shrink-0 text-xs text-muted-foreground">{t.fileUnavailable}</span>}
     </button>
-    <DownloadLink file={file} t={t} />
   </li>;
 }
 
@@ -195,7 +193,7 @@ function FilePreview({ file, t }: { file: ProjectFile; t: Copy }) {
 }
 
 /** In-app viewer for one project file with previous/next, download and back controls. */
-export function FileViewer({ file, position, total, select, close, t }: { file: ProjectFile; position: number; total: number; select: (offset: number) => void; close?: () => void; t: Copy }) {
+export function FileViewer({ file, position, total, select, close, reveal, t }: { file: ProjectFile; position: number; total: number; select: (offset: number) => void; close?: () => void; reveal?: (path: string) => void; t: Copy }) {
   const meta = [file.fileName, file.page && file.kind === "pdf" && `${t.intakePage} ${file.page}`, file.duplicateOf && `${t.intakeDuplicate}: ${file.duplicateOf}`].filter(Boolean).join(" · ");
   return <section data-studio-file-viewer={file.key} aria-label={file.label} className="flex size-full min-h-0 min-w-0 flex-col">
     <header className="flex min-h-12 shrink-0 items-center gap-1 border-b px-2 py-1.5">
@@ -209,6 +207,7 @@ export function FileViewer({ file, position, total, select, close, t }: { file: 
         <span className="min-w-10 text-center text-xs tabular-nums text-muted-foreground max-sm:hidden">{position + 1} / {total}</span>
         <button type="button" className={projectIconButton} onClick={() => select(1)} disabled={position === total - 1} aria-label={t.nextFile} title={t.nextFile}><ChevronRightIcon /></button>
       </div>}
+      {reveal && <button type="button" onClick={() => reveal(file.path)} aria-label={`${t.showInFolder}: ${file.label}`} title={t.showInFolder} className={projectIconButton}><FolderOpenIcon /></button>}
       {file.url && <a href={file.url} download aria-label={`${t.download}: ${file.label}`} className={cn(buttonVariants({ variant: "outline", size: "sm" }), "ml-1 max-md:size-11 max-md:p-0")}><DownloadIcon /><span className="max-md:sr-only">{t.download}</span></a>}
     </header>
     <div className="relative min-h-0 flex-1"><FilePreview file={file} t={t} /></div>
@@ -226,22 +225,45 @@ function useWideLayout() {
 }
 
 /** Files section: list and viewer side by side on wide screens, one at a time on narrow screens. */
-export function ProjectFiles({ documents, others, versionLabel, filesError, selected, select, t }: { documents: ProjectFile[]; others: ProjectFile[]; versionLabel?: string; filesError: string | null; selected?: string; select: (key: string | undefined) => void; t: Copy }) {
+export function ProjectFiles({ documents, others, versionLabel, filesError, selected, select, action, reveal, t }: { documents: ProjectFile[]; others: ProjectFile[]; versionLabel?: string; filesError: string | null; selected?: string; select: (key: string | undefined) => void; action?: ReactNode; reveal?: (path: string) => void; t: Copy }) {
   const wide = useWideLayout();
   const files = [...documents, ...others];
   const active = files.find(file => file.key === selected) ?? (wide ? files.find(file => file.url) ?? files[0] : undefined);
   const position = active ? files.indexOf(active) : -1;
-  if (!files.length) return <div className="grid flex-1 place-items-center p-6"><div className="grid max-w-sm justify-items-center gap-2 text-center text-ui"><FileIcon aria-hidden="true" className="size-6 text-muted-foreground" /><h2 className="font-medium">{t.files}</h2><p className="text-muted-foreground">{t.noFiles}</p></div></div>;
+  if (!files.length) return <div className="grid flex-1 place-items-center p-6"><div className="grid max-w-sm justify-items-center gap-2 text-center text-ui"><FileIcon aria-hidden="true" className="size-6 text-muted-foreground" /><h2 className="font-medium">{t.files}</h2><p className="text-muted-foreground">{action ? t.noFilesYet : t.noFiles}</p>{action}</div></div>;
   const list = (items: ProjectFile[]) => <ul className="grid gap-px">{items.map(file => <FileRow key={file.key} file={file} active={file.key === active?.key} open={() => select(file.key)} t={t} />)}</ul>;
   return <div data-studio-files className="grid min-h-0 flex-1 lg:grid-cols-[minmax(17rem,21rem)_minmax(0,1fr)]">
     <nav aria-label={t.files} className={cn("min-h-0 overflow-y-auto p-2 lg:border-r", active && "max-lg:hidden")}>
       <h2 className="sr-only">{t.files}</h2>
-      <FileSource versionLabel={versionLabel} error={filesError} t={t} className="px-2 pt-1 pb-3" />
+      <div className="flex items-start gap-2 px-2 pt-1 pb-3"><FileSource versionLabel={versionLabel} error={filesError} t={t} className="min-w-0 flex-1" />{action}</div>
       {!!documents.length && <div className="grid gap-1"><p className="px-2 pt-1 pb-0.5 text-xs text-muted-foreground">{t.intakeDocuments} · {documents.length}</p>{list(documents)}</div>}
       {!!others.length && <div className={cn("grid gap-1", !!documents.length && "mt-4")}><p className="px-2 pt-1 pb-0.5 text-xs text-muted-foreground">{documents.length ? t.otherFiles : t.files} · {others.length}</p>{list(others)}</div>}
     </nav>
     <div className={cn("min-h-0 min-w-0", !active && "max-lg:hidden")}>
-      {active ? <FileViewer key={active.key} file={active} position={position} total={files.length} select={offset => select(files[position + offset]?.key)} close={wide ? undefined : () => select(undefined)} t={t} /> : <p className="grid size-full place-items-center text-ui text-muted-foreground">{t.selectFile}</p>}
+      {active ? <FileViewer key={active.key} file={active} position={position} total={files.length} select={offset => select(files[position + offset]?.key)} close={wide ? undefined : () => select(undefined)} reveal={reveal} t={t} /> : <p className="grid size-full place-items-center text-ui text-muted-foreground">{t.selectFile}</p>}
     </div>
+  </div>;
+}
+
+/** Adds references to a branch between rounds. They become unresolved intake documents and a new version. */
+export function AddFiles({ projectId, branch, disabled, reveal, t }: { projectId: string; branch: string; disabled?: boolean; reveal?: () => void; t: Copy }) {
+  const queryClient = useQueryClient();
+  const input = useRef<HTMLInputElement>(null);
+  const add = useMutation({
+    mutationFn: (files: File[]) => {
+      const data = new FormData();
+      data.set("projectId", projectId); data.set("branch", branch);
+      for (const file of files) data.append("files", file);
+      return addReferences({ data });
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-project", projectId] }),
+  });
+  return <div className="grid justify-items-center gap-1">
+    <div className="flex items-center gap-1">
+      {reveal && <button type="button" onClick={reveal} aria-label={t.openFolder} title={t.openFolder} className={projectIconButton}><FolderOpenIcon /></button>}
+      <Button type="button" size="sm" variant="outline" disabled={disabled || add.isPending} onClick={() => input.current?.click()}><PlusIcon />{add.isPending ? t.addingFiles : t.addFiles}</Button>
+    </div>
+    <input ref={input} type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.svg,.txt,.md,.json" className="sr-only" tabIndex={-1} onChange={event => {const files = [...event.target.files ?? []]; event.target.value = ""; if (files.length) add.mutate(files);}} />
+    {add.error && <p role="alert" className="max-w-60 text-xs text-destructive">{add.error.message}</p>}
   </div>;
 }

@@ -1,14 +1,16 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { userInfo } from "node:os";
+import { promises as fs } from "node:fs";
 import path from "node:path";
-import { addReviewNote, artifactDetails, artifactFile, buildProjectArtifact, inspectArtifact, inspectProject, listProjects, registerProject, inspectSource, viewerRuntimeHash, exportCheckpoint, importCheckpoint, restoreCheckpoint, checkpointBrief, referenceFile, readProjectIntake, readCheckpointIntake } from "@arch/project-tools";
+import { addReviewNote, artifactDetails, artifactFile, buildProjectArtifact, inspectArtifact, inspectProject, listProjects, registerProject, inspectSource, viewerRuntimeHash, exportCheckpoint, importCheckpoint, restoreCheckpoint, checkpointBrief, referenceFile, readProjectIntake, readCheckpointIntake, studioStoreDirectory, projectBranches, createBranch as forkBranch, makePrimaryBranch, archiveBranch as archiveProjectBranch, discardBranchChanges, compareCheckpoints } from "@arch/project-tools";
 import { initializeProject } from "@arch/project-tools/intake";
 import { z } from "zod";
-import { viewerSupportsRuntime } from "@arch/project";
+import { relativeProjectPath, viewerSupportsRuntime } from "@arch/project";
+import { spawn } from "node:child_process";
 import { changeCatalog, localCatalog, requireProject } from "./local-catalog";
 import { requireStudio, studioOrigin } from "./local-session";
 import { referenceHeaders } from "./reference-headers";
-import type { StudioCatalog, StudioProjectDetails, StudioVersion } from "./model";
+import type { StudioBranch, StudioCatalog, StudioProjectDetails, StudioVersion } from "./model";
 export { session } from "./local-session";
 const sha = z.string().regex(/^[a-f0-9]{64}$/);
 const previewKey = randomBytes(32);
@@ -23,26 +25,57 @@ function referenceLocation(checkpointId: string, token: string, relative: string
   return `${origin}/api/references/${checkpointId}/${token}/${relative.split("/").map(encodeURIComponent).join("/")}`;
 }
 export async function catalog() { requireStudio(); return localCatalog(); }
-export async function createClient({ data }: { data: { id: string; name: string } }) {
+/** The permanent client key is derived from the name. People only ever type the name. */
+export async function createClient({ data }: { data: { name: string } }) {
   requireStudio();
   return changeCatalog(catalog => {
-    if (catalog.clients.some(client => client.id === data.id)) throw new Error("A client with this ID already exists.");
-    catalog.clients.push(data); return data.id;
+    const id = clientKey(catalog, data.name);
+    catalog.clients.push({ id, name: data.name }); return id;
   });
 }
-export async function createProject({ data }: { data: { clientId: string; name: string } }) {
+const localClient = { id: "local", name: "Local" };
+/** One step from references to a registered source in a managed folder. Uploads are staged, never executed. */
+export async function createProject({ data }: { data: { name: string; client: { id: string } | { name: string } | null; brief: string; references: File[] } }) {
   requireStudio();
-  return changeCatalog(catalog => {
-    if (!catalog.clients.some(client => client.id === data.clientId)) throw new Error("Unknown client.");
-    const id = randomUUID();
-    catalog.projects.push({ id, ...data, sourceId: null, createdAt: new Date().toISOString() });
-    return id;
-  });
+  const id = `source-${randomBytes(12).toString("hex")}`;
+  const store = studioStoreDirectory();
+  const staging = path.join(store, "staging", randomUUID());
+  await fs.mkdir(staging, { recursive: true, mode: 0o700 });
+  try {
+    const names = new Set<string>();
+    for (const file of data.references) {
+      const base = path.basename(file.name).replace(/[\\/]/g, "_");
+      const extension = path.extname(base);
+      let name = base;
+      for (let copy = 2; names.has(name.toLocaleLowerCase()); copy++) name = `${base.slice(0, base.length - extension.length)} ${copy}${extension}`;
+      names.add(name.toLocaleLowerCase());
+      await fs.writeFile(path.join(staging, name), new Uint8Array(await file.arrayBuffer()), { flag: "wx" });
+    }
+    const branches = path.join(store, "projects", id, "branches");
+    await fs.mkdir(branches, { recursive: true, mode: 0o700 });
+    return await changeCatalog(async catalog => {
+      const client = data.client === null ? catalog.clients.find(item => item.id === localClient.id) ?? localClient
+        : "id" in data.client ? catalog.clients.find(item => item.id === (data.client as { id: string }).id)
+        : { id: clientKey(catalog, data.client.name), name: data.client.name };
+      if (!client) throw new Error("Unknown client.");
+      const initialized = await initializeProject({ ...(data.references.length ? { inputsDirectory: await fs.realpath(staging) } : {}), directory: path.join(await fs.realpath(branches), "main"), id, name: data.name, client, description: data.brief });
+      if (!catalog.clients.some(item => item.id === client.id)) catalog.clients.push(client);
+      const projectId = randomUUID();
+      catalog.projects.push({ id: projectId, clientId: client.id, name: data.name, sourceId: initialized.project.manifest.id, createdAt: new Date().toISOString() });
+      return { clientId: client.id, projectId };
+    });
+  } finally { await fs.rm(staging, { recursive: true, force: true }); }
+}
+function clientKey(catalog: StudioCatalog, name: string) {
+  const base = name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 70) || "client";
+  let key = base;
+  for (let copy = 2; catalog.clients.some(client => client.id === key); copy++) key = `${base}-${copy}`;
+  return key;
 }
 export async function projectDetails({ data }: { data: { projectId: string } }): Promise<StudioProjectDetails> {
   const origin = requireStudio();
   const project = requireProject(await localCatalog(), data.projectId);
-  if (!project.sourceId) return { project, source: null, intake: null, intakeError: null, versions: [], notes: [] };
+  if (!project.sourceId) return { project, source: null, intake: null, intakeError: null, versions: [], notes: [], branches: [] };
   const inspection = await inspectProject(project.sourceId);
   const current = await inspectSource(inspection.project.directory);
   requireSourceIdentity(project, current);
@@ -62,13 +95,15 @@ export async function projectDetails({ data }: { data: { projectId: string } }):
     let checkpointIntakeError: string | null = null;
     try { checkpointIntake = await readCheckpointIntake(checkpoint.id); }
     catch (error) { checkpointIntakeError = error instanceof Error ? error.message : "Invalid saved project intake."; }
-    versions.push({ id: checkpoint.id, checkpointId: checkpoint.id, createdAt: checkpoint.createdAt, hasArtifact, artifactHash, intake: checkpointIntake, intakeError: checkpointIntakeError, outputs, references: checkpoint.project.references.map(reference => ({ ...reference, url: referenceLocation(checkpoint.id, token, reference.path, origin) })) });
+    versions.push({ id: checkpoint.id, checkpointId: checkpoint.id, parentId: checkpoint.parentId, createdAt: checkpoint.createdAt, hasArtifact, artifactHash, intake: checkpointIntake, intakeError: checkpointIntakeError, outputs, references: checkpoint.project.references.map(reference => ({ ...reference, url: referenceLocation(checkpoint.id, token, reference.path, origin) })) });
   }
   let intake: StudioProjectDetails["intake"] = null;
   let intakeError: string | null = null;
   try { intake = await readProjectIntake(current.directory); }
   catch (error) { intakeError = error instanceof Error ? error.message : "Invalid project intake."; }
-  return { project, source: { ...inspection.project, manifest: current.manifest }, intake, intakeError, versions, notes: inspection.notes };
+  const lines = await projectBranches(project.sourceId);
+  const branches: StudioBranch[] = lines.branches.map(line => ({ ...line, primary: line.name === lines.primary }));
+  return { project, source: { ...inspection.project, manifest: current.manifest }, intake, intakeError, versions, notes: inspection.notes, branches };
 }
 function requireSourceIdentity(project: StudioProjectDetails["project"], source: Pick<Awaited<ReturnType<typeof inspectSource>>, "manifest">) {
   if (project.sourceId && source.manifest.id !== project.sourceId) throw new Error("The source identity changed. Open the correct source folder.");
@@ -135,14 +170,57 @@ async function requireSourceBinding(projectId: string, sourceId: string) {
     return project;
   });
 }
-export async function buildVersion({ data }: { data: { sourceId: string; projectId: string; authorizeSourceExecution: true } }) {
+export async function buildVersion({ data }: { data: { sourceId: string; projectId: string; branch: string; authorizeSourceExecution: true } }) {
   requireStudio();
   if (data.authorizeSourceExecution !== true) throw new Error("Building requires explicit permission to execute trusted source code.");
   const project = await requireSourceBinding(data.projectId, data.sourceId);
-  const built = await buildProjectArtifact(data.sourceId, { authorizeSourceExecution: true });
+  const built = await buildProjectArtifact(data.sourceId, { authorizeSourceExecution: true, branch: data.branch });
   if (built.checkpoint.project.id !== data.sourceId || built.checkpoint.project.client.id !== project.clientId) throw new Error("The built source identity does not match this project.");
   await requireSourceBinding(data.projectId, data.sourceId);
   return { versionId: built.checkpoint.id, checkpointId: built.checkpoint.id, artifactHash: built.artifactHash };
+}
+async function boundSource(projectId: string) {
+  const project = requireProject(await localCatalog(), projectId);
+  if (!project.sourceId) throw new Error("Open a source folder first.");
+  return project.sourceId;
+}
+export async function createBranch({ data }: { data: { projectId: string; name: string; from: string } }) {
+  requireStudio(); return forkBranch(await boundSource(data.projectId), { name: data.name, from: data.from });
+}
+export async function makePrimary({ data }: { data: { projectId: string; name: string } }) {
+  requireStudio(); return makePrimaryBranch(await boundSource(data.projectId), data.name);
+}
+export async function archiveBranch({ data }: { data: { projectId: string; name: string; archived: boolean } }) {
+  requireStudio(); return archiveProjectBranch(await boundSource(data.projectId), data.name, data.archived);
+}
+export async function discardChanges({ data }: { data: { projectId: string; name: string } }) {
+  requireStudio(); return discardBranchChanges(await boundSource(data.projectId), data.name);
+}
+/** Show a branch folder, or one file in it, in Finder or the platform file manager. */
+export async function revealInFolder({ data }: { data: { projectId: string; branch: string; path?: string } }) {
+  requireStudio();
+  const line = (await projectBranches(await boundSource(data.projectId))).branches.find(item => item.name === data.branch);
+  if (!line) throw new Error("Unknown branch");
+  let target = line.directory;
+  if (data.path) {
+    relativeProjectPath.parse(data.path);
+    const file = path.join(line.directory, data.path);
+    // A file from an older version may no longer exist in the folder. Show the folder then.
+    if (await fs.access(file).then(() => true, () => false)) target = file;
+  }
+  const reveal = target !== line.directory;
+  const [command, args] = process.platform === "darwin" ? ["open", reveal ? ["-R", target] : [target]]
+    : process.platform === "win32" ? ["explorer", [reveal ? `/select,${target}` : target]]
+    : ["xdg-open", [reveal ? path.dirname(target) : target]];
+  spawn(command, args, { detached: true, stdio: "ignore" }).on("error", () => undefined).unref();
+  return { revealed: target };
+}
+export async function compareVersions({ data }: { data: { projectId: string; base: string; target: string } }) {
+  requireStudio();
+  const comparison = await compareCheckpoints(data.base, data.target);
+  const inspection = await inspectProject(await boundSource(data.projectId));
+  if (!inspection.checkpoints.some(checkpoint => checkpoint.id === data.base)) throw new Error("This version belongs to another project.");
+  return comparison;
 }
 export async function openVersion({ data }: { data: { checkpointId: string } }) {
   const origin = requireStudio();

@@ -27,6 +27,8 @@ try{
  await page.context().addCookies([{name:'arch-locale',value:'en',url:origin}]);
  await page.evaluate(()=>localStorage.setItem('arch-theme','dark'));
  await page.reload();
+ // Projects open on Rounds. The harness checks the model view.
+ await page.locator('[data-studio-view="preview"]:visible').click();
  await page.locator('[data-studio-preview="ready"]').waitFor({timeout:120000});
  await page.getByRole('progressbar').waitFor({state:'hidden'});
  assert.equal(await page.locator('html').getAttribute('data-arch-platform'),'darwin');
@@ -87,11 +89,7 @@ try{
  assert.equal(await dark.evaluate(x=>getComputedStyle(x).outlineWidth),'2px','Checked choice needs keyboard focus');
  await page.screenshot({path:join(evidence,'preferences-dark.png'),scale:'device',animations:'disabled'});
  await page.keyboard.press('Escape');await page.keyboard.press('Escape');
- await page.getByRole('button',{name:'Open versions',exact:true}).click();
- await page.getByRole('heading',{name:'Versions',exact:true}).waitFor();
- await page.getByRole('button',{name:'Open handoff',exact:true}).click();
- await page.getByRole('heading',{name:'Handoff',exact:true}).waitFor();
- await page.getByRole('button',{name:'View project',exact:true}).click();
+ await page.locator('[data-studio-view="preview"]:visible').click();
  await page.locator('[data-studio-preview="ready"]').waitFor({timeout:120000});
  await page.getByRole('button',{name:'Updates',exact:true}).click();
  await page.getByText('Updates are available in installed release builds.',{exact:true}).last().waitFor();
