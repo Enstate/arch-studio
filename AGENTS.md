@@ -53,8 +53,7 @@ Typecheck through the root `check-types` scripts, which own the checker choice.
 Run `bun run check-types:<project>` for the project you changed and its known
 consumers: `scripts`, `studio`, `agent`, `project`, `project-tools`, `ui`,
 `viewer` or `viewer-ui`. `bun run check-types` runs every project, as CI does.
-It fails when a tsconfig project has no `check-types:<project>` script, so add
-one with each new project.
+Give each new tsconfig project its own script and add it to that chain.
 Public package consumers include Studio and the separately released hosted app.
 Use focused tests under `packages/project-tools/tests` for integrity changes.
 `bun run verify:standalone` exercises the actual Studio and checkpoint boundary;

@@ -10,9 +10,6 @@
     "./hooks/*": "./src/hooks/*.ts",
     "./postcss.config": "./postcss.config.mjs"
   },
-  "scripts": {
-    "check-types": "bun --check --tsconfig-override tsconfig.json"
-  },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
     "@fontsource-variable/geist": "^5.3.0",
@@ -34,7 +31,6 @@
     "@tailwindcss/postcss": "^4.3.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
-    "tailwindcss": "catalog:",
-    "typescript": "^6.0.3"
+    "tailwindcss": "catalog:"
   }
 }
