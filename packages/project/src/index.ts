@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export { projectIntakeSchema, type ProjectIntakePlan } from "./intake.ts";
+export * from "./history.ts";
 
 export const projectId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/);
 export const relativeProjectPath = z

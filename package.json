@@ -17,7 +17,10 @@
       "better-auth": "1.6.17",
       "@convex-dev/better-auth": "^0.12.5",
       "@tanstack/react-form": "^1.33.5",
-      "@better-auth/expo": "1.6.17"
+      "@better-auth/expo": "1.6.17",
+      "effect": "4.0.0-beta.102",
+      "@effect/platform-node": "4.0.0-beta.102",
+      "@anthropic-ai/claude-agent-sdk": "^0.3.170"
     }
   },
   "type": "module",
@@ -59,5 +62,8 @@
   },
   "trustedDependencies": [
     "electron"
-  ]
+  ],
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.0-beta.102"
+  }
 }

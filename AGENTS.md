@@ -15,6 +15,14 @@ Keep this repository independently runnable without accounts or cloud credential
   Use synthetic inputs for verification. The sample house is only a demo fixture.
 - The source build is explicit local code execution, bounded but not sandboxed.
   Retain the execution confirmation and the loopback/session/origin guards.
+  Studio asks once per project and dependency set (`package.json`, lockfile and
+  build entry). Rounds and builds reuse that grant until it is revoked or one of
+  those files changes. Never grant it implicitly.
+- Studio runs Claude Code or Codex through `packages/agent`, a port of t3code's
+  adapters. Agents use the user's own local logins. Studio never holds API keys.
+  Request rounds run with full access, the user's explicit choice: no sandbox and
+  no approval prompts. Critique rounds stay read-only. Studio keeps copies of the
+  images an agent views so the timeline can show them.
 - Preserve viewer `src/` and `package.json` byte identity across distribution.
   Both define the runtime hash. The release packer deliberately preserves the
   viewer manifest. A runtime change needs explicit compatibility review.

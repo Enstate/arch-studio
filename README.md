@@ -1,12 +1,13 @@
 # Arch Studio
 
-Local architectural visualization by Enstate. Open a project, let your existing
-coding agent work on its source, build a version and review it in the browser.
+Local architectural visualization by Enstate. Start a project from its references,
+ask Claude Code or Codex for changes in rounds, and review each built version.
 Source, references, notes and checkpoint history stay on your machine.
 
 Studio requires no Enstate account, Convex account or cloud deployment.
-Your agent tool uses its own login and network connection. Arch Studio does not
-provide model credits or run agents on Enstate servers.
+Studio runs your locally installed Claude Code or Codex with their own logins and
+network connections. Arch Studio does not provide model credits or run agents
+on Enstate servers.
 
 ## Start
 
@@ -35,15 +36,29 @@ The demo is a furnished, synthetic sample house with
 procedural materials. It needs no downloaded asset library. It is a separate
 project and never supplies references for a customer's work.
 
-For a new project, create a client and project in Studio, then choose **Start
-from documents**. Give the new project folder to T3 Code, Claude Code, Codex or
-your preferred agent. Its `AGENTS.md`, `BUILDERS.md`, source and context travel
-with the project. Inspect the source before using **Build**. A build
-executes code locally with your permissions; its time limit is not a sandbox.
+For a new project, choose **New project**, name it and drop in its references.
+Studio copies them into a project folder it manages and keeps the originals
+unchanged. A client is optional. Work then happens in **Rounds**: describe a
+change, attach marked-up renders if useful, and pick Claude Code or Codex. The
+agent works in the project folder with your existing local login. Studio then
+builds the project and saves a version. Studio asks once per project before it
+executes project source; a build runs code locally with your permissions, and
+its time limit is not a sandbox. Request rounds run with full access: the agent
+can run any command, read anything and reach the network without asking, so start
+rounds only on projects you trust. Critique rounds are read-only. Images the agent
+looks at appear in the timeline as it works. A branch keeps the agent it started
+with; start a new branch to try the other one.
+
+Every round's version keeps its request, attachments and agent summary. Use
+**Continue from here** on any version to start a branch, so several variants can
+run side by side. **Compare** shows two versions with linked cameras, the plan
+elements that changed and the changed files. The primary branch is what the
+project shows and exports. Agents can still work on the folder from outside
+Studio; build there and the version appears in the timeline.
 
 Existing projects can be opened from their folders. Projects registered through
 the CLI appear in Studio automatically. New projects start without geometry.
-Studio provides preview and project management, not a CAD editor or agent chat.
+Studio is not a CAD editor.
 
 Before modeling, Studio shows a **Project overview** from `source/intake.json`.
 Agents use this versioned JSON file to describe the brief, design direction,
