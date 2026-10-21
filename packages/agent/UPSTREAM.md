@@ -124,7 +124,7 @@ peer is incompatible with beta.102. After the single `bun install`, a targeted
 No existing package versions were upgraded.
 
 The package has its own `check-types` script and config. The root
-`scripts/check-types.ts` already discovers it by enumerating workspace configs.
+`check-types:agent` script checks it, and `bun run check-types` includes it.
 Verification is limited to that config and `tests/events.test.ts`. No real
 Claude or Codex turn, build, broad test suite, or development server was run.
 The parent must smoke-test local CLI initialization, authentication, image input,
