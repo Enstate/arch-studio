@@ -31,26 +31,48 @@ export class Library {
   private index: LibraryIndex;
   private planUrl: string | undefined;
 
-  static async load(base: string, planUrl?: string, signal?: AbortSignal) {
+  /**
+   * `catalog` is the full shared library, for hand editing: models and textures a project has not
+   * bundled yet load from there until a build bundles them.
+   */
+  static async load(base: string, planUrl?: string, signal?: AbortSignal, catalog?: string): Promise<Library> {
     const root = base.endsWith('/') ? base : `${base}/`;
     const url = new URL('index.json', new URL(root, location.href));
     const res = await (takePrefetched(url) ?? fetch(url, { signal }));
     if (!res.ok) throw new Error(`Viewer library index not found at ${root}index.json (${res.status}). Run bun run fetch-assets.`);
     const index = (await res.json()) as LibraryIndex;
     if (!index.version) throw new Error(`Viewer library at ${root} is in the old layout. Run bun run fetch-assets.`);
-    return new Library(new URL(root, location.href).href, index, planUrl);
+    const shared: Library | undefined = catalog && new URL(catalog, location.href).href !== new URL(root, location.href).href ? await Library.load(catalog, undefined, signal) : undefined;
+    return new Library(new URL(root, location.href).href, index, planUrl, shared);
   }
 
-  private constructor(base: string, index: LibraryIndex, planUrl?: string) {
+  /** The shared library behind this one, when hand editing may use more of it. */
+  readonly catalog: Library | undefined;
+
+  private constructor(base: string, index: LibraryIndex, planUrl?: string, catalog?: Library) {
     this.base = base;
     this.index = index;
     this.planUrl = planUrl && new URL(planUrl, location.href).href;
+    this.catalog = catalog;
+  }
+
+  /** Everything the library holds, for a catalog of pieces and finishes. */
+  get contents(): Readonly<LibraryIndex> {
+    return this.index;
   }
 
   resolve = (rel: string): string | undefined => {
+    if (rel.startsWith('@lib/models/') && this.catalog && !this.index.models[rel.slice(12).replace(/\.glb$/, '')]) return this.catalog.resolve(rel);
     if (rel.startsWith('@lib/')) return this.base + rel.slice(5);
     return this.planUrl ? new URL(rel.replace(/^\.\//, ''), this.planUrl).href : undefined;
   };
+
+  /** A small colour swatch of a texture set, for pickers. */
+  swatch(id: string): string | undefined {
+    const meta = this.index.textures[id];
+    if (!meta?.res?.length || !meta.maps.includes('color')) return this.catalog?.swatch(id);
+    return this.url(`textures/${id}/${meta.res[0]}/color.webp`);
+  }
 
   /**
    * `full` is the largest size up to `max` px. With `progressive` the smallest maps paint first and
@@ -58,7 +80,7 @@ export class Library {
    */
   texture = (id: string, max = Infinity, progressive = true): PbrSet | undefined => {
     const meta = this.index.textures[id];
-    if (!meta?.res?.length) return undefined;
+    if (!meta?.res?.length) return this.catalog?.texture(id, max, progressive);
     const top = meta.res.filter((r) => r <= max).at(-1) ?? meta.res[0];
     const maps = (r: number) => {
       const url = (m: string) => (meta.maps.includes(m) ? this.url(`textures/${id}/${r}/${m}.webp`) : undefined);
@@ -76,6 +98,7 @@ export class Library {
     if (!path.startsWith('@lib/models/')) return { url: this.resolve(path), front: 0 };
     const id = path.replace(/^@lib\/models\//, '').replace(/\.glb$/, '');
     const meta = this.index.models[id];
+    if (!meta && this.catalog) return this.catalog.model(path);
     return { url: meta ? this.url(`models/${id}.glb`) : undefined, front: meta?.front ?? 0 };
   };
 

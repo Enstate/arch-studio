@@ -4,7 +4,7 @@ import { ViewerSurface, type ViewerInstance } from "@arch/viewer-ui";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useRef, useState } from "react";
 import { compareVersions, openVersion } from "../lib/server";
-import type { StudioVersion } from "../lib/model";
+import { VIEWER_MISMATCH, type StudioVersion } from "../lib/model";
 import type { studioText } from "../lib/messages";
 
 type Copy = typeof studioText.en;
@@ -68,5 +68,5 @@ export function Compare({projectId, versions, base, target, select, versionLabel
 
 function ComparePane({version, onViewer, t}: {version: StudioVersion; onViewer: (viewer: ViewerInstance | null) => void; t: Copy}) {
   const preview = useQuery({queryKey: ["studio-preview", version.checkpointId], queryFn: () => openVersion({data: {checkpointId: version.checkpointId}}), staleTime: 60_000, retry: false});
-  return <div className="relative min-h-64 bg-background">{preview.data ? <ViewerSurface planUrl={preview.data.planUrl} assetBase={preview.data.assetBase} artifactId={preview.data.artifactHash} onViewer={onViewer} /> : <p role={preview.isError ? "alert" : "status"} className="grid size-full place-items-center p-6 text-xs text-muted-foreground">{preview.isError ? preview.error.message : t.preparing}</p>}</div>;
+  return <div className="relative min-h-64 bg-background">{preview.data ? <ViewerSurface planUrl={preview.data.planUrl} assetBase={preview.data.assetBase} artifactId={preview.data.artifactHash} onViewer={onViewer} /> : <p role={preview.isError ? "alert" : "status"} className="grid size-full place-items-center p-6 text-xs text-muted-foreground">{preview.isError ? (preview.error.message === VIEWER_MISMATCH ? t.viewerMismatch : preview.error.message) : t.preparing}</p>}</div>;
 }

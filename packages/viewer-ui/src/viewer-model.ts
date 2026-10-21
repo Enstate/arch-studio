@@ -1,8 +1,19 @@
 import { preloadViewer as preload } from "@arch/viewer/preload";
-import type { RoomInfo, ViewerInstance, ViewerMode, ViewerState } from "@arch/viewer/react";
+import type { DesignOptionInfo, LevelInfo, RoomInfo, ViewerInstance, ViewerMode, ViewerState } from "@arch/viewer/react";
 import { useSyncExternalStore } from "react";
 
-export type { RoomInfo, ViewerInstance, ViewerMode, ViewerState };
+export type { DesignOptionInfo, LevelInfo, RoomInfo, ViewerInstance, ViewerMode, ViewerState };
+
+/** The last design option chosen; a new version of the project opens in the same look. */
+const DESIGN_OPTION_KEY = "arch-viewer-design-option";
+
+export function rememberedDesignOption() {
+  try {
+    return localStorage.getItem(DESIGN_OPTION_KEY);
+  } catch {
+    return null;
+  }
+}
 
 const SAMPLE_PLAN_URL = "/viewer/plans/sample-house/plan.json";
 
@@ -93,6 +104,17 @@ export function viewerActions(viewer: ViewerInstance) {
       } else viewer.setCut(!cut);
     },
     setFurniture: (visible: boolean) => viewer.setFurniture(visible),
+    setRoof: (visible: boolean) => viewer.setRoof(visible),
+    /** Like the cut, the roof belongs to the dollhouse: from another view it opens 3D without the roof. */
+    toggleRoof() {
+      const { mode, roof } = viewer.getState();
+      if (roof === null) return;
+      if (mode !== "dollhouse") {
+        pauseTour();
+        viewer.setMode("dollhouse");
+        viewer.setRoof(false);
+      } else viewer.setRoof(!roof);
+    },
     toggleFurniture: () => viewer.setFurniture(!viewer.getState().furniture),
     toggleNight() {
       const { time, night } = viewer.getState();
@@ -106,6 +128,18 @@ export function viewerActions(viewer: ViewerInstance) {
       pauseTour();
       viewer.focusRoom(id);
     },
+    setLevel(id: string) {
+      pauseTour();
+      viewer.setLevel(id);
+    },
+    setDesignOption(id: string) {
+      viewer.setDesignOption(id);
+      try {
+        localStorage.setItem(DESIGN_OPTION_KEY, id);
+      } catch {
+        // Blocked storage: the choice lasts for this view only.
+      }
+    },
   };
 }
 
@@ -117,9 +151,11 @@ export const VIEWER_SHORTCUTS = [
   { id: "tour", keys: [["T"]] },
   { id: "night", keys: [["L"]] },
   { id: "cut", keys: [["C"]] },
+  { id: "roof", keys: [["R"]] },
   { id: "furniture", keys: [["H"]] },
   { id: "time", keys: [["["], ["]"]] },
   { id: "fullscreen", keys: [["F"]] },
   { id: "walk", keys: [["W", "A", "S", "D"]] },
+  { id: "fly", keys: [["W", "A", "S", "D", "Q", "E"]] },
   { id: "door", keys: [["E"]] },
 ] as const;

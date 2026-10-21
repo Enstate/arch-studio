@@ -2,7 +2,7 @@ import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { userInfo } from "node:os";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { addReviewNote, artifactDetails, artifactFile, buildProjectArtifact, inspectArtifact, inspectProject, listProjects, registerProject, inspectSource, viewerRuntimeHash, exportCheckpoint, importCheckpoint, restoreCheckpoint, checkpointBrief, referenceFile, readProjectIntake, readCheckpointIntake, studioStoreDirectory, projectBranches, createBranch as forkBranch, makePrimaryBranch, archiveBranch as archiveProjectBranch, discardBranchChanges, compareCheckpoints } from "@arch/project-tools";
+import { addReviewNote, artifactDetails, artifactFile, buildProjectArtifact, droppedHandEdits, handEdits, inspectArtifact, inspectProject, listProjects, registerProject, inspectSource, viewerRuntimeHash, exportCheckpoint, importCheckpoint, restoreCheckpoint, checkpointBrief, referenceFile, readProjectIntake, readCheckpointIntake, studioStoreDirectory, projectBranches, createBranch as forkBranch, makePrimaryBranch, archiveBranch as archiveProjectBranch, discardBranchChanges, compareCheckpoints } from "@arch/project-tools";
 import { initializeProject } from "@arch/project-tools/intake";
 import { z } from "zod";
 import { relativeProjectPath, viewerSupportsRuntime } from "@arch/project";
@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { changeCatalog, localCatalog, requireProject } from "./local-catalog";
 import { requireStudio, studioOrigin } from "./local-session";
 import { referenceHeaders } from "./reference-headers";
-import type { StudioBranch, StudioCatalog, StudioProjectDetails, StudioVersion } from "./model";
+import { VIEWER_MISMATCH, type StudioBranch, type StudioCatalog, type StudioProjectDetails, type StudioVersion } from "./model";
 export { session } from "./local-session";
 const sha = z.string().regex(/^[a-f0-9]{64}$/);
 const previewKey = randomBytes(32);
@@ -196,6 +196,13 @@ export async function archiveBranch({ data }: { data: { projectId: string; name:
 export async function discardChanges({ data }: { data: { projectId: string; name: string } }) {
   requireStudio(); return discardBranchChanges(await boundSource(data.projectId), data.name);
 }
+/** The hand edits saved in a branch folder, laid over its plan on every build. */
+export async function projectEdits({ data }: { data: { projectId: string; branch: string } }) {
+  requireStudio();
+  const line = (await projectBranches(await boundSource(data.projectId))).branches.find(item => item.name === data.branch);
+  if (!line) throw new Error("Unknown branch");
+  return handEdits(line.directory);
+}
 /** Show a branch folder, or one file in it, in Finder or the platform file manager. */
 export async function revealInFolder({ data }: { data: { projectId: string; branch: string; path?: string } }) {
   requireStudio();
@@ -225,8 +232,8 @@ export async function compareVersions({ data }: { data: { projectId: string; bas
 export async function openVersion({ data }: { data: { checkpointId: string } }) {
   const origin = requireStudio();
   const verified = await inspectArtifact(data);
-  if (!viewerSupportsRuntime(await viewerRuntimeHash(), verified.artifact.runtimeHash)) throw new Error("This version requires a different viewer runtime. Export it to continue with the matching CLI.");
-  return { ...await location(data.checkpointId, origin), artifactHash: verified.artifactHash };
+  if (!viewerSupportsRuntime(await viewerRuntimeHash(), verified.artifact.runtimeHash)) throw new Error(VIEWER_MISMATCH);
+  return { ...await location(data.checkpointId, origin), artifactHash: verified.artifactHash, handEditsDropped: await droppedHandEdits(verified.artifact) };
 }
 export async function handoff({ data }: { data: { checkpointId: string; directory: string } }) { requireStudio(); return exportCheckpoint(data.checkpointId, data.directory); }
 export async function brief({ data }: { data: { checkpointId: string } }) { requireStudio(); return checkpointBrief(data.checkpointId); }

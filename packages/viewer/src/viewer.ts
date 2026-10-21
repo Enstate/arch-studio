@@ -2,18 +2,24 @@ import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import type { Plan } from './plan/schema.ts';
+import { withDefaults } from './plan/schema.ts';
 import { wallDir, wallThickness, pointInPolygon, roomAt } from './plan/geom.ts';
+import { levelAt, levelOf, levelPlan } from './plan/levels.ts';
+import { shownInOption } from './plan/options.ts';
 import { MaterialLibrary } from './build/materials.ts';
-import { buildHouse, CUT_HEIGHT, NO_CUT, type BuiltHouse } from './build/house.ts';
+import { buildHouse, CUT_HEIGHT, NO_CUT, type BuiltHouse, type BuiltLevel } from './build/house.ts';
 import { Stage, sunElevation } from './viewer/stage.ts';
 import { Walker } from './viewer/walk.ts';
+import { FlyCamera } from './viewer/fly.ts';
 import { bindOrbitInput, ORBIT_CURSOR } from './viewer/orbit-input.ts';
 import { openingDoors, poseDoor, type Door } from './viewer/doors.ts';
 import { PlanOverlay } from './viewer/overlay.ts';
-import { Library, NON_FLOOR_MAX } from './viewer/library.ts';
+import { Library, NON_FLOOR_MAX, type LibraryIndex } from './viewer/library.ts';
 import { capabilities } from './capabilities.ts';
 import { takePrefetched } from './preload.ts';
 import { buildTourPath, createTour, IDLE_TOUR, OUTSIDE, type Tour, type TourState } from './viewer/tour.ts';
+import { createEditor, type EditorCatalog, type ViewerEditor } from './viewer/editor.ts';
+import type { PlacementProblem } from './plan/placement.ts';
 
 export type ViewerMode = 'plan' | 'dollhouse' | 'walk';
 export type ViewerTheme = 'light' | 'dark';
@@ -34,6 +40,22 @@ export interface RoomInfo {
   area: number;
   /** Plan coordinates in meters (x right, y down). */
   centroid: [number, number];
+  /** Storey of the room, in a plan with several. */
+  level?: string;
+}
+
+/** One look of a plan with design options. */
+export interface DesignOptionInfo {
+  id: string;
+  name: string;
+}
+
+/** A storey of a plan with several. */
+export interface LevelInfo {
+  id: string;
+  name: string;
+  /** Floor height above the ground floor, in meters. */
+  elevation: number;
 }
 
 export interface ViewerState {
@@ -45,9 +67,18 @@ export interface ViewerState {
   cut: boolean;
   /** Loose furniture is shown; fixtures such as kitchens and baths always are. */
   furniture: boolean;
+  /** The plan's own roofs show in the dollhouse; null when the plan supplies none. Walk mode always shows them. */
+  roof: boolean | null;
+  /** Design option on show; null for a plan without options. */
+  designOption: string | null;
   grid: boolean;
   /** Room the camera is in (walk) or was last sent to (focusRoom). */
   room: string | null;
+  /**
+   * Storey on show: cut in plan, the top of the house in the dollhouse, the walker's floor in walk.
+   * Null for a single-storey plan.
+   */
+  level: string | null;
   /** Walk mode has the mouse captured (pointer lock); Esc releases it. */
   locked: boolean;
   /** Every model and first-pass texture has loaded. */
@@ -55,6 +86,10 @@ export interface ViewerState {
   tour: TourState;
   /** Opening IDs of doors that are closed or closing. */
   closedDoors: string[];
+  /** Piece selected for hand editing; always null outside an editable viewer. */
+  selected: string | null;
+  /** What the piece held right now would run into where it is; it goes back if let go there. */
+  blocked: PlacementProblem | null;
 }
 
 export type Vec3 = [number, number, number];
@@ -76,6 +111,10 @@ export interface ViewerView {
   mode: ViewerMode;
   position: Vec3;
   target: Vec3;
+  /** Storey on show, in a plan with several. */
+  level?: string;
+  /** Design option on show, in a plan with options. */
+  designOption?: string;
 }
 
 export interface ViewerStats {
@@ -87,6 +126,12 @@ export interface ViewerStats {
   fps: number;
   /** Internal render resolution as a fraction of the canvas. */
   renderScale: number;
+  /**
+   * What the house on show asks of each frame, the same on any GPU: meshes drawn (about one draw call
+   * each per pass), their triangles, distinct materials, how many of those use physical shading
+   * (sheen, clearcoat, specular), and lamps casting shadows.
+   */
+  scene: { meshes: number; triangles: number; materials: number; physical: number; lampShadows: number };
 }
 
 export interface ViewerOptions {
@@ -112,6 +157,13 @@ export interface ViewerOptions {
   onProgress?: (p: ViewerProgress) => void;
   onModeChange?: (mode: ViewerMode) => void;
   onRoomChange?: (room: RoomInfo | null) => void;
+  /**
+   * Builds the house for hand editing (see `Viewer.editor`): every piece and surface stays its own
+   * mesh, which costs frame rate, so turn it on only while someone edits.
+   */
+  editable?: boolean;
+  /** The full shared library, for an editable viewer, e.g. "/viewer/library/". */
+  catalogBase?: string;
   signal?: AbortSignal;
 }
 
@@ -124,13 +176,25 @@ export interface Viewer {
   readonly loaded: Promise<void>;
   /** Guided flythrough; state in getState().tour. Any input on the canvas pauses it. */
   readonly tour: Tour;
+  /** Hand editing, in a viewer made `editable`; null otherwise. */
+  readonly editor: ViewerEditor | null;
   setMode(mode: ViewerMode): void;
   setTime(t: number): void;
   setCut(on: boolean): void;
   setFurniture(visible: boolean): void;
+  /** Shows or hides the plan's own roofs in the dollhouse. */
+  setRoof(visible: boolean): void;
+  /** The plan's design options; empty for a plan without them. */
+  designOptions(): DesignOptionInfo[];
+  /** Shows another design option in place: its finishes and furniture, keeping the view. */
+  setDesignOption(id: string): void;
   setGrid(on: boolean): void;
   setTheme(theme: ViewerTheme): void;
   rooms(): RoomInfo[];
+  /** Storeys bottom to top; empty for a single-storey plan. */
+  levels(): LevelInfo[];
+  /** Shows one storey: cut there in plan and dollhouse, standing on it in walk. */
+  setLevel(id: string): void;
   focusRoom(id: string): void;
   /** Captures the mouse for walk mode; a click on the canvas does the same. */
   lockPointer(): void;
@@ -223,7 +287,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
           if (!r.ok) throw new Error(`Plan not found at ${opts.planUrl} (${r.status})`);
           return r.json() as Promise<Plan>;
         }),
-    Library.load(opts.assetBase, opts.planUrl, signal),
+    Library.load(opts.assetBase, opts.planUrl, signal, opts.editable ? opts.catalogBase : undefined),
   ]).catch((e) => {
     dispose();
     throw e;
@@ -260,6 +324,9 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   // Explicit mouse buttons stay consistent over both the house and its surroundings.
   orbit.screenSpacePanning = false;
   orbit.panSpeed = 0.65;
+  // The right button is free look (see FlyCamera); Shift, Control or Command with the left button pans.
+  orbit.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: null };
+  const freeLook = new FlyCamera(orbitCam);
   const planControls = new OrbitControls(planCam, canvas);
   planControls.enableRotate = false;
   planControls.screenSpacePanning = true;
@@ -277,12 +344,17 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     night: false,
     cut: opts.cut ?? false,
     furniture: true,
+    roof: null,
+    designOption: null,
     grid: true,
     room: null,
+    level: null,
     locked: false,
     ready: false,
     tour: IDLE_TOUR,
     closedDoors: [],
+    selected: null,
+    blocked: null,
   };
   const listeners = new Set<() => void>();
   const setState = (patch: Partial<ViewerState>) => {
@@ -302,7 +374,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   cleanup.push(() => lib.dispose());
   let house: BuiltHouse;
   try {
-    house = await buildHouse(plan, lib, { resolveUrl: library.resolve, modelInfo: library.model, manager, lampShadows: !lite });
+    house = await buildHouse(plan, lib, { resolveUrl: library.resolve, modelInfo: library.model, manager, lampShadows: !lite, editable: opts.editable });
   } catch (e) {
     dispose();
     throw e;
@@ -313,13 +385,38 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   check();
   check();
 
+  const storeyed = house.levels.length > 1;
+  if (house.roofs.children.length) state = { ...state, roof: true };
+  state = { ...state, designOption: house.designOption };
+  function showDesignOption(id: string) {
+    const option = plan.designOptions?.find((o) => o.id === id);
+    if (!option || id === house.designOption) return;
+    house.setDesignOption(option);
+    // The walker meets the furniture of the look on show.
+    walker.setWorld(state.furniture ? house.colliders : house.collidersFixed);
+    stage.invalidateShadows();
+    refreshLampShadows();
+    setState({ designOption: id });
+  }
   const roomList: RoomInfo[] = house.rooms.map((r) => ({
     id: r.room.id,
     name: r.room.name,
     area: Math.round(r.netArea * 10) / 10,
     centroid: [r.center.x, r.center.z],
+    ...(storeyed && { level: r.level.id }),
   }));
   const roomInfo = (id: string | null) => roomList.find((r) => r.id === id) ?? null;
+  const levelList: LevelInfo[] = storeyed ? house.levels.map(({ level }) => ({ id: level.id, name: level.name, elevation: level.elevation })) : [];
+  const storeyPlans = new Map(house.levels.map(({ level }) => [level.id, levelPlan(plan, level)]));
+  const lowest = house.levels[0], highest = house.levels[house.levels.length - 1];
+  /** The storey someone picked, or the walker's floor; null until then. */
+  let chosen: BuiltLevel | null = null;
+  /** Plan cuts the lowest storey and the dollhouse shows the whole house until a storey is picked. */
+  const shownLevel = (mode: ViewerMode) => chosen ?? (mode === 'dollhouse' ? highest : lowest);
+  const builtLevel = (id: string | undefined) => house.levels.find((l) => l.level.id === levelOf(plan, id).id) ?? lowest;
+  const levelHere = (y: number) => builtLevel(levelAt(plan, y).id);
+  /** Room under a point, among the rooms on the storey at height `y`. */
+  const roomHere = (x: number, z: number, y: number) => roomAt(storeyPlans.get(levelHere(y).level.id)!, [x, z]);
 
   stage.scene.add(house.root);
   for (const o of [...house.daylight.children, ...house.lights.children]) o.userData.intensity = (o as THREE.Light).intensity;
@@ -399,7 +496,10 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   const pad = 0.5;
   const houseBox = new THREE.Box3(
     new THREE.Vector3(b.minX - pad, -0.35, b.minY - pad),
-    new THREE.Vector3(b.maxX + pad, Math.max(...plan.walls.map((w) => w.height ?? plan.defaults?.wallHeight ?? 2.6)) + 0.2, b.maxY + pad),
+    new THREE.Vector3(b.maxX + pad, Math.max(...house.levels.map(({ level }) => {
+      const storey = storeyPlans.get(level.id)!;
+      return level.elevation + Math.max(...storey.walls.map((w) => w.height ?? withDefaults(storey).wallHeight));
+    })) + 0.2, b.maxY + pad),
   );
   stage.fitSun(houseBox);
   stage.north = plan.north ?? 0;
@@ -432,8 +532,9 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       const anchor = document.createElement('div');
       anchor.append(el);
       const o = new CSS2DObject(anchor);
-      o.position.set(r.center.x, CUT_HEIGHT + 0.3, r.center.z);
+      o.position.set(r.center.x, r.center.y + CUT_HEIGHT + 0.3, r.center.z);
       o.name = 'label';
+      o.userData.level = r.level.id;
       house.root.add(o);
       cleanup.push(() => anchor.remove());
     }
@@ -447,8 +548,9 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     // A portrait canvas sees less width from the same spot, so the camera backs off until the house fits.
     const aspect = (host.clientWidth || 1) / (host.clientHeight || 1);
     const r = Math.max(b.w, b.h) * Math.max(1, 1.1 / aspect);
-    orbit.target.set(b.cx, 0.8, b.cy);
-    orbitCam.position.set(b.cx + r * 0.55, r * 1.05, b.cy + r * 1.05);
+    const y = shownLevel('dollhouse').level.elevation;
+    orbit.target.set(b.cx, y + 0.8, b.cy);
+    orbitCam.position.set(b.cx + r * 0.55, y + r * 1.05, b.cy + r * 1.05);
     orbit.update();
   }
 
@@ -463,26 +565,43 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     planControls.update();
   }
 
-  // Walk cameras must stand inside a room; an exterior overview would drop the walker outside.
-  const insideRoom = (c: { position: number[] }) => house.rooms.some((r) => pointInPolygon([c.position[0], c.position[1]], r.room.polygon));
+  // Walk cameras must stand inside a room on their storey; an exterior overview would drop the walker outside.
+  const insideRoom = (c: { position: number[]; level?: string }) => {
+    const level = builtLevel(c.level).level;
+    return house.rooms.some((r) => r.level === level && pointInPolygon([c.position[0], c.position[1]], r.room.polygon));
+  };
+  const placeAtCamera = (c: NonNullable<Plan['cameras']>[number]) =>
+    walker.place(c.position[0], c.position[1], c.lookAt[0], c.lookAt[1], builtLevel(c.level).level.elevation);
+  const placeInRoom = (r: BuiltHouse['rooms'][number]) => walker.place(r.center.x, r.center.z, r.center.x + 1, r.center.z, r.center.y);
+
+  /** Stands the walker on a storey: at its first camera, else the middle of its largest room. */
+  function placeWalkerOn(level: BuiltLevel) {
+    const cam = plan.cameras?.find((c) => builtLevel(c.level) === level && insideRoom(c));
+    if (cam) return placeAtCamera(cam);
+    const big = house.rooms.filter((r) => r.level === level.level).sort((x, y) => y.netArea - x.netArea)[0];
+    if (big) return placeInRoom(big);
+    walker.place(b.cx, b.cy, b.cx + 1, b.cy, level.level.elevation);
+  }
 
   function placeWalkerAtStart() {
     const cam = plan.cameras?.find(insideRoom);
-    if (cam) return walker.place(cam.position[0], cam.position[1], cam.lookAt[0], cam.lookAt[1]);
+    if (cam) return placeAtCamera(cam);
     // Otherwise step in through the front door: the first door on an exterior wall.
     const door = plan.openings?.find((o) => o.type.includes('door') && plan.walls.find((w) => w.id === o.wall)?.exterior);
     const w = door && plan.walls.find((x) => x.id === door.wall);
     if (door && w) {
+      const level = builtLevel(w.level).level;
       const d = wallDir(w);
       const p = [w.a[0] + d[0] * door.offset, w.a[1] + d[1] * door.offset];
       const t = wallThickness(plan, w) / 2 + 0.7;
       for (const s of [1, -1]) {
         const q: [number, number] = [p[0] - d[1] * s * t, p[1] + d[0] * s * t];
-        if (house.rooms.some((r) => pointInPolygon(q, r.room.polygon))) return walker.place(q[0], q[1], q[0] - d[1] * s, q[1] + d[0] * s);
+        if (house.rooms.some((r) => r.level === level && pointInPolygon(q, r.room.polygon)))
+          return walker.place(q[0], q[1], q[0] - d[1] * s, q[1] + d[0] * s, level.elevation);
       }
     }
     const big = [...house.rooms].sort((x, y) => y.netArea - x.netArea)[0];
-    if (big) return walker.place(big.center.x, big.center.z, big.center.x + 1, big.center.z);
+    if (big) return placeInRoom(big);
     walker.place(b.cx, b.cy, b.cx + 1, b.cy);
   }
 
@@ -530,12 +649,16 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       applyMode(state.mode);
     }
     const cam = plan.cameras?.find((c) => c.room === id && insideRoom(c));
+    if (storeyed && shownLevel(state.mode).level !== r.level) {
+      chosen = builtLevel(r.level.id);
+      applyMode(state.mode);
+    }
     if (state.mode === 'walk') {
-      if (cam) walker.place(cam.position[0], cam.position[1], cam.lookAt[0], cam.lookAt[1]);
-      else walker.place(r.center.x, r.center.z, r.center.x + 1, r.center.z);
+      if (cam) placeAtCamera(cam);
+      else placeInRoom(r);
     } else if (state.mode === 'dollhouse') {
       const off = orbitCam.position.clone().sub(orbit.target).setLength(Math.max(6, Math.sqrt(r.netArea) * 2.4));
-      const target = new THREE.Vector3(r.center.x, 0.6, r.center.z);
+      const target = new THREE.Vector3(r.center.x, r.center.y + 0.6, r.center.z);
       flyTo(orbitCam, orbit, target.clone().add(off), target, () => {
         if (!reducedMotion() && state.mode === 'dollhouse') spin = { target, offset: off, start: performance.now() };
       });
@@ -556,10 +679,20 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     stage.setBackground(on ? PAPER[theme] : null, on ? NIGHT_PAPER[theme] : null);
   }
 
+  /** Wall caps of one storey, at its 1.2 m cut or under the slab above; none in walk mode. */
+  function showCaps(level: BuiltLevel | null, cut: boolean) {
+    for (const l of house.levels) {
+      l.cutCaps.visible = l === level && cut;
+      l.topCaps.visible = l === level && !cut;
+    }
+    house.caps.visible = !!level && (cut || level.top !== NO_CUT);
+  }
+
   function applyMode(mode: ViewerMode) {
     // Warm-up switches looks only; flights, controls and pointer lock stay as they are.
     if (!warming) {
       fly = spin = null;
+      endFreeLook();
       cancelOrbitDrag();
       orbit.enabled = mode === 'dollhouse';
       planControls.enabled = mode === 'plan';
@@ -568,15 +701,22 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       canvas.style.cursor = baseCursor(mode);
     }
 
+    // A section cuts the shown storey at 1.2 m; otherwise the house ends under the next floor's slab.
+    const level = shownLevel(mode);
     const cut = mode === 'plan' || (mode === 'dollhouse' && state.cut);
-    const changed = house.caps.visible !== cut || house.ceilings.visible !== (mode === 'walk');
-    house.clipPlane.constant = cut ? CUT_HEIGHT : NO_CUT;
-    house.caps.visible = cut;
+    const clip = mode === 'walk' ? NO_CUT : cut ? level.cut : level.top;
+    const roofs = mode === 'walk' || state.roof !== false;
+    const changed = house.clipPlane.constant !== clip || house.ceilings.visible !== (mode === 'walk') || house.roofs.visible !== roofs;
+    house.roofs.visible = roofs;
+    house.clipPlane.constant = clip;
+    showCaps(mode === 'walk' ? null : level, cut);
     house.ceilings.visible = mode === 'walk';
     house.root.traverse((o) => {
-      if (o.name === 'label') o.visible = mode !== 'walk';
+      if (o.name === 'label') o.visible = mode !== 'walk' && o.userData.level === level.level.id;
     });
     overlay.group.visible = mode === 'plan';
+    overlay.group.position.y = level.level.elevation;
+    if (!warming && storeyed) setState({ level: level.level.id });
 
     stage.setCamera(mode === 'walk' ? walker.camera : mode === 'plan' ? planCam : orbitCam);
     syncLights();
@@ -638,7 +778,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       state = { ...real, mode, time };
       applyTime(state.time);
       applyMode(mode);
-      if (caps) house.caps.visible = true;
+      if (caps) showCaps(lowest, true);
       house.looseFurniture.visible = true;
       // Shadow passes compile per light set too.
       stage.invalidateShadows();
@@ -687,9 +827,15 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   const tourCtl = createTour({
     element: host,
     signal,
-    rooms: () => roomList,
+    // The tour walks the storey with the front door; stairs are not part of its route.
+    rooms: () => roomList.filter((r) => !storeyed || r.level === lowest.level.id),
     path: () =>
-      buildTourPath({ plan, rooms: roomList, colliders: house.colliders, reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches }),
+      buildTourPath({
+        plan: storeyPlans.get(lowest.level.id)!,
+        rooms: roomList.filter((r) => !storeyed || r.level === lowest.level.id),
+        colliders: house.colliders,
+        reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+      }),
     begin() {
       // The tour visits every look; compile the rest now rather than on its way through the house.
       finishWarmUp();
@@ -702,6 +848,8 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       canvas.style.cursor = '';
       // The roof stays in; the cut decides how much of the house shows.
       house.ceilings.visible = true;
+      house.roofs.visible = true;
+      showCaps(lowest, true);
       overlay.group.visible = false;
       tourLook = { inside: null, labels: null, shadowCut: Number.NaN };
       stage.setCamera(tourCam);
@@ -784,17 +932,120 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   canvas.addEventListener('pointerdown', (e) => {
     down = { x: e.clientX, y: e.clientY };
     spin = null;
+    if (!freeLook.active) clickDuringLook = false;
   }, { signal });
   const cancelOrbitDrag = bindOrbitInput(canvas, [orbit, planControls], () => cursor(), signal);
   canvas.addEventListener('pointerdown', (e) => {
     if (e.pointerType !== 'mouse' || onPick || tourCtl.active || state.mode === 'walk') return;
+    if (e.button === 2 && state.mode === 'dollhouse') return;
     const modified = e.ctrlKey || e.metaKey || e.shiftKey;
     const pan = state.mode === 'plan' || (e.button === 2 ? !modified : e.button === 0 && modified);
     canvas.style.cursor = e.button === 1 ? ORBIT_CURSOR.zoom : pan ? ORBIT_CURSOR.pan : ORBIT_CURSOR.rotate;
   }, { signal });
-  canvas.addEventListener('wheel', () => (spin = null), { signal, passive: true });
+  canvas.addEventListener('wheel', (e) => {
+    spin = null;
+    // While looking around, the wheel sets the flying speed instead of zooming.
+    if (!freeLook.active) return;
+    e.preventDefault();
+    freeLook.adjustSpeed(e.deltaY);
+  }, { signal, passive: false });
+  // The right button belongs to free look in the dollhouse, never to the browser menu.
+  canvas.addEventListener('contextmenu', (e) => {
+    if (state.mode === 'dollhouse') e.preventDefault();
+  }, { signal });
+  document.addEventListener('mousemove', (e) => {
+    if (!freeLook.active) return;
+    // Chromium reports one bogus movement when the mouse is captured or released (the jump to or
+    // from the window centre, hundreds of pixels). It would whip the camera around, so it is dropped.
+    if (performance.now() - lockChangedAt < 60 || Math.abs(e.movementX) > 250 || Math.abs(e.movementY) > 250) return;
+    freeLook.look(e.movementX, e.movementY);
+    if (Math.abs(e.movementX) + Math.abs(e.movementY) > 2) lookTurned = true;
+    captureLook();
+  }, { signal });
+  /**
+   * Captures the mouse once the look actually turns. Chromium refuses captures asked for in quick
+   * succession, so a right click that never moves asks for none, and a refused one is asked again
+   * each second while the button stays down (the press keeps the request allowed for a while).
+   */
+  function captureLook() {
+    if (!lookCapture || !lookTurned || document.pointerLockElement === canvas || performance.now() - lockAskedAt < 1000) return;
+    lockAskedAt = performance.now();
+    try {
+      const p = canvas.requestPointerLock?.() as unknown as Promise<void> | undefined;
+      p?.catch?.(() => undefined);
+    } catch {
+      /* turning works until the cursor reaches the edge, and the next frame asks again */
+    }
+  }
+
+  // ---------- free look ----------
+  // One rule: free look is on exactly while the right button is held. Every mouse event carries
+  // the held buttons, so each re-checks the rule; with several buttons the browser sends
+  // pointerdown and pointerup only for the first and the last, so no single event is trusted.
+  const syncFreeLook = (e: MouseEvent) => {
+    if (e instanceof PointerEvent && e.pointerType !== 'mouse') return;
+    const held = (e.buttons & 2) !== 0;
+    if (freeLook.active) {
+      if (e.buttons & 1) clickDuringLook = true;
+      if (!held) endFreeLook();
+    } else if (held && e.button === 2 && e.target === canvas && state.mode === 'dollhouse' && !onPick && !tourCtl.active) {
+      // Only a press can capture the mouse; a right press added to a left drag looks without it.
+      startFreeLook(e.type === 'pointerdown');
+    }
+  };
+  canvas.addEventListener('pointerdown', syncFreeLook, { signal });
+  for (const type of ['pointermove', 'pointerup', 'mouseup'] as const) document.addEventListener(type, syncFreeLook, { signal });
+  document.addEventListener('pointerlockchange', () => {
+    lockChangedAt = performance.now();
+    const locked = document.pointerLockElement === canvas;
+    // The capture is asynchronous: one that arrives after a quick right click is released at once.
+    if (locked && !freeLook.active && state.mode !== 'walk') {
+      document.exitPointerLock();
+      return;
+    }
+    // Esc releases a captured mouse, and free look ends with it.
+    if (!locked && freeLook.active && lookLocked) endFreeLook();
+    lookLocked = locked && freeLook.active;
+  }, { signal });
+  addEventListener('blur', () => endFreeLook(), { signal });
+
+  let lookLocked = false;
+  /** This look may capture the mouse (it began with a press), and when it last asked. */
+  let lookCapture = false;
+  let lockAskedAt = -Infinity;
+  let lockChangedAt = -Infinity;
+  let lookTurned = false;
+  /** A left press made while looking around is part of the look, never a click on the house. */
+  let clickDuringLook = false;
+  function startFreeLook(capture: boolean) {
+    clickDuringLook = false;
+    fly = spin = null;
+    cancelOrbitDrag();
+    orbit.enabled = false;
+    freeLook.start(orbit.target);
+    // A captured mouse has no cursor; until then a crosshair shows the look is on.
+    canvas.style.cursor = 'crosshair';
+    lookCapture = capture;
+    lookTurned = false;
+  }
+  function endFreeLook() {
+    if (!freeLook.active) return;
+    lookCapture = false;
+    const pivot = freeLook.end(shownLevel('dollhouse').level.elevation);
+    orbit.target.copy(pivot);
+    // Wherever free look went stays in reach, so the pan limit never pulls the camera back.
+    panArea.expandByPoint(new THREE.Vector2(pivot.x, pivot.z));
+    orbit.enabled = state.mode === 'dollhouse' && !tourCtl.active;
+    orbit.update();
+    if (document.pointerLockElement === canvas) document.exitPointerLock();
+    cursor();
+  }
   addEventListener('keydown', () => (spin = null), { signal });
   canvas.addEventListener('click', (e) => {
+    if (clickDuringLook) {
+      clickDuringLook = false;
+      return;
+    }
     if (onPick) {
       // A drag turns or pans the camera; only a click in place marks a spot.
       const moved = down ? Math.hypot(e.clientX - down.x, e.clientY - down.y) : 0;
@@ -883,7 +1134,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     // A wall face sits on the room's edge; a step back toward the camera lands inside the room.
     const probe = point.clone().addScaledVector(raycaster.ray.direction, -0.05);
     const roomOf = (id?: string) => {
-      const r = id ? plan.rooms?.find((x) => x.id === id) : roomAt(plan, [probe.x, probe.z]);
+      const r = id ? plan.rooms?.find((x) => x.id === id) : roomHere(probe.x, probe.z, probe.y);
       return r ? { id: r.id, name: r.name } : null;
     };
     const out = (kind: ViewerPick['kind'], type?: string, room?: string): ViewerPick => ({
@@ -896,7 +1147,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     const part = partOf(hit.object);
     if (part === 'furniture' || part === 'opening') {
       const found = house.parts
-        .filter((p) => p.kind === part && (state.furniture || !p.loose) && p.box.containsPoint(point))
+        .filter((p) => p.kind === part && (state.furniture || !p.loose) && shownInOption(p, state.designOption) && p.box.containsPoint(point))
         .sort((a, b) => volume(a.box) - volume(b.box))[0];
       if (part === 'furniture') {
         const f = found && plan.furniture?.find((x) => x.id === found.id);
@@ -912,6 +1163,41 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     const s = box.getSize(new THREE.Vector3());
     return s.x * s.y * s.z;
   };
+  const catalog = (): EditorCatalog => {
+    const sources = [library.contents, library.catalog?.contents].filter((c): c is LibraryIndex => !!c);
+    const models = new Map<string, EditorCatalog['models'][number]>(), textures = new Map<string, EditorCatalog['textures'][number]>();
+    for (const c of sources) {
+      for (const [id, m] of Object.entries(c.models)) if (!models.has(id)) models.set(id, { id, path: `@lib/models/${id}.glb`, size: m.size });
+      for (const [id, t] of Object.entries(c.textures)) if (!textures.has(id)) textures.set(id, { id, size: t.size, swatch: library.swatch(id) });
+    }
+    return { models: [...models.values()], textures: [...textures.values()] };
+  };
+  const editor = house.editor
+    ? createEditor({
+        house: house as BuiltHouse & { editor: NonNullable<BuiltHouse['editor']> },
+        plan,
+        canvas,
+        scene: stage.scene,
+        camera: () => stage.camera,
+        allowed: () => state.mode !== 'walk' && !tourCtl.active && !onPick && !freeLook.active,
+        floorHeight: () => shownLevel(state.mode).level.elevation,
+        designOption: () => state.designOption,
+        aim: (x, y, targets) => aim(x, y, false, Infinity, targets),
+        holdCamera(held) {
+          if (held) cancelOrbitDrag();
+          orbit.enabled = !held && state.mode === 'dollhouse' && !tourCtl.active;
+          planControls.enabled = !held && state.mode === 'plan';
+        },
+        changed() {
+          stage.invalidateShadows();
+          stage.requestRender();
+        },
+        report: (patch) => setState(patch),
+        catalog: catalog(),
+        signal,
+      })
+    : null;
+
   function baseCursor(mode: ViewerMode) {
     return onPick || mode === 'walk' ? 'crosshair' : mode === 'plan' ? ORBIT_CURSOR.pan : ORBIT_CURSOR.rotate;
   }
@@ -961,15 +1247,17 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     orbit.target.add(panMove);
   }
 
-  // Keeps panning from dragging the house out of view.
-  const PAN_MARGIN = 4;
+  // Keeps panning from dragging the house out of view: the pivot stays over the house or near it,
+  // or wherever free look last went.
+  const PAN_MARGIN = Math.max(6, Math.max(b.w, b.h) / 2);
+  const panArea = new THREE.Box2(new THREE.Vector2(b.minX - PAN_MARGIN, b.minY - PAN_MARGIN), new THREE.Vector2(b.maxX + PAN_MARGIN, b.maxY + PAN_MARGIN));
   const clampShift = new THREE.Vector3();
   function clampOrbit() {
     const t = orbit.target;
     clampShift.set(
-      THREE.MathUtils.clamp(t.x, b.minX - PAN_MARGIN, b.maxX + PAN_MARGIN) - t.x,
+      THREE.MathUtils.clamp(t.x, panArea.min.x, panArea.max.x) - t.x,
       0,
-      THREE.MathUtils.clamp(t.z, b.minY - PAN_MARGIN, b.maxY + PAN_MARGIN) - t.z,
+      THREE.MathUtils.clamp(t.z, panArea.min.y, panArea.max.y) - t.z,
     );
     if (!clampShift.x && !clampShift.z) return;
     t.add(clampShift);
@@ -1000,8 +1288,16 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       }
       if (frames % 15 === 0) {
         const p = walker.position;
-        setState({ room: roomAt(plan, [p.x, p.z])?.id ?? null });
+        // Taking the stairs changes the storey on show. Walking the floor already shown picks nothing,
+        // so the dollhouse keeps showing the whole house after a walk downstairs.
+        const level = levelHere(p.y);
+        if (storeyed && level !== shownLevel('walk')) chosen = level;
+        setState({ room: roomHere(p.x, p.z, p.y)?.id ?? null, ...(storeyed && { level: level.level.id }) });
       }
+    } else if (state.mode === 'dollhouse' && freeLook.active) {
+      // The orbit would turn the camera back to its old pivot; it rests until the look ends.
+      freeLook.move(dt, panKeys);
+      captureLook();
     } else if (state.mode === 'dollhouse') {
       panDollhouse(dt);
       stepFly(now);
@@ -1071,12 +1367,32 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     if (!disposed) performance.mark('arch:loaded');
   });
 
+  function sceneLoad(): ViewerStats['scene'] {
+    let meshes = 0, triangles = 0;
+    const materials = new Set<THREE.Material>();
+    const cut = house.clipPlane.constant;
+    house.root.traverseVisible((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const box = (mesh.geometry.boundingBox ?? (mesh.geometry.computeBoundingBox(), mesh.geometry.boundingBox))!;
+      if (box.min.y + mesh.matrixWorld.elements[13] > cut) return;
+      meshes++;
+      const g = mesh.geometry;
+      triangles += (g.index ? g.index.count : g.attributes.position.count) / 3 * ((mesh as THREE.InstancedMesh).count ?? 1);
+      for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) materials.add(m);
+    });
+    const physical = [...materials].filter((m) => (m as THREE.MeshPhysicalMaterial).isMeshPhysicalMaterial).length;
+    const lampShadows = house.lights.visible ? lamps.filter((l) => l.castShadow).length : 0;
+    return { meshes, triangles: Math.round(triangles), materials: materials.size, physical, lampShadows };
+  }
+
   const viewer: Viewer = {
     backend: stage.isWebGPU ? 'webgpu' : 'webgl2',
     quality: lite ? 'lite' : 'full',
     ready,
     loaded,
     tour: tourCtl.tour,
+    editor,
     setMode(mode) {
       if (tourCtl.active) tourCtl.release();
       else if (mode === state.mode) return;
@@ -1103,6 +1419,12 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       refreshLampShadows();
       setState({ furniture: visible });
     },
+    setRoof(visible) {
+      if (state.roof === null || visible === state.roof) return;
+      setState({ roof: visible });
+      // A running tour shows the roof; the setting applies once it ends.
+      if (!tourCtl.active) applyMode(state.mode);
+    },
     setGrid(on) {
       overlay.grid.visible = on;
       stage.requestRender();
@@ -1114,6 +1436,25 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       setPaper(onPaper);
     },
     rooms: () => roomList.map((r) => ({ ...r, centroid: [...r.centroid] })),
+    levels: () => levelList.map((l) => ({ ...l })),
+    designOptions: () => (plan.designOptions ?? []).map(({ id, name }) => ({ id, name })),
+    setDesignOption: showDesignOption,
+    setLevel(id) {
+      const level = house.levels.find((l) => l.level.id === id);
+      if (!storeyed || !level) return;
+      if (tourCtl.active) tourCtl.release();
+      spin = null;
+      const from = shownLevel(state.mode).level.elevation;
+      chosen = level;
+      if (state.mode === 'walk') placeWalkerOn(level);
+      else if (state.mode === 'dollhouse') {
+        // Same view, lifted or lowered to the storey.
+        const rise = new THREE.Vector3(0, level.level.elevation - from, 0);
+        flyTo(orbitCam, orbit, orbitCam.position.clone().add(rise), orbit.target.clone().add(rise));
+      }
+      applyMode(state.mode);
+      if (state.mode !== 'walk' && roomInfo(state.room)?.level !== id) setState({ room: null });
+    },
     focusRoom,
     lockPointer() {
       if (state.mode === 'walk') walker.lock();
@@ -1139,19 +1480,24 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
         const ahead = tourCam.getWorldDirection(new THREE.Vector3()).multiplyScalar(6).add(tourCam.position);
         return { mode: 'dollhouse', position: tourCam.position.toArray(), target: ahead.toArray() };
       }
+      const level = state.level ?? undefined;
+      const designOption = state.designOption ?? undefined;
       if (state.mode === 'walk') {
         const eye = walker.camera.position;
         const ahead = walker.camera.getWorldDirection(new THREE.Vector3()).add(eye);
-        return { mode: 'walk', position: eye.toArray(), target: ahead.toArray() };
+        return { mode: 'walk', position: eye.toArray(), target: ahead.toArray(), ...(level && { level }), ...(designOption && { designOption }) };
       }
       const [cam, controls] = state.mode === 'plan' ? [planCam, planControls] : [orbitCam, orbit];
-      return { mode: state.mode, position: cam.position.toArray(), target: controls.target.toArray() };
+      return { mode: state.mode, position: cam.position.toArray(), target: controls.target.toArray(), ...(level && { level }), ...(designOption && { designOption }) };
     },
-    setView({ mode, position, target }) {
+    setView({ mode, position, target, level, designOption }) {
       if (tourCtl.active) tourCtl.release();
+      if (designOption !== undefined) showDesignOption(designOption);
+      if (storeyed && level !== undefined) chosen = house.levels.find((l) => l.level.id === level) ?? chosen;
       setState({ mode });
       applyMode(mode);
-      if (mode === 'walk') walker.place(position[0], position[2], target[0], target[2]);
+      // The eye stands 1.6 m above the floor it is on.
+      if (mode === 'walk') walker.place(position[0], position[2], target[0], target[2], levelHere(position[1] - 1.6).level.elevation);
       else if (mode === 'plan') flyTo(planCam, planControls, new THREE.Vector3(...position), new THREE.Vector3(...target));
       else flyTo(orbitCam, orbit, new THREE.Vector3(...position), new THREE.Vector3(...target));
     },
@@ -1171,6 +1517,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       firstFrameMs: Math.round(firstFrameMs),
       fps,
       renderScale: stage.renderScale,
+      scene: sceneLoad(),
     }),
     dispose() {
       listeners.clear();

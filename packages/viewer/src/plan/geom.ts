@@ -1,4 +1,4 @@
-import type { Vec2, Wall, Plan } from './schema.ts';
+import type { Vec2, Wall, Plan, Room } from './schema.ts';
 import { withDefaults } from './schema.ts';
 
 export const EPS = 0.02; // 2 cm: tolerance for "these points are the same corner"
@@ -140,6 +140,23 @@ export function wallEndExtensions(plan: Plan, w: Wall): [number, number] {
     }
   });
   return ext;
+}
+
+/** Unit plan direction a sloped ceiling rises toward: degrees clockwise from the top of the plan (−y). */
+export function slopeDirection(toward: number): Vec2 {
+  const a = (toward * Math.PI) / 180;
+  return [Math.sin(a), -Math.cos(a)];
+}
+
+/** Height of a room's ceiling above its floor at plan point `p`; flat unless the room sets `ceilingSlope`. */
+export function ceilingAt(plan: Plan, room: Room, p: Vec2) {
+  const base = room.ceilingHeight ?? withDefaults(plan).wallHeight;
+  const slope = room.ceilingSlope;
+  if (!slope) return base;
+  const dir = slopeDirection(slope.toward);
+  const run = (q: Vec2) => q[0] * dir[0] + q[1] * dir[1];
+  const from = slope.from ? run(slope.from) : Math.min(...room.polygon.map(run));
+  return base + slope.rise * (run(p) - from);
 }
 
 /** Which room, if any, contains a point. Smallest room wins so nested polygons work. */

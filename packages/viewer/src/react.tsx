@@ -3,8 +3,10 @@ import type { Viewer as ViewerInstance, ViewerOptions } from './viewer.ts';
 
 export type { ViewerInstance };
 export type {
-  ViewerMode, ViewerProgress, ViewerState, ViewerStats, ViewerTheme, RoomInfo, ViewerPick, ViewerView, Vec3,
+  ViewerMode, ViewerProgress, ViewerState, ViewerStats, ViewerTheme, RoomInfo, LevelInfo, DesignOptionInfo, ViewerPick, ViewerView, Vec3,
 } from './viewer.ts';
+export type { ViewerEditor, EditorCatalog, EditorEvents } from './viewer/editor.ts';
+export type { PlacementProblem } from './plan/placement.ts';
 
 export interface ViewerProps extends Omit<ViewerOptions, 'signal'> {
   /** Receives the instance after the first frame, and null on unmount. */

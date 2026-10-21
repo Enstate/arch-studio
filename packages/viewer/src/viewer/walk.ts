@@ -34,8 +34,8 @@ export class Walker {
   private floorRay = new THREE.Ray(new THREE.Vector3(), new THREE.Vector3(0, -1, 0));
   private supportRay = new THREE.Ray();
   private onFloor = false;
-  /** Last plan point (x, z) the walker stood on the floor, or the last placement. */
-  private safe = { x: 0, z: 0 };
+  /** Last point the walker stood on a floor, or the last placement; `y` is the floor height. */
+  private safe = { x: 0, y: 0, z: 0 };
   private keys = new Set<string>();
   private yaw = 0;
   private pitch = 0;
@@ -43,6 +43,7 @@ export class Walker {
   private touchMove: { id: number; x0: number; y0: number; x: number; y: number } | null = null;
   private touchLook: { id: number; x: number; y: number } | null = null;
   private abort = new AbortController();
+  private lockChangedAt = -Infinity;
   active = false;
   locked = false;
 
@@ -75,20 +76,20 @@ export class Walker {
     this.velocity.y = 0;
   }
 
-  /** Plan position (x, z) of the walker's feet. */
+  /** Plan position (x, z) of the walker's feet, and their height `y`. */
   get position() {
-    return { x: this.capsule.start.x, z: this.capsule.start.z };
+    return { x: this.capsule.start.x, y: this.capsule.start.y - RADIUS, z: this.capsule.start.z };
   }
 
-  /** Places the walker standing at plan point (x, z), looking toward (lx, lz). */
-  place(x: number, z: number, lx: number, lz: number) {
-    this.capsule.start.set(x, RADIUS + 0.01, z);
-    this.capsule.end.set(x, EYE - 0.1, z);
+  /** Places the walker standing at plan point (x, z) on the floor at height `y`, looking toward (lx, lz). */
+  place(x: number, z: number, lx: number, lz: number, y = 0) {
+    this.capsule.start.set(x, y + RADIUS + 0.01, z);
+    this.capsule.end.set(x, y + EYE - 0.1, z);
     this.velocity.set(0, 0, 0);
     this.heading.set(0, 0, 0);
     this.stepNormal.set(0, 0, 0);
     this.onFloor = false;
-    this.safe = { x, z };
+    this.safe = { x, y, z };
     this.yaw = Math.atan2(-(lx - x), -(lz - z));
     this.pitch = -0.05;
     this.sync();
@@ -128,7 +129,9 @@ export class Walker {
   private bind() {
     const signal = this.abort.signal;
     document.addEventListener('pointerlockchange', () => {
-      this.locked = document.pointerLockElement === this.dom;
+      this.lockChangedAt = performance.now();
+      // The dollhouse's free look also captures the mouse; only a walk lock is the walker's.
+      this.locked = this.active && document.pointerLockElement === this.dom;
       this.onLockChange?.(this.locked);
     }, { signal });
     let dragging = false;
@@ -136,6 +139,8 @@ export class Walker {
     document.addEventListener('mouseup', () => (dragging = false), { signal });
     document.addEventListener('mousemove', (e) => {
       if (!this.active) return;
+      // Chromium reports one bogus jump to or from the window centre when the mouse is captured.
+      if (performance.now() - this.lockChangedAt < 60 || Math.abs(e.movementX) > 250 || Math.abs(e.movementY) > 250) return;
       if (this.locked) this.look(e.movementX, e.movementY, 0.0022);
       else if (dragging) this.look(e.movementX, e.movementY, 0.004);
     }, { signal });
@@ -387,6 +392,7 @@ export class Walker {
       }
       if (this.onFloor) {
         this.safe.x = this.capsule.start.x;
+        this.safe.y = this.capsule.start.y - RADIUS;
         this.safe.z = this.capsule.start.z;
       } else {
         this.stepNormal.set(0, 0, 0);
@@ -395,8 +401,8 @@ export class Walker {
     // Fell out of the house (bad plan, open edge): return to the last floor spot, keeping the view.
     if (this.capsule.start.y < -5) {
       const { yaw, pitch } = this;
-      const { x, z } = this.safe;
-      this.place(x, z, x - Math.sin(yaw), z - Math.cos(yaw));
+      const { x, y, z } = this.safe;
+      this.place(x, z, x - Math.sin(yaw), z - Math.cos(yaw), y);
       this.pitch = pitch;
     }
     this.sync(dt);

@@ -540,6 +540,12 @@ async function loadModel(gltf: GLTFLoader, cache: Map<string, Promise<THREE.Grou
   return g;
 }
 
+/** The main and accent finishes a piece is drawn with: its own, or its type's. */
+export function pieceFinishes(f: Pick<Furniture, 'type' | 'material' | 'accent'>): [string, string] {
+  const [mk, ak] = DEFAULT_MAT[f.type] ?? ['wood', 'dark-wood'];
+  return [f.material ?? mk, f.accent ?? ak];
+}
+
 const FIXTURES = new Set<string>([
   'kitchen-base', 'kitchen-tall', 'kitchen-wall', 'island', 'fridge', 'hob', 'sink', 'toilet', 'basin',
   'vanity', 'bathtub', 'shower', 'washer', 'stairs', 'wardrobe',
@@ -567,9 +573,9 @@ export async function buildFurniture(
   await Promise.all(
     (plan.furniture ?? []).map(async (f: Furniture) => {
       const size = f.size ?? FURNITURE_DEFAULT_SIZE[f.type] ?? [0.5, 0.5, 0.5];
-      const [mk, ak] = DEFAULT_MAT[f.type] ?? ['wood', 'dark-wood'];
-      const m = mat(f.material ?? mk);
-      const a = mat(f.accent ?? ak);
+      const [mk, ak] = pieceFinishes(f);
+      const m = mat(mk);
+      const a = mat(ak);
       let obj: THREE.Object3D | null = null;
       const info = f.model ? modelInfo(f.model) : undefined;
       if (info?.url) {
@@ -589,8 +595,9 @@ export async function buildFurniture(
       obj.name = f.id;
       // Walk-through: rugs, worktop fittings, slim lamps, and anything hung or standing on
       // other furniture. Their bounding boxes are mostly air and would block doorways.
-      const passable = ['rug', 'hob', 'sink', 'floor-lamp', 'plant'].includes(f.type) || (f.elevation ?? DEFAULT_ELEVATION[f.type] ?? 0) > 0.3;
-      obj.userData = { kind: 'furniture', id: f.id, type: f.type, collide: !passable, loose: !isFixture(f) };
+      // A roof's bounding box would wall in the whole storey; the walker meets the ceilings instead.
+      const passable = f.roof || ['rug', 'hob', 'sink', 'floor-lamp', 'plant'].includes(f.type) || (f.elevation ?? DEFAULT_ELEVATION[f.type] ?? 0) > 0.3;
+      obj.userData = { kind: 'furniture', id: f.id, type: f.type, size, collide: !passable, loose: !f.roof && !isFixture(f), roof: !!f.roof, ...(f.designOptions && { designOptions: f.designOptions }) };
       group.add(obj);
     }),
   );

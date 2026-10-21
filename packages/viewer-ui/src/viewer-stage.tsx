@@ -13,6 +13,8 @@ import { ASSET_BASE, type ViewerInstance } from "./viewer-model";
 interface StageProps {
   planUrl: string;
   assetBase?: string;
+  /** Builds the house for hand editing, with the shared library behind the project's own. */
+  editable?: { catalogBase: string };
   posterUrl?: string | null;
   onViewer: (viewer: ViewerInstance | null) => void;
   /** 0..1 over the whole load. */
@@ -42,7 +44,7 @@ function Profiled(props: StageProps) {
   return <Live key={attempt} {...props} onRetry={() => setAttempt(attempt + 1)} />;
 }
 
-function Live({ planUrl, assetBase = ASSET_BASE, onViewer, onProgress, onError, onRetry }: StageProps & { onRetry: () => void }) {
+function Live({ planUrl, assetBase = ASSET_BASE, editable, onViewer, onProgress, onError, onRetry }: StageProps & { onRetry: () => void }) {
   const [progress, setProgress] = useState(0);
   const [shown, setShown] = useState(false);
   const [loaderHidden, setLoaderHidden] = useState(false);
@@ -60,6 +62,8 @@ function Live({ planUrl, assetBase = ASSET_BASE, onViewer, onProgress, onError, 
         ref={reportViewer}
         planUrl={planUrl}
         assetBase={assetBase}
+        editable={!!editable}
+        catalogBase={editable?.catalogBase}
         locale={tag}
         mode="dollhouse"
         cut

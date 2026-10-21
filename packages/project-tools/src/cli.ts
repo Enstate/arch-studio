@@ -11,7 +11,7 @@ import {
   startPreview,
   stopPreviews,
 } from "./index.ts";
-import { initializeProject } from "./intake.ts";
+import { initializeProject, refreshProjectRules } from "./intake.ts";
 const help = `Arch local project tools
 
 Usage: bun run arch <command>
@@ -57,6 +57,9 @@ try {
     console.log(JSON.stringify(await initializeProject(intakeArguments(args)), null, 2));
   else if (command === "continue" && args.length === 1) {
     const project = await registerProject(args[0]!);
+    // Unedited stock rules from an older checkout are replaced before the continuation is saved.
+    const refreshed = await refreshProjectRules(project.directory);
+    if (refreshed.length) console.error(`Updated stock ${refreshed.join(" and ")} to the current rules.`);
     const checkpoint = await saveCheckpoint(project.manifest.id);
     console.log(await checkpointBrief(checkpoint.id));
   }

@@ -1,5 +1,6 @@
 import { createMiddleware, createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { planEditsSchema } from "@arch/project-tools/hand-edits";
 import { studioSession, studioSessionHeader } from "./browser-session";
 
 const localSession = createMiddleware({ type: "function" }).client(async ({ next }) => {
@@ -40,6 +41,8 @@ export const archiveBranch = createServerFn({ method: "POST" }).middleware([loca
 export const discardChanges = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, name: branch }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.discardChanges({ data }); });
 export const revealInFolder = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, branch, path: z.string().min(1).max(4096).optional() }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.revealInFolder({ data }); });
 export const compareVersions = createServerFn({ method: "GET" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, base: sha, target: sha }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.compareVersions({ data }); });
+export const projectEdits = createServerFn({ method: "GET" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, branch }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.projectEdits({ data }); });
+export const saveEdits = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, branch, edits: planEditsSchema }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./rounds.server"); return operations.saveEdits({ data }); });
 export const agentProviders = createServerFn({ method: "GET" }).middleware([localSession]).handler(async () => { const operations = await import("./rounds.server"); return operations.agentProviders(); });
 export const threadAgent = createServerFn({ method: "GET" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, threadId: z.string().uuid() }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./rounds.server"); return operations.threadAgent({ data }); });
 export const buildGrant = createServerFn({ method: "GET" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, branch }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./rounds.server"); return operations.buildGrant({ data }); });

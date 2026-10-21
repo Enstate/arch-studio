@@ -2,26 +2,21 @@ import { useMountEffect } from "@arch/ui/hooks/use-mount-effect";
 import { cn } from "@arch/ui/lib/utils";
 import { ChevronUpIcon } from "lucide-react";
 import { type ReactNode, useCallback, useId, useMemo, useRef, useState } from "react";
+import type { ViewerView } from "@arch/viewer/react";
 
 import { useT } from "./locale";
 
 import type { ViewerProject } from "./types";
-import { ControlBar, focusToggle, RoomLabel, readStoredFlag, storeFlag, ToolsCard, ViewerHotkeys, NavigationHint, WalkHint } from "./viewer-controls";
-import {
-  posterFor,
-  useFullscreen,
-  useViewerState,
-  type ViewerActions,
-  type ViewerInstance,
-  viewerActions,
-} from "./viewer-model";
+import { ControlBar, DesignOptionPicker, focusToggle, LevelPicker, RoomLabel, readStoredFlag, storeFlag, ToolsCard, ViewerHotkeys, NavigationHint, WalkHint } from "./viewer-controls";
+import { posterFor, rememberedDesignOption, useFullscreen, useViewerState, viewerActions, type ViewerActions, type ViewerInstance } from "./viewer-model";
+import { type DropHandlers, EditButton, EditSession, type ViewerEditing } from "./viewer-editing";
 import { ViewerStage } from "./viewer-stage";
 
 /** The 3D viewer filling its container, or a quiet placeholder while the model is being made. */
 export function ViewerPane({
   project,
   ...layers
-}: { project: ViewerProject } & Pick<ViewerSurfaceProps, "onViewer" | "above" | "rightPanelOpen" | "toolsHidden">) {
+}: { project: ViewerProject } & Pick<ViewerSurfaceProps, "onViewer" | "above" | "rightPanelOpen" | "toolsHidden" | "editing">) {
   if (project.status === "processing" || !project.planUrl) return <Processing />;
   return <ViewerSurface artifactId={project.artifactId} assetBase={project.assetBase} planUrl={project.planUrl} posterUrl={project.posterUrl ?? posterFor(project.planUrl)} {...layers} />;
 }
@@ -63,6 +58,8 @@ export interface ViewerSurfaceProps {
   rightPanelOpen?: boolean;
   /** Hides the top-right tools card, such as while a popover covers that corner. */
   toolsHidden?: boolean;
+  /** Lets someone edit the design by hand: an Edit button opens the trays. */
+  editing?: ViewerEditing;
   className?: string;
 }
 
@@ -76,16 +73,30 @@ export function ViewerSurface({
   above,
   rightPanelOpen,
   toolsHidden,
+  editing,
   className,
   onViewer,
   onProgress,
   onError,
 }: ViewerSurfaceProps) {
   const [viewer, setViewer] = useState<ViewerInstance | null>(null);
+  // Editing loads the house again in its editable form; the camera comes back where it was.
+  const [editingOn, setEditingOn] = useState(false);
+  const carriedView = useRef<ViewerView | null>(null);
+  const dropTarget = useRef<DropHandlers | null>(null);
   const reportViewer = useCallback((next: ViewerInstance | null) => {
+    if (next && carriedView.current) {
+      next.setView(carriedView.current);
+      carriedView.current = null;
+    }
     setViewer(next);
     onViewer?.(next);
   }, [onViewer]);
+  const switchEditing = (on: boolean) => {
+    carriedView.current = viewer?.getView() ?? null;
+    setEditingOn(on);
+  };
+  const editable = !!editing && editingOn;
   const state = useViewerState(viewer);
   const actions = useMemo(() => viewer && viewerActions(viewer), [viewer]);
   const fullscreen = useFullscreen();
@@ -123,9 +134,12 @@ export function ViewerSurface({
   }, []);
 
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: the surface only receives pieces and finishes dragged from the edit trays
     <div
       data-viewer=""
       data-labels={viewer && labelsHidden ? "off" : undefined}
+      onDragOver={(e) => dropTarget.current?.onDragOver(e)}
+      onDrop={(e) => dropTarget.current?.onDrop(e)}
       className={cn(
         "@container relative size-full min-h-0 overflow-hidden bg-muted",
         // `.arch-room-label` is the class @arch/viewer gives each room label button.
@@ -135,14 +149,23 @@ export function ViewerSurface({
       )}
     >
       <ViewerStage
-        key={artifactId ?? planUrl}
+        key={`${artifactId ?? planUrl}${editable ? ":edit" : ""}`}
         planUrl={planUrl}
         assetBase={assetBase}
+        editable={editable ? { catalogBase: editing.catalogBase } : undefined}
         posterUrl={posterUrl}
         onViewer={reportViewer}
         onProgress={onProgress}
         onError={onError}
       />
+
+      {viewer && state && actions && (
+        <div className="pointer-events-none absolute top-1/2 left-3 flex -translate-y-1/2 flex-col items-start gap-2">
+          {editing && !editable && <EditButton onStart={() => switchEditing(true)} />}
+          <LevelPicker viewer={viewer} state={state} actions={actions} />
+          <DesignOptionPicker viewer={viewer} state={state} actions={actions} />
+        </div>
+      )}
 
       <div className="@container pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-3 p-3">
         <div className="flex min-w-0 flex-col items-start gap-2">
@@ -150,9 +173,20 @@ export function ViewerSurface({
           {viewer && state && <RoomLabel viewer={viewer} state={state} />}
         </div>
         {viewer && state && actions && (
-          <ToolsCard viewer={viewer} state={state} actions={actions} labelsHidden={labelsHidden} onToggleLabels={toggleLabels} hidden={rightPanelOpen || toolsHidden} />
+          <ToolsCard viewer={viewer} state={state} actions={actions} labelsHidden={labelsHidden} onToggleLabels={toggleLabels} hidden={rightPanelOpen || toolsHidden || editable} />
         )}
       </div>
+
+      {editable && viewer?.editor && state && (
+        <EditSession
+          key={`${instanceKey(viewer)}:${editsKey(editing.saved)}`}
+          viewer={viewer}
+          state={state}
+          editing={editing}
+          dropTarget={dropTarget}
+          onDone={() => switchEditing(false)}
+        />
+      )}
 
       <div
         className={cn(
@@ -213,6 +247,14 @@ const LABELS_KEY = "arch-viewer-labels";
 /** Dispatch with `bubbles: true` from inside the dock to expand it before focusing. */
 export const DOCK_EXPAND_EVENT = "arch:dock-expand";
 
+/** Short and stable for the same saved edits, so a session starts over once new ones are saved. */
+function editsKey(edits: object) {
+  const text = JSON.stringify(edits);
+  let h = 0;
+  for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) | 0;
+  return `${text.length}.${h >>> 0}`;
+}
+
 const instanceKeys = new WeakMap<ViewerInstance, number>();
 let instanceCount = 0;
 function instanceKey(viewer: ViewerInstance) {
@@ -222,6 +264,9 @@ function instanceKey(viewer: ViewerInstance) {
 
 function ViewerSession({ viewer, actions }: { viewer: ViewerInstance; actions: ViewerActions }) {
   useMountEffect(() => {
+    // A new version of the project opens in the look chosen last, when it still has that option.
+    const remembered = rememberedDesignOption();
+    if (remembered && viewer.designOptions().some((option) => option.id === remembered)) viewer.setDesignOption(remembered);
     // The theme class on <html> is the source of truth, whether set by the user, the system or another tab.
     const root = document.documentElement;
     const syncTheme = () => viewer.setTheme(root.classList.contains("dark") ? "dark" : "light");
