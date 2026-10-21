@@ -9,10 +9,14 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 // Native display scaling matters: --headless silently forces an 800x600 1x desktop.
-if (process.platform !== 'darwin') throw new Error('Desktop verification requires macOS.');
+if (!['darwin', 'win32'].includes(process.platform)) throw new Error('Desktop verification requires macOS or Windows.');
+// Preview builds have no update feed. Windows CI verifies a preview on every pull request.
+const preview = process.argv.includes('--preview');
+const windows = process.platform === 'win32';
 const temporary = await realpath(await mkdtemp(path.join(tmpdir(), 'arch-packaged-')));
 const home = path.join(temporary, 'store');
-const executablePath = path.join(root, `artifacts/arch-studio-darwin-${process.arch}/mac${process.arch === 'arm64' ? '-arm64' : ''}/Arch Studio.app/Contents/MacOS/Arch Studio`);
+const output = path.join(root, `artifacts/arch-studio-${process.platform}-${process.arch}${preview ? '-preview' : ''}`);
+const executablePath = windows ? path.join(output, 'win-unpacked/Arch Studio.exe') : path.join(output, `mac${process.arch === 'arm64' ? '-arm64' : ''}/Arch Studio.app/Contents/MacOS/Arch Studio`);
 const demo = spawnSync(process.execPath, ['scripts/demo.ts'], {cwd: root, env: {...process.env, ARCH_HOME: home}, encoding:'utf8'});
 assert.equal(demo.status, 0, demo.stderr);
 const electronEnv = Object.fromEntries(Object.entries({...process.env, ARCH_HOME: home}).filter((entry): entry is [string, string] => entry[1] !== undefined));
@@ -35,7 +39,7 @@ try {
   await page.locator('[data-desktop-update]').waitFor();
   const update = await page.evaluate(() => window.archDesktop!.getUpdateState());
   assert.equal(update.currentVersion, await electron.evaluate(({app}) => app.getVersion()));
-  assert.notEqual(update.status, 'disabled', 'Signed release must include its update feed');
+  if (!preview) assert.notEqual(update.status, 'disabled', 'Release must include its update feed');
   assert.equal(await page.locator('[data-viewer] canvas').count(), 1);
   const versions=page.locator('[data-studio-version]');
   const priorVersion=await versions.getAttribute('data-studio-version');
@@ -50,7 +54,7 @@ try {
   await page.getByRole('progressbar').waitFor({state:'hidden',timeout:10000});
   const details = await electron.evaluate(({app}) => ({packaged:app.isPackaged,resources:process.resourcesPath}));
   assert.equal(details.packaged,true);
-  assert.ok(details.resources.includes('Arch Studio.app/Contents/Resources'));
+  assert.ok(details.resources.includes(windows ? path.join('win-unpacked', 'resources') : 'Arch Studio.app/Contents/Resources'));
   await mkdir(path.join(root,'evidence/desktop'),{recursive:true});
   const scaling = await electron.evaluate(({BrowserWindow,screen}) => {const win=BrowserWindow.getAllWindows()[0]!;return screen.getDisplayMatching(win.getBounds()).scaleFactor;});
   const viewport=await page.evaluate(()=>({width:innerWidth,height:innerHeight,dpr:devicePixelRatio}));

@@ -18,13 +18,17 @@ if (!release && !args.includes('--preview')) throw new Error('Choose --preview f
 if (release && args.includes('--preview')) throw new Error('Choose exactly one packaging mode.');
 const version = args.includes('--version') ? option('--version') : process.env.RELEASE_TAG?.replace(/^v/, '');
 if (!version || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(version)) throw new Error('Pass an explicit SemVer --version or RELEASE_TAG=v<version>.');
-if (!['darwin', 'linux'].includes(process.platform)) throw new Error('Packaging requires macOS or Linux.');
-if (release && process.platform !== 'darwin') throw new Error('Signed distribution requires a native macOS host.');
-if (!['arm64', 'x64'].includes(process.arch)) throw new Error('Unsupported host architecture.');
+if (!['darwin', 'linux', 'win32'].includes(process.platform)) throw new Error('Packaging requires macOS, Windows or Linux.');
+const windows = process.platform === 'win32';
+if (release && !['darwin', 'win32'].includes(process.platform)) throw new Error('Distribution requires a native macOS or Windows host.');
+if (!['arm64', 'x64'].includes(process.arch) || (windows && process.arch !== 'x64')) throw new Error('Unsupported host architecture.');
+// Windows installers are not Authenticode signed yet, so there is nothing to notarize.
+if (windows && phase !== 'all' && phase !== 'app') throw new Error('Windows packaging supports only app or all phases.');
+const executable = (name: string) => windows ? `${name}.exe` : name;
 const profile = process.env.APPLE_KEYCHAIN_PROFILE;
 const appleId = process.env.APPLE_ID && process.env.APPLE_APP_SPECIFIC_PASSWORD && process.env.APPLE_TEAM_ID;
 const apiKey = process.env.APPLE_API_KEY && process.env.APPLE_API_KEY_ID && process.env.APPLE_API_ISSUER;
-if (release && ['all', 'notarize'].includes(phase) && !profile && !appleId && !apiKey) throw new Error('Release requires APPLE_KEYCHAIN_PROFILE, or Apple ID/password/team, or App Store Connect API key credentials.');
+if (release && !windows && ['all', 'notarize'].includes(phase) && !profile && !appleId && !apiKey) throw new Error('Release requires APPLE_KEYCHAIN_PROFILE, or Apple ID/password/team, or App Store Connect API key credentials.');
 const require = createRequire(join(root, 'apps/desktop/package.json'));
 const electronVersion = require('electron/package.json').version as string;
 const output = resolve(root, 'artifacts', `arch-studio-${process.platform}-${process.arch}${release ? '' : '-preview'}`);
@@ -80,9 +84,9 @@ if (['all', 'app'].includes(phase)) {
   // Preserve the exact runtime hash inputs, including the original viewer manifest.
   await cp(join(root, 'packages/viewer/src'), join(resources, 'viewer/src'), { recursive: true });
   await cp(join(root, 'packages/viewer/package.json'), join(resources, 'viewer/package.json'));
-  await cp(process.execPath, join(resources, 'bun'));
+  await cp(process.execPath, join(resources, executable('bun')));
   if (release) await writeFile(join(resources, 'app-update.yml'), 'provider: github\nowner: Enstate\nrepo: arch-studio\nchannel: latest\nupdaterCacheDirName: arch-studio-updater\n');
-  run(process.execPath, ['build', '--compile', './scripts/serve.mjs', '--outfile', join(resources, 'arch-server')]);
+  run(process.execPath, ['build', '--compile', './scripts/serve.mjs', '--outfile', join(resources, executable('arch-server'))]);
 }
 const config: Configuration = {
   appId: 'co.enstate.arch.studio', productName: 'Arch Studio', electronVersion,
@@ -92,7 +96,7 @@ const config: Configuration = {
   // biome-ignore lint/suspicious/noTemplateCurlyInString: electron-builder expands these placeholders.
   artifactName: 'Arch-Studio-${version}-${arch}.${ext}',
   publish: release ? [{ provider: 'github', owner: 'Enstate', repo: 'arch-studio', releaseType: 'release' }] : null,
-  forceCodeSigning: release && ['all', 'app'].includes(phase),
+  forceCodeSigning: release && !windows && ['all', 'app'].includes(phase),
   // The disk image wraps the stapled app. Signing an unnotarized image itself
   // triggers a separate Gatekeeper failure; keep electron-builder's default.
   dmg: { sign: false },
@@ -104,6 +108,34 @@ const config: Configuration = {
     binaries: ['Contents/Resources/bun', 'Contents/Resources/arch-server'],
     category: 'public.app-category.graphics-design',
   },
+  win: { target: 'nsis' },
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: electron-builder expands these placeholders.
+  nsis: { artifactName: 'Arch-Studio-Setup-${version}-windows-${arch}.${ext}', oneClick: true, perMachine: false },
+};
+// A per-user NSIS installer, built directly from the staged app. Its provenance names
+// the commit and every published byte, like the macOS provenance.
+const packageWindows = async () => {
+  const sourceClean = capture('git', ['status', '--porcelain', '--untracked-files=normal']) === '';
+  if (release && !sourceClean) throw new Error('Public desktop releases require a clean checkout.');
+  const commit = capture('git', ['rev-parse', 'HEAD']);
+  if (phase === 'app') {
+    await build({ targets: Platform.WINDOWS.createTarget(['dir'], Arch.x64), config, publish: 'never' });
+    console.log(`Local ${release ? 'release' : 'preview'} app only: ${output}`);
+    return;
+  }
+  await build({ targets: Platform.WINDOWS.createTarget(['nsis'], Arch.x64), config, publish: 'never' });
+  if (!release) {
+    console.log(`Local preview only: ${output}. This installer is not a release.`);
+    return;
+  }
+  const provenancePath = join(output, 'desktop-windows-x64.json');
+  const files = await Promise.all(['exe', 'exe.blockmap'].map(async extension => {
+    const file = `Arch-Studio-Setup-${version}-windows-x64.${extension}`;
+    const bytes = await readFile(join(output, file));
+    return { file, sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
+  }));
+  await writeFile(provenancePath, JSON.stringify({ schemaVersion: 1, commit, version, platform: 'win32', arch: 'x64', sourceClean, files }, null, 2));
+  console.log(`Release completed: ${output}`);
 };
 const packageDesktop = async () => {
   const platform = process.platform === 'darwin' ? Platform.MAC : Platform.LINUX;
@@ -161,4 +193,4 @@ const packageDesktop = async () => {
     console.log(`Local preview only: ${output}. This app is not a signed or notarized distribution.`);
   }
 };
-await packageDesktop();
+await (windows ? packageWindows() : packageDesktop());

@@ -36,12 +36,17 @@ async function fixture() {
       await writeFile(join(directory, arch, `desktop-${arch}.json`), JSON.stringify({ schemaVersion: 1, commit: identity.commit, version: identity.version, arch, sourceClean: true, files: desktopFiles }));
     }
     await writeFile(join(directory, 'latest-mac.yml'), stringify({ version: identity.version, files }));
+    await mkdir(join(directory, 'windows-x64'));
+    const installer = 'Arch-Studio-Setup-1.2.3-windows-x64.exe';
+    for (const name of [installer, `${installer}.blockmap`]) await writeFile(join(directory, 'windows-x64', name), bytes);
+    await writeFile(join(directory, 'windows-x64', 'desktop-windows-x64.json'), JSON.stringify({ schemaVersion: 1, commit: identity.commit, version: identity.version, platform: 'win32', arch: 'x64', sourceClean: true, files: [installer, `${installer}.blockmap`].map((file) => ({ file, bytes: bytes.length, sha256 })) }));
+    await writeFile(join(directory, 'windows-x64', 'latest.yml'), stringify({ version: identity.version, files: [{ url: installer, size: bytes.length, sha512 }], path: installer, sha512 }));
     return { directory, bytes, files };
 }
 test('validates desktop provenance and rejects mixed commits, dirty sources and tampered assets', async () => {
   const { directory, bytes, files } = await fixture();
   try {
-    assert.equal((await releaseAssets(directory, identity)).length, 20);
+    assert.equal((await releaseAssets(directory, identity)).length, 24);
     const provenancePath = join(directory, 'arm64', 'desktop-arm64.json');
     const provenance = JSON.parse(await readFile(provenancePath, 'utf8'));
     for (const mismatch of [{ commit: 'b'.repeat(40) }, { sourceClean: false }, { repository: 'Other/repository' }, { version: '1.2.4' }, { arch: 'x64' }]) {
@@ -58,6 +63,30 @@ test('validates desktop provenance and rejects mixed commits, dirty sources and 
     files[0]!.sha512 = 'tampered';
     await writeFile(join(directory, 'latest-mac.yml'), stringify({ version: identity.version, files }));
     await assert.rejects(releaseAssets(directory, identity), /Updater integrity mismatch/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('requires the Windows installer, its provenance and a matching latest.yml', async () => {
+  const { directory, bytes } = await fixture();
+  try {
+    const windows = join(directory, 'windows-x64');
+    const provenancePath = join(windows, 'desktop-windows-x64.json');
+    const provenance = JSON.parse(await readFile(provenancePath, 'utf8'));
+    for (const mismatch of [{ commit: 'b'.repeat(40) }, { sourceClean: false }, { platform: 'darwin' }, { version: '1.2.4' }]) {
+      await writeFile(provenancePath, JSON.stringify({ ...provenance, ...mismatch }));
+      await assert.rejects(releaseAssets(directory, identity), /Desktop provenance does not match release identity: windows-x64/);
+    }
+    await writeFile(provenancePath, JSON.stringify(provenance));
+    const installerPath = join(windows, 'Arch-Studio-Setup-1.2.3-windows-x64.exe');
+    await writeFile(installerPath, 'tampered');
+    await assert.rejects(releaseAssets(directory, identity), /Desktop integrity mismatch/);
+    await writeFile(installerPath, bytes);
+    const manifestPath = join(windows, 'latest.yml');
+    const manifest = await readFile(manifestPath, 'utf8');
+    await writeFile(manifestPath, manifest.replace('1.2.3', '1.2.4'));
+    await assert.rejects(releaseAssets(directory, identity), /Invalid latest.yml/);
+    await rm(manifestPath);
+    await assert.rejects(releaseAssets(directory, identity), /ENOENT/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -99,7 +128,7 @@ function github(assets: Awaited<ReturnType<typeof releaseAssets>>) {
     if (method === 'GET') return Buffer.from(JSON.stringify({ ...release, ...(changeIdentity ? { target_commitish: 'b'.repeat(40) } : {}) }));
     assert.equal(method, 'PATCH');
     assert.deepEqual(body, { draft: false });
-    assert.equal(remote.length, 20);
+    assert.equal(remote.length, 24);
     for (const local of assets) assert.equal(remote.find((asset) => asset.name === local.name)?.digest, `sha256:${local.sha256}`);
     release.draft = false;
     return Buffer.from(JSON.stringify(release));
@@ -137,7 +166,7 @@ test('interrupted publication resumes only missing immutable bytes and publishes
     const resumed = remote.calls.length;
     await publish(directory, environment, remote.execute);
     assert.deepEqual(remote.remote.slice(0, 7), retained);
-    assert.equal(remote.calls.slice(resumed).filter((call) => call.args[0] === 'release').length, 13);
+    assert.equal(remote.calls.slice(resumed).filter((call) => call.args[0] === 'release').length, 17);
     assert.deepEqual([...remote.uploaded], assets.map((asset) => [asset.name, asset.sha256]));
     assert.equal(remote.release.draft, false);
     const lastCalls = remote.calls.slice(-3);
@@ -161,13 +190,13 @@ test('remote hash mismatch preserves the draft and refuses uploads or publicatio
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test('identity changes during upload prevent publication even with all twenty assets', async () => {
+test('identity changes during upload prevent publication even with all twenty-four assets', async () => {
   const { directory } = await fixture();
   try {
     const remote = github(await releaseAssets(directory, identity));
     remote.changeIdentity();
     await assert.rejects(publish(directory, environment, remote.execute), /Release identity changed/);
-    assert.equal(remote.remote.length, 20);
+    assert.equal(remote.remote.length, 24);
     assert.equal(remote.release.draft, true);
     assert.ok(remote.calls.every((call) => !call.args.includes('PATCH')));
   } finally { await rm(directory, { recursive: true, force: true }); }
