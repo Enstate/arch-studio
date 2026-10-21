@@ -123,8 +123,8 @@ peer is incompatible with beta.102. After the single `bun install`, a targeted
 `bun update @effect/platform-node-shared` repaired that transitive resolution.
 No existing package versions were upgraded.
 
-The package has its own `check-types` script and config. The root
-`scripts/check-types.ts` already discovers it by enumerating workspace configs.
+The root `check-types:agent` script checks the package's own config, and
+`bun run check-types` includes it.
 Verification is limited to that config and `tests/events.test.ts`. No real
 Claude or Codex turn, build, broad test suite, or development server was run.
 The parent must smoke-test local CLI initialization, authentication, image input,

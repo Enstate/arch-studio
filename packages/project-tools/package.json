@@ -7,9 +7,6 @@
     "./intake": "./src/intake.ts",
     "./hand-edits": "./src/hand-edits.ts"
   },
-  "scripts": {
-    "check-types": "bun check -p tsconfig.json"
-  },
   "dependencies": {
     "@arch/project": "workspace:*",
     "@arch/viewer": "workspace:*",

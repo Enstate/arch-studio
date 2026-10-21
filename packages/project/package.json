@@ -6,9 +6,6 @@
     ".": "./src/index.ts",
     "./integrity": "./src/integrity.ts"
   },
-  "scripts": {
-    "check-types": "bun check -p tsconfig.json"
-  },
   "dependencies": {
     "@arch/viewer": "workspace:*",
     "zod": "4.4.3"

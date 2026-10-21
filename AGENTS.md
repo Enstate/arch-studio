@@ -49,7 +49,11 @@ leak to other loopback ports. Bare-origin requests cannot create a session.
 Artifact and reference downloads require signed capability URLs and strict
 request-origin checks.
 
-Run the owning TypeScript config with `bun --check --tsconfig-override <config>`.
+Typecheck through the root `check-types` scripts, which own the checker choice.
+Run `bun run check-types:<project>` for the project you changed and its known
+consumers: `scripts`, `studio`, `agent`, `project`, `project-tools`, `ui`,
+`viewer` or `viewer-ui`. `bun run check-types` runs every project, as CI does.
+Give each new tsconfig project its own script and add it to that chain.
 Public package consumers include Studio and the separately released hosted app.
 Use focused tests under `packages/project-tools/tests` for integrity changes.
 `bun run verify:standalone` exercises the actual Studio and checkpoint boundary;
