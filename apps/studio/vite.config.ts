@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import react from "@vitejs/plugin-react";
@@ -15,8 +16,9 @@ export default defineConfig(({mode, command}) => {
   return {
     server: {host: "127.0.0.1", port: Number(rawPort), strictPort: true, cors: false, fs: {deny: ["**/.env*", "**/.git/**", "**/.arch/**", "**/evidence/**"]}},
     preview: {host: "127.0.0.1", port: Number(rawPort), strictPort: true},
-    resolve: {tsconfigPaths: true},
-    // The desktop server is compiled without an installed node_modules tree.
+    // The desktop server is compiled without an installed node_modules tree, so native
+    // addons cannot load. gltf-transform imports sharp eagerly for texture work Studio never does.
+    resolve: {tsconfigPaths: true, alias: command === "build" ? {sharp: fileURLToPath(new URL("./sharp-unavailable.ts", import.meta.url))} : undefined},
     ssr: {noExternal: command === "build" ? true : undefined},
     plugins: [tailwindcss(), tanstackStart(), react(), {
       name: "arch-local-pairing",
