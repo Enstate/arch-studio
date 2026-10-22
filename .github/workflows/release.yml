@@ -81,8 +81,35 @@ jobs:
             artifacts/arch-studio-darwin-${{ matrix.arch }}/latest-mac.yml
             artifacts/arch-studio-darwin-${{ matrix.arch }}/desktop-${{ matrix.arch }}.json
           if-no-files-found: error
+  windows:
+    # Not Authenticode signed yet: Windows shows a SmartScreen warning on first install.
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile
+      - name: Package the Windows installer
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: bun run package:desktop:release
+      - name: Verify the packaged app
+        run: bun scripts/verify-desktop.ts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-x64
+          path: |
+            artifacts/arch-studio-win32-x64/*.exe
+            artifacts/arch-studio-win32-x64/*.exe.blockmap
+            artifacts/arch-studio-win32-x64/latest.yml
+            artifacts/arch-studio-win32-x64/desktop-windows-x64.json
+          if-no-files-found: error
   publish:
-    needs: [archives, mac]
+    needs: [archives, mac, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -106,6 +133,10 @@ jobs:
         with:
           name: desktop-x64
           path: release/x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-windows-x64
+          path: release/windows-x64
       - run: bun scripts/desktop-update-manifest.ts release
         env:
           RELEASE_TAG: ${{ github.ref_name }}

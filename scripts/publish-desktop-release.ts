@@ -70,6 +70,22 @@ export async function releaseAssets(directory: string, identity: ReturnType<type
     if (file.size !== local.bytes || file.sha512 !== hash(await readFile(local.path), 'sha512', 'base64')) throw new Error(`Updater integrity mismatch: ${file.url}`);
   }
   for (const name of desktopNames) if (!name.endsWith('.blockmap') && !seen.has(name)) throw new Error(`Missing updater file: ${name}`);
+  // The unsigned Windows installer is built on a Windows runner and updates from latest.yml.
+  const installer = `Arch-Studio-Setup-${identity.version}-windows-x64.exe`;
+  const windowsFiles = [installer, `${installer}.blockmap`];
+  const windowsProvenance = JSON.parse((await asset('windows-x64', 'desktop-windows-x64.json')).toString());
+  if (windowsProvenance.schemaVersion !== 1 || windowsProvenance.commit !== identity.commit || windowsProvenance.version !== identity.version || windowsProvenance.platform !== 'win32' || windowsProvenance.arch !== 'x64' || windowsProvenance.sourceClean !== true) throw new Error('Desktop provenance does not match release identity: windows-x64');
+  if (!Array.isArray(windowsProvenance.files) || windowsProvenance.files.length !== windowsFiles.length) throw new Error('Incomplete desktop provenance: windows-x64');
+  if ((await readdir(join(directory, 'windows-x64'))).filter((name) => name !== 'desktop-windows-x64.json' && name !== 'latest.yml').sort().join('\n') !== [...windowsFiles].sort().join('\n')) throw new Error('Incomplete or unexpected windows-x64 desktop assets');
+  for (const name of windowsFiles) {
+    const bytes = await asset('windows-x64', name);
+    const entries = windowsProvenance.files.filter((entry: { file: string }) => entry.file === name);
+    if (entries.length !== 1 || entries[0].sha256 !== hash(bytes) || entries[0].bytes !== bytes.length) throw new Error(`Desktop integrity mismatch: ${name}`);
+  }
+  const windowsManifest = parse((await asset('windows-x64', 'latest.yml')).toString());
+  if (windowsManifest.version !== identity.version || !Array.isArray(windowsManifest.files) || windowsManifest.files.length !== 1 || windowsManifest.files[0].url !== installer) throw new Error('Invalid latest.yml');
+  const local = assets.find((item) => item.name === installer)!;
+  if (windowsManifest.files[0].size !== local.bytes || windowsManifest.files[0].sha512 !== hash(await readFile(local.path), 'sha512', 'base64')) throw new Error(`Updater integrity mismatch: ${installer}`);
   return assets;
 }
 function gh(args: string[], input?: string): Buffer {
@@ -90,7 +106,7 @@ export async function publish(directory: string, env = process.env, executeGh = 
   if (matches.length > 1) throw new Error('Multiple releases have this tag');
   let release = matches[0];
   if (release && (!release.draft || release.target_commitish !== identity.commit)) throw new Error('Existing release is published or has different provenance');
-  release ??= api(endpoint, 'POST', { tag_name: identity.tag, target_commitish: identity.commit, draft: true, name: identity.tag, body: `Signed and notarized native macOS apps and immutable public source packages from commit ${identity.commit}. Archive hashes and provenance are attached.` });
+  release ??= api(endpoint, 'POST', { tag_name: identity.tag, target_commitish: identity.commit, draft: true, name: identity.tag, body: `Signed and notarized native macOS apps, an unsigned Windows installer and immutable public source packages from commit ${identity.commit}. Archive hashes and provenance are attached.` });
   const releaseId = release!.id;
   function remoteAssets(): Asset[] { return JSON.parse(executeGh(['api', `${endpoint}/${releaseId}/assets`, '--paginate', '--slurp'])!.toString()).flat(); }
   function verify(remote: Asset[]) {

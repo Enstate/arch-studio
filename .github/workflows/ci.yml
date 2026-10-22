@@ -23,3 +23,22 @@ jobs:
       - run: bun test apps/desktop/updates.test.ts scripts/publish-desktop-release.test.ts
       - run: bun run lint
       - run: bun run build:studio
+  windows:
+    # Builds the unsigned Windows installer and drives the packaged app through a source build.
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile
+      - run: bun run build:studio
+      - run: bun scripts/desktop-package.ts --preview --version 0.0.0
+      - run: bun scripts/verify-desktop.ts --preview
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-preview
+          path: artifacts/arch-studio-win32-x64-preview/*.exe
+          retention-days: 7
+          if-no-files-found: error

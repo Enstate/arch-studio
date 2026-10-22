@@ -14,7 +14,7 @@ interface StageProps {
   planUrl: string;
   assetBase?: string;
   /** Builds the house for hand editing, with the shared library behind the project's own. */
-  editable?: { catalogBase: string };
+  editable?: { catalogBase?: string };
   posterUrl?: string | null;
   onViewer: (viewer: ViewerInstance | null) => void;
   /** 0..1 over the whole load. */
