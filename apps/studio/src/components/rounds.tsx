@@ -10,10 +10,11 @@ import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { Dialog, DialogContent, DialogTitle } from "@arch/ui/components/dialog";
-import { agentProviders, answerApproval, threadAgent, discardChanges, interruptRound, resumeRound, roundActivity, roundImage, roundTimeline, startRound } from "../lib/server";
+import { answerApproval, threadAgent, discardChanges, interruptRound, resumeRound, roundActivity, roundImage, roundTimeline, startRound } from "../lib/server";
 import type { RoundActivity, RoundEvent, RoundSummary, StudioBranch, StudioVersion } from "../lib/model";
 import type { studioText } from "../lib/messages";
 import { useStudioFormat } from "../lib/locale";
+import { agentProvidersQuery, agentRunnable, openSettings, useDisabledAgents } from "../lib/settings";
 import { type ModelChoice, type ModelSettings, ModelPicker, settingValue, TraitsPicker } from "./model-picker";
 
 // The timeline and composer follow T3 Code's MessagesTimeline and ChatComposer
@@ -301,7 +302,8 @@ const documentName = /\.(pdf|svg|txt|md|json)$/i;
 function Composer({projectId, threadId, branch, running, request, setRequest, canCritique, ensureGrant, t}: {projectId: string; threadId: string; branch: StudioBranch; running?: RoundSummary; request: string; setRequest: (text: string) => void; canCritique: boolean; ensureGrant: (then: () => void) => void; t: Copy}) {
   const queryClient = useQueryClient();
   const file = useRef<HTMLInputElement>(null);
-  const providers = useQuery({queryKey: ["studio-agent-providers"], queryFn: () => agentProviders(), staleTime: 30_000});
+  const providers = useQuery(agentProvidersQuery);
+  const {disabled} = useDisabledAgents();
   const saved = useQuery({queryKey: ["studio-thread-agent", projectId, threadId], queryFn: () => threadAgent({data: {projectId, threadId}}), staleTime: Infinity});
   const activity = useRoundActivity(running?.id, true);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -310,7 +312,9 @@ function Composer({projectId, threadId, branch, running, request, setRequest, ca
   const [chosenSettings, setChosenSettings] = useState<ModelSettings>();
   // A branch with a session keeps its provider, like a T3 Code thread. Other agents start on a new branch.
   const lockedTo = saved.data?.locked ? saved.data.provider : undefined;
-  const ready = providers.data?.filter((item: AgentProviderStatus) => item.installed && item.authenticated !== false && item.models.length && (!lockedTo || item.provider === lockedTo)) ?? [];
+  // A conversation already on an agent keeps it even after that agent is switched off in Settings.
+  const pickable = providers.data?.filter((item: AgentProviderStatus) => lockedTo ? item.provider === lockedTo : !disabled.includes(item.provider)) ?? [];
+  const ready = pickable.filter(agentRunnable);
   const available = (value?: {provider: AgentProvider; model: string}) => value && ready.some(item => item.provider === value.provider && item.models.some(model => model.id === value.model)) ? value : undefined;
   // New branches start on the first current model, which is Opus 5.5 when Claude is available.
   const firstCurrent = ready.flatMap(item => item.models.filter(model => !model.legacy).map(model => ({provider: item.provider, model: model.id})))[0];
@@ -376,9 +380,9 @@ function Composer({projectId, threadId, branch, running, request, setRequest, ca
             </div>
             : <div className="flex min-w-0 flex-nowrap items-center justify-between gap-2 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
               <div className="-m-1 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 [scrollbar-width:none]">
-                {!ready.length && providers.data ? <Button type="button" size="sm" variant="ghost" disabled className="shrink-0 gap-2 px-2 text-muted-foreground/70"><CircleAlertIcon className="size-4" />{t.noProvider}</Button>
+                {!ready.length && providers.data ? <Button type="button" size="sm" variant="ghost" title={t.setUpAgents} onClick={() => openSettings("agents")} className="shrink-0 gap-2 px-2 text-muted-foreground"><CircleAlertIcon className="size-4" />{t.noProvider}</Button>
 : <>
-                  {providers.data && <ModelPicker providers={providers.data} value={selection} lockedTo={lockedTo} onChange={next => {setChosen(next); setChosenSettings({});}} t={t} />}
+                  {providers.data && <ModelPicker providers={pickable} value={selection} lockedTo={lockedTo} onChange={next => {setChosen(next); setChosenSettings({});}} t={t} />}
                   <TraitsPicker model={selectedModel} settings={settings} onChange={setChosenSettings} t={t} />
                 </>}
                 <Button type="button" size="icon-sm" variant="ghost" className="rounded-full text-muted-foreground" aria-label={t.attachFiles} title={t.attachFiles} onClick={() => file.current?.click()}><PaperclipIcon /></Button>

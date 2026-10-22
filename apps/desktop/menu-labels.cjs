@@ -1,8 +1,8 @@
 const labels = {
-  en: { about: 'About Arch Studio', checkForUpdates: 'Check for updates…' },
-  de: { about: 'Über Arch Studio', checkForUpdates: 'Nach Updates suchen…' },
-  es: { about: 'Acerca de Arch Studio', checkForUpdates: 'Buscar actualizaciones…' },
-  pt: { about: 'Sobre o Arch Studio', checkForUpdates: 'Verificar atualizações…' },
+  en: { about: 'About Arch Studio', checkForUpdates: 'Check for updates…', settings: 'Settings…' },
+  de: { about: 'Über Arch Studio', checkForUpdates: 'Nach Updates suchen…', settings: 'Einstellungen…' },
+  es: { about: 'Acerca de Arch Studio', checkForUpdates: 'Buscar actualizaciones…', settings: 'Ajustes…' },
+  pt: { about: 'Sobre o Arch Studio', checkForUpdates: 'Verificar atualizações…', settings: 'Configurações…' },
 };
 
 function menuLabels(savedLocale, languages) {

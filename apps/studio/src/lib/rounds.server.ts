@@ -196,9 +196,10 @@ export async function revokeBuilds({ data }: { data: { projectId: string } }) {
 }
 
 let providers: { at: number; value: Promise<AgentProviderStatus[]> } | undefined;
-export async function agentProviders() {
+/** Statuses are cached for 30 seconds. Settings can ask for a fresh check. */
+export async function agentProviders({ data }: { data: { refresh: boolean } }) {
   requireStudio();
-  if (!providers || Date.now() - providers.at > 30_000) {
+  if (!providers || data.refresh || Date.now() - providers.at > 30_000) {
     const { providerStatuses } = await import("@arch/agent");
     providers = { at: Date.now(), value: providerStatuses() };
     void providers.value.catch(() => { providers = undefined; });

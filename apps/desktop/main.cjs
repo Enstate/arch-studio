@@ -1,5 +1,8 @@
 const { app, BrowserWindow, session, shell, ipcMain, Menu, dialog, nativeTheme } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
+const execFile = require('node:util').promisify(require('node:child_process').execFile);
+const { existsSync } = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { createDesktopUpdates } = require('./updates.cjs');
 const { menuLabels } = require('./menu-labels.cjs');
@@ -16,19 +19,62 @@ function stopServer() {
   else try { process.kill(-server.pid, 'SIGTERM'); } catch {}
   server = undefined;
 }
-function serverEnvironment(resources) {
+// The user's own agent CLI configuration and network settings. API keys stay out: agents use local logins.
+const agentKeys = ['CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_GIT_BASH_PATH', 'CODEX_HOME', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR'];
+const mergePaths = (separator, ...lists) => [...new Set(lists.flatMap(list => (list ?? '').split(separator)).filter(Boolean))].join(separator);
+// Apps opened from Finder or the Dock get launchd's minimal PATH, so `claude` and `codex` from
+// ~/.local/bin, Homebrew or nvm are missing. Read PATH and the agent settings from the login shell.
+async function loginShellEnvironment() {
+  const keys = ['PATH', ...agentKeys];
+  // printenv and `;` work in POSIX shells, fish and nushell alike.
+  const script = keys.map(key => `echo __ARCH_${key}__; printenv ${key}; echo __ARCH_${key}__`).join('; ');
+  const shells = [...new Set([process.env.SHELL, os.userInfo().shell, process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash'])].filter(value => value && path.isAbsolute(value));
+  for (const shell of shells) {
+    try {
+      const { stdout } = await execFile(shell, ['-ilc', script], { encoding: 'utf8', timeout: 5000, maxBuffer: 1024 * 1024, env: process.env });
+      const values = Object.fromEntries(keys.flatMap(key => {
+        const value = stdout.match(new RegExp(`__ARCH_${key}__\\r?\\n([\\s\\S]*?)\\r?\\n?__ARCH_${key}__`))?.[1]?.trim();
+        return value ? [[key, value]] : [];
+      }));
+      if (values.PATH) return values;
+    } catch {}
+  }
+  return {};
+}
+// Per-user installers that a stale Explorer PATH can miss.
+function windowsCliDirectories() {
+  const { APPDATA, LOCALAPPDATA, USERPROFILE } = process.env;
+  return [
+    APPDATA && path.join(APPDATA, 'npm'),
+    LOCALAPPDATA && path.join(LOCALAPPDATA, 'pnpm'),
+    LOCALAPPDATA && path.join(LOCALAPPDATA, 'Volta', 'bin'),
+    LOCALAPPDATA && path.join(LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links'),
+    USERPROFILE && path.join(USERPROFILE, '.local', 'bin'),
+    USERPROFILE && path.join(USERPROFILE, '.bun', 'bin'),
+    USERPROFILE && path.join(USERPROFILE, 'scoop', 'shims'),
+  ].filter(directory => directory && existsSync(directory)).join(';');
+}
+async function serverEnvironment(resources) {
   const env = {};
-  for (const key of ['PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'TMP', 'TEMP', 'APPDATA', 'LOCALAPPDATA', 'SystemRoot', 'windir', 'USERPROFILE', 'USERNAME', 'HOMEDRIVE', 'HOMEPATH', 'PATHEXT', 'ComSpec', 'SystemDrive', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE']) {
+  for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'TMP', 'TEMP', 'APPDATA', 'LOCALAPPDATA', 'SystemRoot', 'windir', 'USERPROFILE', 'USERNAME', 'HOMEDRIVE', 'HOMEPATH', 'PATHEXT', 'ComSpec', 'SystemDrive', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'ProgramData', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', ...agentKeys]) {
     if (process.env[key]) env[key] = process.env[key];
+  }
+  if (windows) env.PATH = mergePaths(';', env.PATH, windowsCliDirectories());
+  else {
+    const shell = await loginShellEnvironment();
+    for (const key of agentKeys) if (!env[key] && shell[key]) env[key] = shell[key];
+    env.PATH = mergePaths(':', shell.PATH, env.PATH);
   }
   if (process.env.ARCH_HOME && !path.isAbsolute(process.env.ARCH_HOME)) throw new Error('ARCH_HOME must be absolute');
   return { ...env, ...(process.env.ARCH_HOME ? { ARCH_HOME: process.env.ARCH_HOME } : {}), ARCH_VIEWER_ROOT: path.join(resources, 'viewer'), ARCH_BUN: path.join(resources, executable('bun')), ARCH_CLIENT_ROOT: path.join(resources, 'client'), ARCH_STUDIO_PORT: '0', ARCH_STUDIO_PARENT_PIPE: '1' };
 }
 function validBootstrapUrl(value) { return typeof value === 'string' && /^http:\/\/127\.0\.0\.1:\d+\/#studio=[a-f0-9]{64}$/.test(value); }
-function startServer() {
+async function startServer() {
   const resources = process.resourcesPath;
+  const env = await serverEnvironment(resources);
+  if (quitting) throw new Error('Arch Studio is quitting');
   // A detached Windows child would open its own console window.
-  server = spawn(path.join(resources, executable('arch-server')), [], { env: serverEnvironment(resources), stdio: ['pipe', 'pipe', 'pipe'], detached: !windows, windowsHide: true });
+  server = spawn(path.join(resources, executable('arch-server')), [], { env, stdio: ['pipe', 'pipe', 'pipe'], detached: !windows, windowsHide: true });
   return new Promise((resolve, reject) => {
     let pending = '';
     const timer = setTimeout(() => reject(new Error('Studio server startup timed out')), 30000);
@@ -64,12 +110,12 @@ app.whenReady().then(async () => {
   if (!validBootstrapUrl(bootstrapUrl)) throw new Error('Invalid local Studio bootstrap URL');
   let origin = new URL(bootstrapUrl).origin;
   const backgroundColor = () => nativeTheme.shouldUseDarkColors ? '#121212' : '#ffffff';
-  const developmentIcon = !app.isPackaged ? path.join(__dirname, 'icon.png') : undefined;
+  const developmentIcon = !app.isPackaged ? path.join(app.getAppPath(), 'icon.png') : undefined;
   if (developmentIcon) app.dock?.setIcon(developmentIcon);
   const window = new BrowserWindow({
     width: 1440, height: 960, backgroundColor: backgroundColor(), icon: developmentIcon,
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 19 } } : {}),
-    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs') },
+    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(app.getAppPath(), 'preload.cjs') },
   });
   const trustedFrame = event => {
     try { return event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && new URL(event.senderFrame.url).origin === origin; }
@@ -128,16 +174,19 @@ app.whenReady().then(async () => {
     if (labels === currentMenuLabels || window.isDestroyed()) return;
     currentMenuLabels = labels;
     const checkForUpdates = { label: labels.checkForUpdates, click: () => { void updates.check(); } };
+    const settings = { label: labels.settings, accelerator: 'CmdOrCtrl+,', click: () => { if (!window.isDestroyed()) window.webContents.send('desktop:open-settings'); } };
     const appMenu = process.platform === 'darwin' ? [
       { label: labels.about, role: 'about' },
       checkForUpdates,
+      { type: 'separator' },
+      settings,
       { type: 'separator' },
       { role: 'services' },
       { type: 'separator' },
       { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' },
       { type: 'separator' },
       { role: 'quit' },
-    ] : [checkForUpdates, { type: 'separator' }, { role: 'quit' }];
+    ] : [settings, checkForUpdates, { type: 'separator' }, { role: 'quit' }];
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { label: 'Arch Studio', submenu: appMenu },
       { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },

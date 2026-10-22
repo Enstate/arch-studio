@@ -1,4 +1,4 @@
-import { cp, mkdir, access, rm, writeFile, mkdtemp, readFile } from 'node:fs/promises';
+import { cp, mkdir, access, rm, writeFile, mkdtemp, readFile, realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -79,6 +79,10 @@ if (['all', 'app'].includes(phase)) {
   await writeFile(join(stage, 'package.json'), JSON.stringify({ name: 'arch-studio-desktop', productName: 'Arch Studio', version, main: 'main.cjs', description: 'Local architectural visualization Studio', author: 'Enstate', license: 'MIT' }));
   // Bundle the complete updater dependency graph, while Electron remains supplied by the runtime.
   run(process.execPath, ['build', './apps/desktop/main.cjs', '--target=node', '--format=cjs', '--external=electron', '--outfile', join(stage, 'main.cjs')]);
+  // Bun inlines __dirname as the build checkout path, which does not exist on users' machines.
+  const bundle = await readFile(join(stage, 'main.cjs'), 'utf8');
+  const checkout = [root, await realpath(root)].map(path => path.replace(/\/$/, ''));
+  if (checkout.some(path => bundle.includes(path))) throw new Error('The desktop main bundle references the build checkout. Resolve packaged files from app.getAppPath().');
   await cp(join(root, 'apps/desktop/preload.cjs'), join(stage, 'preload.cjs'));
   await cp(join(root, 'apps/studio/dist/client'), join(resources, 'client'), { recursive: true });
   // Preserve the exact runtime hash inputs, including the original viewer manifest.

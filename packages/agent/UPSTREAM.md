@@ -83,8 +83,14 @@ The package entry point exposes only the Promise and AsyncIterable API in
   upstream's SDK version, since the requested `^0.3.170` resolves to 0.3.305 in
   this lockfile. A reset interrupts the round.
 - POSIX Claude executables are resolved against PATH before SDK launch. Windows
-  Claude npm shims retain upstream entry-point resolution. Codex Windows shell
-  launchers are rejected; a native executable is required.
+  resolution, like upstream, accepts only PATHEXT files, so npm's extensionless
+  POSIX shim is never chosen. Windows `claude.cmd` and `codex.cmd` npm launchers
+  are followed to the native `claude.exe` or the platform package's `codex.exe`.
+  Unlike upstream, launchers are never run through `cmd.exe`; a launcher without a
+  known native entry is reported as installed but not runnable.
+- The desktop shell, not this package, supplies PATH. It reads PATH and agent
+  settings from the macOS/Linux login shell and adds per-user Windows CLI
+  directories, following T3's `DesktopShellEnvironment`.
 
 ## Sandboxed shell commands
 

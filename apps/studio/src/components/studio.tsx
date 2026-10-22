@@ -5,7 +5,7 @@ import type { ReviewNote } from "@arch/project";
 import { ArchMark } from "@arch/ui/components/arch-logo";
 import { Button } from "@arch/ui/components/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@arch/ui/components/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from "@arch/ui/components/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, DropdownMenuRadioGroup, DropdownMenuRadioItem } from "@arch/ui/components/dropdown-menu";
 import { Field, FieldLabel } from "@arch/ui/components/field";
 import { Input } from "@arch/ui/components/input";
 import { ProjectLayout, ProjectPage, projectIconButton } from "@arch/ui/components/project-layout";
@@ -13,22 +13,23 @@ import { Textarea } from "@arch/ui/components/textarea";
 import { useHotkey } from "@arch/ui/hooks/use-hotkey";
 import { useIsMobile } from "@arch/ui/hooks/use-mobile";
 import { UiLabelsProvider } from "@arch/ui/lib/ui-labels";
-import { useTheme } from "@arch/ui/lib/theme";
 import { cn } from "@arch/ui/lib/utils";
 import { ASSET_BASE, ViewerSurface, ViewerLocaleProvider, type ViewerEditing, type ViewerInstance } from "@arch/viewer-ui";
 import { hasEdits, type PlanEdits } from "@arch/viewer/plan/edits";
 import { useForm } from "@tanstack/react-form";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpRightIcon, CheckIcon, ChevronsUpDownIcon, HammerIcon, FolderOpenIcon, FolderPlusIcon, LanguagesIcon, MoreHorizontalIcon, PaletteIcon, MenuIcon, PanelLeftIcon, PlusIcon, SearchIcon, SettingsIcon, SquarePenIcon } from "lucide-react";
+import { ArrowUpRightIcon, CheckIcon, ChevronsUpDownIcon, HammerIcon, FolderOpenIcon, FolderPlusIcon, MoreHorizontalIcon, MenuIcon, PanelLeftIcon, PlusIcon, SearchIcon, SettingsIcon, SquarePenIcon } from "lucide-react";
 import { type ReactNode, useCallback, useId, useRef, useState } from "react";
 import { revealInFolder, brief, buildGrant, buildVersion, catalog, projectEdits, saveEdits, createClient, createThread, threadList, updateThread, grantBuilds, handoff, makePrimary, openProjectFolder, openVersion, projectDetails, restoreSource, revokeBuilds, saveNote } from "../lib/server";
 import { VIEWER_MISMATCH, type StudioProjectSummary, type StudioThread, type StudioVersion } from "../lib/model";
 import { type Locale, studioText } from "../lib/messages";
-import { languageNames, useStudioFormat, useStudioLocale } from "../lib/locale";
+import { useStudioFormat, useStudioLocale } from "../lib/locale";
 import { SourceSetup } from "./source-setup";
 import { IntakeOverview, WorkPlan } from "./intake-overview";
 import { AddFiles, ProjectFiles, projectFiles } from "./project-files";
 import { DesktopUpdates } from "./desktop-updates";
+import { SettingsNav, SettingsPage } from "./settings";
+import { closeSettings, openSettings, useSettingsSection } from "../lib/settings";
 import { NewProject } from "./new-project";
 import { Rounds, branchVersions } from "./rounds";
 import { Compare } from "./compare";
@@ -105,6 +106,8 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
   const newThread = (projectId: string) => create.mutate({projectId, ...(thread && thread.projectId === projectId ? {branch: thread.branch} : {})});
   const toggleSidebar = () => isMobile ? setMobileOpen(open => !open) : setSidebarOpen(open => !open);
   useHotkey("mod+b", toggleSidebar);
+  const settingsSection = useSettingsSection();
+  useHotkey("mod+,", () => settingsSection ? closeSettings() : openSettings());
   useHotkey("mod+k", () => {if (isMobile) setMobileOpen(true); else setSidebarOpen(true); requestAnimationFrame(() => searchInput.current?.focus());});
   // A plain letter would fire while moving around the 3D view with the keyboard, creating stray threads.
   useHotkey("mod+shift+o", event => {if (!(event.target instanceof Element && event.target.closest("[role=dialog],[role=menu],[role=listbox]"))) {if (targetProject) newThread(targetProject); else openNewProject();}});
@@ -120,6 +123,7 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
     : <DropdownMenu><DropdownMenuTrigger className={projectIconButton} aria-label={t.newThread} title={t.newThread} disabled={!sourceProjects.length || create.isPending}><SquarePenIcon /></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-64"><div className="px-2 pt-1.5 pb-1 text-xs font-medium text-muted-foreground">{t.newThreadIn}</div>{sourceProjects.map(item => <DropdownMenuItem key={item.id} onClick={() => newThread(item.id)}><ProjectBadge name={item.name} /><span className="flex-1 truncate">{item.name}</span></DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu>;
   const sidebar = <div className="studio-sidebar flex h-full w-full flex-col px-2.5 pb-2.5 md:w-(--sidebar-w)">
     <div className="studio-titlebar flex shrink-0 items-center gap-1">{toggle}<span className="flex min-w-0 items-center gap-2 px-1 text-sm font-semibold"><ArchMark className="h-3 shrink-0" /><span className="truncate">Arch Studio</span></span></div>
+    {settingsSection ? <SettingsNav section={settingsSection} t={t} /> : <>
     <div className="flex items-center gap-0.5 py-1.5">
       <div className="relative min-w-0 flex-1"><SearchIcon className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input ref={searchInput} autoComplete="off" value={search} onChange={event => setSearch(event.target.value)} aria-label={t.search} placeholder={t.search} className="h-8 border-transparent bg-transparent pl-7 text-ui shadow-none hover:bg-foreground/5 focus-visible:bg-background" /></div>
       {newThreadButton}
@@ -150,11 +154,13 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
       </>}
       {threads.isSuccess && !visible.length && !unconnected.length && <p className="px-2.5 py-2 text-xs text-muted-foreground">{all.length ? t.noMatches : t.noProjects}</p>}
     </nav>
-    <StudioFooter t={t} locale={locale} changeLocale={changeLocale} restore={() => {setMobileOpen(false); setImportOpen(true);}} />
+    </>}
+    <StudioFooter t={t} settingsOpen={!!settingsSection} />
   </div>;
   const error = studio.isError || threads.isError;
   return <><div className="studio-shell"><ProjectLayout sidebar={sidebar} sidebarOpen={sidebarOpen} isMobile={isMobile} mobileOpen={mobileOpen} onMobileOpenChange={setMobileOpen} labels={{skipToContent: t.skipToContent, sidebar: t.sidebar, mobileTitle: t.mobileTitle, mobileDescription: t.mobileDescription}}>
-    {error ? <ProjectPage title={t.studio} navigation={navigation}><div className="m-auto grid gap-3"><p role="alert">{t.error}</p><Button onClick={() => {void studio.refetch(); void threads.refetch();}}>{t.retry}</Button></div></ProjectPage>
+    {settingsSection ? <SettingsPage section={settingsSection} navigation={navigation} locale={locale} changeLocale={changeLocale} restore={() => {setMobileOpen(false); setImportOpen(true);}} t={t} />
+      : error ? <ProjectPage title={t.studio} navigation={navigation}><div className="m-auto grid gap-3"><p role="alert">{t.error}</p><Button onClick={() => {void studio.refetch(); void threads.refetch();}}>{t.retry}</Button></div></ProjectPage>
       : project ? <Project key={`${project.id}:${thread?.id ?? ""}`} project={project} thread={thread} threads={all.filter(item => item.projectId === project.id)} openThread={select} openVariant={branch => {const existing = all.filter(item => item.projectId === project.id && item.branch === branch).sort((a, b) => recent(b).localeCompare(recent(a)))[0]; if (existing) select(existing); else create.mutate({projectId: project.id, branch});}} t={t} navigation={navigation} section={section} setSection={setSection} newThread={input => create.mutate({projectId: project.id, ...input})} />
       : <ProjectPage title={t.studio} navigation={navigation}><div className="m-auto grid max-w-sm gap-4 p-6 text-center text-ui"><p>{studio.isPending || threads.isPending ? t.loading : all.length ? t.selectThread : t.noProjects}</p><Button disabled={studio.isPending} onClick={openNewProject}>{t.newProject}</Button><Button variant="outline" onClick={() => setImportOpen(true)}>{t.restore}</Button></div></ProjectPage>}
   </ProjectLayout></div>
@@ -166,14 +172,9 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
       {createClientMutation.error && <StudioFailure className="text-destructive" error={createClientMutation.error} />}<Button type="submit" disabled={createClientMutation.isPending}>{createClientMutation.isPending ? t.loading : t.newClient}</Button></form></DialogContent></Dialog>
   </>;
 }
-function StudioFooter({t, locale, changeLocale, restore}: {t: Copy; locale: Locale; changeLocale: (locale: Locale) => void; restore: () => void}) {
-  const {theme, setTheme} = useTheme();
+function StudioFooter({t, settingsOpen}: {t: Copy; settingsOpen: boolean}) {
   return <div className="flex items-center gap-1 pt-2">
-    <DropdownMenu><DropdownMenuTrigger aria-label={t.settings} title={t.settings} className={projectIconButton}><SettingsIcon /></DropdownMenuTrigger><DropdownMenuContent side="top" align="start" className="w-56">
-      <DropdownMenuSub><DropdownMenuSubTrigger><LanguagesIcon /><span className="flex-1">{t.language}</span><span className="text-xs text-muted-foreground">{languageNames[locale]}</span></DropdownMenuSubTrigger><DropdownMenuSubContent className="w-44"><DropdownMenuRadioGroup value={locale} onValueChange={value => changeLocale(value as Locale)}>{(Object.keys(languageNames) as Locale[]).map(value => <DropdownMenuRadioItem closeOnClick key={value} value={value} className="studio-choice" lang={value}>{languageNames[value]}</DropdownMenuRadioItem>)}</DropdownMenuRadioGroup></DropdownMenuSubContent></DropdownMenuSub>
-      <DropdownMenuSub><DropdownMenuSubTrigger><PaletteIcon /><span className="flex-1">{t.appearance}</span><span className="text-xs text-muted-foreground">{t[theme]}</span></DropdownMenuSubTrigger><DropdownMenuSubContent className="w-44"><DropdownMenuRadioGroup value={theme} onValueChange={value => setTheme(value as "system" | "light" | "dark")}>{(["system", "light", "dark"] as const).map(value => <DropdownMenuRadioItem closeOnClick key={value} value={value} className="studio-choice">{t[value]}</DropdownMenuRadioItem>)}</DropdownMenuRadioGroup></DropdownMenuSubContent></DropdownMenuSub>
-      <DropdownMenuSeparator /><DropdownMenuItem onClick={restore}>{t.restore}</DropdownMenuItem>
-    </DropdownMenuContent></DropdownMenu>
+    <button type="button" aria-label={t.settings} title={`${t.settings} (${navigator.platform.startsWith("Mac") ? "⌘," : "Ctrl+,"})`} data-active={settingsOpen || undefined} className={projectIconButton} onClick={() => settingsOpen ? closeSettings() : openSettings()}><SettingsIcon /></button>
     <div className="flex-1" /><DesktopUpdates t={t} />
   </div>;
 }

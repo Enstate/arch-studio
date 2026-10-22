@@ -22,6 +22,13 @@ the first install. Updates work the same way, with **Check for Updates** in the
 window menu.
 The older v0.1.0–v0.1.2 releases contain source packages only.
 
+Open **Settings** from the gear in the sidebar or with Cmd/Ctrl+, to change the
+language and appearance, and to check Claude Code and Codex under **Agents**. That
+page shows whether each one is installed and signed in, with which plan, and gives
+the command to install it or sign in when something is missing. On Windows,
+npm installs of both CLIs work, and Claude Code also needs
+[Git for Windows](https://git-scm.com/downloads/win).
+
 To run from source:
 
 Install [Bun 1.4.3 or newer](https://bun.sh), then:

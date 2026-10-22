@@ -8,13 +8,31 @@ export type AgentModelSetting =
   | { id: string; label: string; type: "select"; options: AgentModelOption[] }
   | { id: string; label: string; type: "boolean"; currentValue?: boolean };
 export type AgentModel = { id: string; label: string; legacy: boolean; settings: AgentModelSetting[] };
+/** How the local CLI signs in. Plans keep the provider's own IDs, such as "max" or "plus". */
+export type AgentAccount =
+  | { kind: "subscription"; plan: string | null; email: string | null }
+  | { kind: "api-key" }
+  | { kind: "cloud"; service: string };
+/**
+ * Why a provider can't run. not-installed: no CLI on PATH. launcher-only: a Windows
+ * launcher without its native executable. signed-out: the CLI reports no login.
+ * unverified: sign-in could not be confirmed. failed: the CLI did not respond.
+ */
+export type AgentProviderIssue = "not-installed" | "launcher-only" | "signed-out" | "unverified" | "failed";
+/** git-bash-missing: Claude Code on Windows runs shell commands through Git Bash. */
+export type AgentProviderWarning = "git-bash-missing";
 export type AgentProviderStatus = {
   provider: AgentProvider;
   installed: boolean;
   authenticated: boolean | null;
   version: string | null;
+  /** The resolved CLI file, shown so people can tell which install Studio uses. */
+  executable: string | null;
+  account: AgentAccount | null;
+  issue: AgentProviderIssue | null;
+  warnings: AgentProviderWarning[];
   models: AgentModel[];
-  message: string | null;
+  checkedAt: string;
 };
 export type AgentTurnInput = {
   provider: AgentProvider;

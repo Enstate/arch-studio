@@ -27,6 +27,11 @@ contextBridge.exposeInMainWorld('archDesktop', {
   checkForUpdate: () => ipcRenderer.invoke('desktop:update-check'),
   downloadUpdate: () => ipcRenderer.invoke('desktop:update-download'),
   installUpdate: () => ipcRenderer.invoke('desktop:update-install'),
+  onOpenSettings: listener => {
+    const receive = () => listener();
+    ipcRenderer.on('desktop:open-settings', receive);
+    return () => ipcRenderer.removeListener('desktop:open-settings', receive);
+  },
   onUpdateState: listener => {
     const receive = (_event, state) => listener(state);
     ipcRenderer.on('desktop:update-state', receive);
