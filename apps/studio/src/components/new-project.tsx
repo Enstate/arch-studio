@@ -12,7 +12,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileIcon, XIcon } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "@arch/ui/components/sonner";
-import { agentProviders, createProject, grantBuilds, startRound } from "../lib/server";
+import { createProject, grantBuilds, startRound } from "../lib/server";
+import { agentProvidersQuery, agentRunnable, useDisabledAgents } from "../lib/settings";
 import type { StudioClient } from "../lib/model";
 import type { studioText } from "../lib/messages";
 import { useStudioFormat, useStudioLocale } from "../lib/locale";
@@ -30,8 +31,9 @@ export function NewProject({open, setOpen, clients, defaultClientId, created, t}
   const input = useRef<HTMLInputElement>(null);
   const [references, setReferences] = useState<File[]>([]);
   const [dragging, setDragging] = useState(false);
-  const providers = useQuery({queryKey: ["studio-agent-providers"], queryFn: () => agentProviders(), staleTime: 30_000, enabled: open});
-  const agent = providers.data?.find(item => item.installed && item.authenticated !== false && item.models.length);
+  const providers = useQuery({...agentProvidersQuery, enabled: open});
+  const {disabled} = useDisabledAgents();
+  const agent = providers.data?.find(item => !disabled.includes(item.provider) && agentRunnable(item));
   const create = useMutation({
     mutationFn: async (values: {name: string; client: string; clientName: string; brief: string; startIntake: boolean}) => {
       const data = new FormData();

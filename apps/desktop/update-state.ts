@@ -14,6 +14,8 @@ export interface DesktopBridge {
   downloadUpdate(): Promise<DesktopUpdate>;
   installUpdate(): Promise<DesktopUpdate>;
   onUpdateState(listener: (state: DesktopUpdate) => void): () => void;
+  /** The app menu's Settings item. Optional for builds that predate it. */
+  onOpenSettings?(listener: () => void): () => void;
 }
 
 declare global {

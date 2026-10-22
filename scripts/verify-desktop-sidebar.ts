@@ -35,11 +35,13 @@ async function verifyLanguages(page:Page){
  let previous:'en'|'de'|'es'|'pt'='en';
  for(const locale of ['de','es','pt'] as const){
    await page.getByRole('button',{name:studioText[previous].settings,exact:true}).click();
-   await page.getByRole('menuitem',{name:new RegExp(`^${studioText[previous].language}`)}).press('ArrowRight');
-   assert.equal(await page.getByRole('menuitemradio',{name:names[previous],exact:true}).getAttribute('aria-checked'),'true');
+   const select=page.getByRole('combobox',{name:studioText[previous].language,exact:true});
+   assert.match(await select.innerText(),new RegExp(names[previous]));
+   await select.click();
    if(previous==='de'){await mkdir(evidence,{recursive:true});await page.screenshot({path:join(evidence,'language-menu.png'),scale:'device',animations:'disabled'});}
-   const choice=page.getByRole('menuitemradio',{name:names[locale],exact:true});
-   await choice.press('Enter');await choice.waitFor({state:'hidden'});
+   const choice=page.getByRole('option',{name:names[locale],exact:true});
+   await choice.click();await choice.waitFor({state:'hidden'});
+   // Reloading leaves Settings and returns to the project.
    await page.reload();
    await page.getByRole('button',{name:studioText[locale].settings,exact:true}).waitFor();
    await page.getByRole('button',{name:`${studioText[locale].newThread}, Sample house`,exact:true}).waitFor();
@@ -58,9 +60,9 @@ async function verifyLanguages(page:Page){
    previous=locale;
  }
  await page.getByRole('button',{name:studioText[previous].settings,exact:true}).click();
- await page.getByRole('menuitem',{name:new RegExp(`^${studioText[previous].language}`)}).press('ArrowRight');
- await page.getByRole('menuitemradio',{name:names.en,exact:true}).press('Enter');
- await page.getByRole('button',{name:studioText.en.settings,exact:true}).waitFor();
+ await page.getByRole('combobox',{name:studioText[previous].language,exact:true}).click();
+ await page.getByRole('option',{name:names.en,exact:true}).click();
+ await page.getByRole('combobox',{name:studioText.en.language,exact:true}).waitFor();
  console.log('PASS German, Spanish and Portuguese selection, persistence, native menu, translated project dialogs and close labels');
 }
 try{
@@ -172,27 +174,34 @@ try{
  await page.getByRole('button',{name:studioText.en.filterProjects,exact:true}).click();
  await page.getByRole('menuitem',{name:studioText.en.allProjects,exact:true}).click();
  await mkdir(evidence,{recursive:true});
- const settings=()=>page.getByRole('button',{name:/^(Settings|Einstellungen|Configuración|Configurações)$/,exact:true});
- async function preference(name:RegExp){
-   await settings().click();
-   await page.getByRole('menuitem',{name,exact:false}).click();
- }
+ const sections=()=>page.getByRole('navigation',{name:studioText.en.settingsSections,exact:true});
  await verifyLanguages(page);
- await preference(/^Appearance/);
- const light=page.getByRole('menuitemradio',{name:'Light',exact:true});
- await light.click();await light.waitFor({state:'hidden'});
+ // Languages leave Settings open on General. Appearance is its own section.
+ await sections().getByRole('button',{name:studioText.en.appearance,exact:true}).click();
+ const light=page.getByRole('button',{name:studioText.en.light,exact:true});
+ await light.click();
  assert.equal(await page.locator('html').evaluate(x=>x.classList.contains('dark')),false);
- await preference(/^Appearance/);
- assert.equal(await light.getAttribute('aria-checked'),'true');
+ assert.equal(await light.getAttribute('aria-pressed'),'true');
  await page.screenshot({path:join(evidence,'preferences-light.png'),scale:'device',animations:'disabled'});
- const dark=page.getByRole('menuitemradio',{name:'Dark',exact:true});
- await dark.click();await dark.waitFor({state:'hidden'});
- await preference(/^Appearance/);
- assert.equal(await dark.getAttribute('aria-checked'),'true');
- await dark.focus();await page.keyboard.press('ArrowDown');await page.keyboard.press('ArrowUp');
- assert.equal(await dark.evaluate(x=>getComputedStyle(x).outlineWidth),'2px','Checked choice needs keyboard focus');
+ const dark=page.getByRole('button',{name:studioText.en.dark,exact:true});
+ await dark.click();
+ assert.equal(await dark.getAttribute('aria-pressed'),'true');
+ await light.focus();await page.keyboard.press('Tab');
+ assert.notEqual(await dark.evaluate(x=>getComputedStyle(x).boxShadow),'none','Keyboard focus needs a visible ring');
  await page.screenshot({path:join(evidence,'preferences-dark.png'),scale:'device',animations:'disabled'});
- await page.keyboard.press('Escape');await page.keyboard.press('Escape');
+ // Agents list both CLIs with a status, whatever is installed on this Mac.
+ await sections().getByRole('button',{name:studioText.en.agents,exact:true}).click();
+ for(const name of ['Claude Code','Codex'])await page.getByRole('switch',{name:`Use ${name}`,exact:true}).waitFor();
+ await page.getByRole('button',{name:/^(Checked|Check again)/}).waitFor({timeout:60000});
+ await page.screenshot({path:join(evidence,'settings-agents.png'),scale:'device',animations:'disabled'});
+ await sections().getByRole('button',{name:studioText.en.back,exact:true}).click();
+ await sections().waitFor({state:'hidden'});
+ // The app menu's Settings item reaches the renderer through the preload bridge.
+ await electron.evaluate(({Menu})=>Menu.getApplicationMenu()!.items[0]!.submenu!.items.find(item=>item.label==='Settings…')!.click());
+ await sections().waitFor();
+ await page.keyboard.press('Escape');
+ await sections().waitFor({state:'hidden'});
+ console.log('PASS settings page: language, appearance, agents, menu item and Escape');
  await page.locator('[data-studio-view="preview"]:visible').click();
  await page.locator('[data-studio-preview="ready"]').waitFor({timeout:120000});
  await page.getByRole('button',{name:'Updates',exact:true}).click();
