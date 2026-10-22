@@ -2,7 +2,9 @@
   <!-- Generated from ARCH_MARK and ARCH_MARK_VIEWBOX in packages/ui/src/components/arch-logo.tsx.
        That component is the authoritative vector. Convert this SVG to icon.png with
        macOS sips -s format png. Resize that PNG with sips -z into the standard
-       16, 32, 128, 256 and 512 point iconset at 1x and 2x, then use iconutil -c icns. -->
+       16, 32, 128, 256 and 512 point iconset at 1x and 2x, then use iconutil -c icns.
+       The Windows ICO packs PNG frames resized with sips -z to 16, 32, 48, 64, 128 and 256.
+       Each directory entry uses one plane and 32 bits per pixel; the 256 dimension is encoded as zero. -->
   <rect x="100" y="100" width="824" height="824" rx="185" fill="#fafafa"/>
   <svg x="248" y="299.6" width="528" height="424.8" viewBox="0 186 440 354">
     <path fill="#000" d="M189.995 194.506C191.869 192.164 194.245 190.273 196.949 188.974C199.652 187.675 202.613 187 205.612 187H288C293.304 187 298.391 189.107 302.142 192.858C305.893 196.609 308 201.696 308 207V331C308 337.365 310.529 343.47 315.029 347.971C319.53 352.471 325.635 355 332 355H420C425.304 355 430.391 357.107 434.142 360.858C437.893 364.609 440 369.696 440 375V519C440 524.304 437.893 529.391 434.142 533.142C430.391 536.893 425.304 539 420 539H340C319.844 539 300.513 530.993 286.26 516.74C272.007 502.487 264 483.156 264 463V412.016C264 407.871 262.713 403.829 260.316 400.449C257.919 397.068 254.531 394.515 250.62 393.143C246.71 391.771 242.469 391.648 238.486 392.791C234.502 393.934 230.972 396.286 228.383 399.522L122.805 531.494C120.931 533.836 118.555 535.727 115.851 537.026C113.148 538.325 110.187 539 107.188 539H20C14.6957 539 9.60859 536.893 5.85786 533.142C2.10714 529.391 0 524.304 0 519L0 439.016C2.75179e-05 434.474 1.54571 430.068 4.3828 426.522L189.995 194.506Z"/>

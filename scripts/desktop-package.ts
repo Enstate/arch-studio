@@ -110,7 +110,7 @@ const config: Configuration = {
     binaries: ['Contents/Resources/bun', 'Contents/Resources/arch-server'],
     category: 'public.app-category.graphics-design',
   },
-  win: { target: 'nsis' },
+  win: { icon: join(root, 'apps/desktop/icon.ico'), target: 'nsis' },
   // biome-ignore lint/suspicious/noTemplateCurlyInString: electron-builder expands these placeholders.
   nsis: { artifactName: 'Arch-Studio-Setup-${version}-windows-${arch}.${ext}', oneClick: true, perMachine: false },
 };
