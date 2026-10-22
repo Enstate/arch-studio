@@ -1,37 +1,95 @@
 /** Native sidebar checks against a local preview bundle. Never uses an existing store. */
 import assert from 'node:assert/strict';
-import {mkdtemp, realpath, mkdir, rm, writeFile, access} from 'node:fs/promises';
+import {mkdtemp, realpath, mkdir, rm, writeFile, access, readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {_electron} from 'playwright-core';
+import {_electron,type Page} from 'playwright-core';
 import type {} from '../apps/desktop/update-state';
+import {studioText} from '../apps/studio/src/lib/messages';
 
 if(process.platform!=='darwin')throw new Error('Native sidebar verification requires macOS.');
 const root=fileURLToPath(new URL('..',import.meta.url));
 const temporary=await realpath(await mkdtemp(join(tmpdir(),'arch-sidebar-')));
 const home=join(temporary,'store');
-const application=process.argv[2]??join(root,`artifacts/arch-studio-darwin-${process.arch}-preview/mac${process.arch==='arm64'?'-arm64':''}/Arch Studio.app`);
+const languageOnly=process.argv.includes('--languages');
+const application=process.argv.slice(2).find(argument=>!argument.startsWith('--'))??join(root,`artifacts/arch-studio-darwin-${process.arch}-preview/mac${process.arch==='arm64'?'-arm64':''}/Arch Studio.app`);
 const evidence=join(root,'evidence/native-sidebar');
 const env=Object.fromEntries(Object.entries({...process.env,ARCH_HOME:home}).filter((entry):entry is [string,string]=>entry[1]!==undefined));
 delete env.ELECTRON_RUN_AS_NODE;
 const demo=spawnSync(process.execPath,['scripts/demo.ts'],{cwd:root,env,encoding:'utf8'});
 assert.equal(demo.status,0,demo.stderr);
 let origin:string|undefined;
+const iconMetadata=spawnSync('/usr/libexec/PlistBuddy',['-c','Print :CFBundleIconFile',join(application,'Contents/Info.plist')],{encoding:'utf8'});
+assert.equal(iconMetadata.status,0,iconMetadata.stderr);
+const iconName=iconMetadata.stdout.trim();
+assert.deepEqual(await readFile(join(application,'Contents/Resources',iconName.endsWith('.icns')?iconName:`${iconName}.icns`)),await readFile(join(root,'apps/desktop/icon.icns')),'Packaged app must contain the Arch icon');
+await mkdir(evidence,{recursive:true});
+const iconPreview=spawnSync('/usr/bin/sips',['-s','format','png',join(application,'Contents/Resources',iconName.endsWith('.icns')?iconName:`${iconName}.icns`),'--out',join(evidence,'app-icon.png')],{encoding:'utf8'});
+assert.equal(iconPreview.status,0,iconPreview.stderr);
+console.log('PASS packaged Arch app icon matches the source icon');
 const electron=await _electron.launch({executablePath:join(application,'Contents/MacOS/Arch Studio'),args:[`--user-data-dir=${join(temporary,'profile')}`],env});
+async function verifyLanguages(page:Page){
+ const names={en:'English',de:'Deutsch',es:'Español',pt:'Português do Brasil'};
+ let previous:'en'|'de'|'es'|'pt'='en';
+ for(const locale of ['de','es','pt'] as const){
+   await page.getByRole('button',{name:studioText[previous].settings,exact:true}).click();
+   await page.getByRole('menuitem',{name:new RegExp(`^${studioText[previous].language}`)}).press('ArrowRight');
+   assert.equal(await page.getByRole('menuitemradio',{name:names[previous],exact:true}).getAttribute('aria-checked'),'true');
+   if(previous==='de'){await mkdir(evidence,{recursive:true});await page.screenshot({path:join(evidence,'language-menu.png'),scale:'device',animations:'disabled'});}
+   const choice=page.getByRole('menuitemradio',{name:names[locale],exact:true});
+   await choice.press('Enter');await choice.waitFor({state:'hidden'});
+   await page.reload();
+   await page.getByRole('button',{name:studioText[locale].settings,exact:true}).waitFor();
+   await page.getByRole('button',{name:`${studioText[locale].newThread}, Sample house`,exact:true}).waitFor();
+   assert.equal(await page.locator('html').getAttribute('lang'),locale);
+   const updateLabel=await electron.evaluate(({Menu})=>Menu.getApplicationMenu()!.items[0]!.submenu!.items[1]!.label);
+   assert.equal(updateLabel,`${studioText[locale].checkUpdates}…`);
+   await page.getByRole('button',{name:studioText[locale].newProject,exact:true}).first().click();
+   const dialog=page.getByRole('dialog');
+   await dialog.getByText(studioText[locale].newProjectHint,{exact:true}).waitFor();
+   await dialog.getByRole('button',{name:studioText[locale].close,exact:true}).waitFor();
+   assert.ok(await dialog.evaluate(node=>node.scrollWidth<=node.clientWidth),'Translated dialog must fit its width');
+   await mkdir(evidence,{recursive:true});
+   await page.screenshot({path:join(evidence,`language-${locale}.png`),scale:'device',animations:'disabled'});
+   await dialog.getByRole('button',{name:studioText[locale].close,exact:true}).click();
+   await dialog.waitFor({state:'hidden'});
+   previous=locale;
+ }
+ await page.getByRole('button',{name:studioText[previous].settings,exact:true}).click();
+ await page.getByRole('menuitem',{name:new RegExp(`^${studioText[previous].language}`)}).press('ArrowRight');
+ await page.getByRole('menuitemradio',{name:names.en,exact:true}).press('Enter');
+ await page.getByRole('button',{name:studioText.en.settings,exact:true}).waitFor();
+ console.log('PASS German, Spanish and Portuguese selection, persistence, native menu, translated project dialogs and close labels');
+}
 try{
  const page=await electron.firstWindow();page.setDefaultTimeout(20000);
+ await mkdir(evidence,{recursive:true});
+
+ page.on('console',message=>{if(['error','warning'].includes(message.type()))console.error('Studio console:',message.text().replace(/https?:\/\/[^\s]+/g,'[URL]'));});
+ page.on('requestfailed',request=>console.error('Studio request failed:',new URL(request.url()).pathname.replace(/\/[a-f0-9]{64}/g,'/[redacted]'),request.failure()?.errorText));
+ page.on('pageerror',error=>console.error('Studio page error:',error.message.replace(/https?:\/\/[^\s]+/g,'[URL]')));
  // The sidebar lists threads; the demo project opens with one.
- const thread=()=>page.getByRole('button',{name:'New thread, Sample house',exact:true});
+ const thread=()=>page.getByRole('button',{name:`${studioText.en.newThread}, Sample house`,exact:true});
  await thread().waitFor();
  origin=new URL(page.url()).origin;
  await page.context().addCookies([{name:'arch-locale',value:'en',url:origin}]);
  await page.evaluate(()=>localStorage.setItem('arch-theme','dark'));
  await page.reload();
+ if(languageOnly){
+   await verifyLanguages(page);
+   await page.context().addCookies([{name:'arch-locale',value:'de',url:origin}]);
+   await page.evaluate(()=>sessionStorage.removeItem('arch-studio-session'));
+   await page.reload();
+   await page.getByText(studioText.de.sessionRequired,{exact:true}).waitFor();
+   await page.screenshot({path:join(evidence,'session-required-de.png'),scale:'device',animations:'disabled'});
+   console.log('PASS localized session recovery without a Studio bearer');
+ }else{
  // Projects open on Rounds. The harness checks the model view.
  await page.locator('[data-studio-view="preview"]:visible').click();
- await page.locator('[data-studio-preview="ready"]').waitFor({timeout:120000});
+ await page.locator('[data-studio-preview="ready"], [data-studio-preview] [role="alert"]').waitFor({timeout:120000});
+ assert.equal(await page.locator('[data-studio-preview]').getAttribute('data-studio-preview'),'ready','The 3D preview must load');
  await page.getByRole('progressbar').waitFor({state:'hidden'});
  assert.equal(await page.locator('html').getAttribute('data-arch-platform'),'darwin');
  // Holding the right button in 3D captures the mouse for free look; the shell grants only that permission.
@@ -94,7 +152,7 @@ try{
  assert.equal(native.content.height,native.bounds.height,'Native title bar must not consume a separate row');
  assert.equal(await page.evaluate(()=>devicePixelRatio),native.dpr);
  assert.equal(await page.locator('.studio-titlebar').evaluate(x=>x.getBoundingClientRect().height),52);
- const toggle=page.getByRole('button',{name:'Hide sidebar',exact:true});
+ const toggle=page.getByRole('button',{name:studioText.en.hideSidebar,exact:true});
  assert.ok((await toggle.boundingBox())!.x>=80,'Sidebar toggle overlaps traffic lights');
  assert.equal(await toggle.evaluate(x=>getComputedStyle(x).getPropertyValue('-webkit-app-region')),'no-drag');
  assert.equal(await page.getByRole('heading',{name:'Projects',exact:true}).count(),0);
@@ -104,30 +162,22 @@ try{
  assert.notEqual(await selectedThread.evaluate(x=>getComputedStyle(x).boxShadow),'none','Selected thread needs keyboard focus');
  await page.keyboard.press('Meta+b');
  await page.locator('[data-sidebar="closed"]').waitFor();
- assert.ok((await page.getByRole('button',{name:'Open menu',exact:true}).boundingBox())!.x>=80,'Collapsed navigation overlaps traffic lights');
+ assert.ok((await page.getByRole('button',{name:studioText.en.openMenu,exact:true}).boundingBox())!.x>=80,'Collapsed navigation overlaps traffic lights');
  await page.keyboard.press('Meta+b');await page.locator('[data-sidebar="open"]').waitFor();
- await page.getByRole('button',{name:'Filter projects',exact:true}).click();
+ await page.getByRole('button',{name:studioText.en.filterProjects,exact:true}).click();
  const filter=page.getByRole('menuitem',{name:'Sample house',exact:true});
  await filter.waitFor();
  assert.equal(await filter.locator('span.truncate').evaluate(x=>getComputedStyle(x).whiteSpace),'nowrap');
  await filter.click();await thread().waitFor();
- await page.getByRole('button',{name:'Filter projects',exact:true}).click();
- await page.getByRole('menuitem',{name:'All projects',exact:true}).click();
+ await page.getByRole('button',{name:studioText.en.filterProjects,exact:true}).click();
+ await page.getByRole('menuitem',{name:studioText.en.allProjects,exact:true}).click();
  await mkdir(evidence,{recursive:true});
- const settings=()=>page.getByRole('button',{name:/^(Settings|Einstellungen)$/,exact:true});
+ const settings=()=>page.getByRole('button',{name:/^(Settings|Einstellungen|Configuración|Configurações)$/,exact:true});
  async function preference(name:RegExp){
    await settings().click();
    await page.getByRole('menuitem',{name,exact:false}).click();
  }
- await preference(/^Language/);
- assert.equal(await page.getByRole('menuitemradio',{name:'English',exact:true}).getAttribute('aria-checked'),'true');
- const german=page.getByRole('menuitemradio',{name:'Deutsch',exact:true});
- await german.click();await german.waitFor({state:'hidden'});
- await page.reload();await page.getByRole('button',{name:'Einstellungen',exact:true}).waitFor();
- assert.equal(await page.locator('html').getAttribute('lang'),'de');
- await preference(/^Sprache/);
- const english=page.getByRole('menuitemradio',{name:'English',exact:true});
- await english.click();await english.waitFor({state:'hidden'});
+ await verifyLanguages(page);
  await preference(/^Appearance/);
  const light=page.getByRole('menuitemradio',{name:'Light',exact:true});
  await light.click();await light.waitFor({state:'hidden'});
@@ -146,7 +196,7 @@ try{
  await page.locator('[data-studio-view="preview"]:visible').click();
  await page.locator('[data-studio-preview="ready"]').waitFor({timeout:120000});
  await page.getByRole('button',{name:'Updates',exact:true}).click();
- await page.getByText('Updates are available in installed release builds.',{exact:true}).last().waitFor();
+ await page.getByText(studioText.en.updateDisabled,{exact:true}).last().waitFor();
  await page.locator('[data-slot="popover-content"]').waitFor();
  assert.equal(await page.getByRole('alert').count(),0,'Preview updater is disabled, not failed');
  await page.keyboard.press('Escape');
@@ -162,15 +212,15 @@ try{
  await page.locator('html[data-arch-fullscreen="false"]').waitFor();
  // The sidebar is portaled outside .studio-shell below 768px.
  await electron.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0]!.setSize(700,800));
- await page.getByRole('button',{name:'Open menu',exact:true}).click();
+ await page.getByRole('button',{name:studioText.en.openMenu,exact:true}).click();
  const sheet=page.getByRole('dialog');await sheet.waitFor();
- const sheetToggle=sheet.getByRole('button',{name:'Hide sidebar',exact:true});
+ const sheetToggle=sheet.getByRole('button',{name:studioText.en.hideSidebar,exact:true});
  assert.equal(await sheetToggle.evaluate(x=>getComputedStyle(x).getPropertyValue('-webkit-app-region')),'no-drag');
  await sheetToggle.click({trial:true}); // Wait for the sheet entrance transition to settle.
  assert.ok((await sheetToggle.boundingBox())!.x>=80,'Portaled sidebar overlaps traffic lights');
  await sheetToggle.click();await sheet.waitFor({state:'hidden'});
  await electron.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0]!.setSize(1440,960));
- await page.getByRole('button',{name:'Hide sidebar',exact:true}).waitFor();
+ await page.getByRole('button',{name:studioText.en.hideSidebar,exact:true}).waitFor();
  await page.locator('[data-studio-preview="ready"]').waitFor({timeout:120000});
  await page.getByRole('progressbar').waitFor({state:'hidden'});
  await mkdir(evidence,{recursive:true});
@@ -184,6 +234,17 @@ try{
    while(Date.now()<deadline){if(await access(captured).then(()=>true,()=>false))break;await new Promise(resolve=>setTimeout(resolve,250));}
    await rm(ready,{force:true});
  }
+}
+}catch(error){
+ const page=electron.windows()[0];
+ if(page){
+   await mkdir(evidence,{recursive:true});
+   await page.screenshot({path:join(evidence,'failure.png'),scale:'device',animations:'disabled'}).catch(()=>{});
+   const state={text:await page.locator('body').innerText().catch(()=>''),preview:await page.locator('[data-studio-preview]').getAttribute('data-studio-preview').catch(()=>null)};
+   await writeFile(join(evidence,'failure.json'),JSON.stringify(state,null,2));
+   console.error('Studio failure state:',JSON.stringify(state));
+ }
+ throw error;
 }finally{
  await electron.close();
  if(origin){for(let index=0;index<30;index++){try{await fetch(origin);}catch{break;}await new Promise(resolve=>setTimeout(resolve,100));}await assert.rejects(fetch(origin));}

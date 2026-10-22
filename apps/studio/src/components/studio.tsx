@@ -1,3 +1,6 @@
+import { threadTitle } from "../lib/thread-title";
+import { StudioFailure } from "./studio-failure";
+import { studioFailure } from "../lib/studio-errors";
 import type { ReviewNote } from "@arch/project";
 import { ArchMark } from "@arch/ui/components/arch-logo";
 import { Button } from "@arch/ui/components/button";
@@ -21,7 +24,7 @@ import { type ReactNode, useCallback, useId, useRef, useState } from "react";
 import { revealInFolder, brief, buildGrant, buildVersion, catalog, projectEdits, saveEdits, createClient, createThread, threadList, updateThread, grantBuilds, handoff, makePrimary, openProjectFolder, openVersion, projectDetails, restoreSource, revokeBuilds, saveNote } from "../lib/server";
 import { VIEWER_MISMATCH, type StudioProjectSummary, type StudioThread, type StudioVersion } from "../lib/model";
 import { type Locale, studioText } from "../lib/messages";
-import { useStudioLocale } from "../lib/locale";
+import { languageNames, useStudioFormat, useStudioLocale } from "../lib/locale";
 import { SourceSetup } from "./source-setup";
 import { IntakeOverview, WorkPlan } from "./intake-overview";
 import { AddFiles, ProjectFiles, projectFiles } from "./project-files";
@@ -106,7 +109,7 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
   // A plain letter would fire while moving around the 3D view with the keyboard, creating stray threads.
   useHotkey("mod+shift+o", event => {if (!(event.target instanceof Element && event.target.closest("[role=dialog],[role=menu],[role=listbox]"))) {if (targetProject) newThread(targetProject); else openNewProject();}});
   const query = search.trim().toLocaleLowerCase();
-  const visible = all.filter(item => (filter.kind === "all" || (filter.kind === "client" ? item.clientId === filter.id : item.projectId === filter.id)) && (!query || `${item.title} ${item.projectName} ${item.clientName}`.toLocaleLowerCase().includes(query)));
+  const visible = all.filter(item => (filter.kind === "all" || (filter.kind === "client" ? item.clientId === filter.id : item.projectId === filter.id)) && (!query || `${threadTitle(item.title, t)} ${item.projectName} ${item.clientName}`.toLocaleLowerCase().includes(query)));
   const unconnected = (data?.projects ?? []).filter(item => !item.sourceId && (filter.kind === "all" || (filter.kind === "client" ? item.clientId === filter.id : item.id === filter.id)) && (!query || item.name.toLocaleLowerCase().includes(query)));
   const filterLabel = filter.kind === "all" ? t.allProjects : filter.kind === "client" ? data?.clients.find(item => item.id === filter.id)?.name ?? t.allProjects : data?.projects.find(item => item.id === filter.id)?.name ?? t.allProjects;
   const sourceProjects = (data?.projects ?? []).filter(item => item.sourceId);
@@ -137,8 +140,8 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
       <button type="button" className={projectIconButton} aria-label={t.openProjectFolder} title={t.openProjectFolder} disabled={choosingFolder || openFolder.isPending} onClick={() => {setMobileOpen(false); void chooseFolder();}}><FolderOpenIcon /></button>
       <button type="button" className={projectIconButton} aria-label={t.newProject} title={t.newProject} onClick={openNewProject}><FolderPlusIcon /></button>
     </div>
-    {(folderOpen ? undefined : openFolder.error?.message ?? (folderError ? t.error : undefined)) && <p role="alert" className="px-2 py-1 text-xs text-destructive">{openFolder.error?.message ?? t.error}</p>}
-    {create.error && <p role="alert" className="px-2 py-1 text-xs text-destructive">{create.error.message}</p>}
+    {!folderOpen && (openFolder.error ? <StudioFailure className="px-2 py-1 text-xs text-destructive" error={openFolder.error} /> : folderError && <p role="alert" className="px-2 py-1 text-xs text-destructive">{t.error}</p>)}
+    {create.error && <StudioFailure className="px-2 py-1 text-xs text-destructive" error={create.error} />}
     <nav className="mt-1 min-h-0 flex-1 overflow-y-auto" aria-label={t.threads}>
       <ThreadList threads={visible} selectedId={thread?.id} select={select} act={handle} now={now} t={t} />
       {!!unconnected.length && <>
@@ -157,17 +160,17 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
   </ProjectLayout></div>
     <NewProject open={newProjectOpen} setOpen={setNewProjectOpen} clients={data?.clients ?? []} defaultClientId={filter.kind === "client" ? filter.id : project?.clientId} created={value => {void queryClient.invalidateQueries({queryKey: ["studio-threads"]}); setSelection({projectId: value.projectId});}} t={t} />
     <Dialog open={importOpen} onOpenChange={setImportOpen}><DialogContent><DialogHeader><DialogTitle>{t.restore}</DialogTitle></DialogHeader><Handoff t={t} /></DialogContent></Dialog>
-    <Dialog open={folderOpen} onOpenChange={open => {setFolderOpen(open); if (!open) openFolder.reset();}}><DialogContent><DialogHeader><DialogTitle>{t.openProjectFolder}</DialogTitle><DialogDescription>{t.inspectSource}</DialogDescription></DialogHeader><form autoComplete="off" className="grid gap-4" onSubmit={event => {event.preventDefault(); if (!openFolder.isPending) openFolder.mutate(directory);}}><Field><FieldLabel htmlFor="studio-open-folder">{t.folder}</FieldLabel><Input id="studio-open-folder" value={directory} onChange={event => setDirectory(event.target.value)} required maxLength={4096} disabled={openFolder.isPending} autoComplete="off" /></Field>{openFolder.error && <p role="alert" className="text-destructive">{openFolder.error.message}</p>}<Button type="submit" disabled={openFolder.isPending}>{openFolder.isPending ? t.loading : t.register}</Button></form></DialogContent></Dialog>
+    <Dialog open={folderOpen} onOpenChange={open => {setFolderOpen(open); if (!open) openFolder.reset();}}><DialogContent><DialogHeader><DialogTitle>{t.openProjectFolder}</DialogTitle><DialogDescription>{t.inspectSource}</DialogDescription></DialogHeader><form autoComplete="off" className="grid gap-4" onSubmit={event => {event.preventDefault(); if (!openFolder.isPending) openFolder.mutate(directory);}}><Field><FieldLabel htmlFor="studio-open-folder">{t.folder}</FieldLabel><Input id="studio-open-folder" value={directory} onChange={event => setDirectory(event.target.value)} required maxLength={4096} disabled={openFolder.isPending} autoComplete="off" /></Field>{openFolder.error && <StudioFailure className="text-destructive" error={openFolder.error} />}<Button type="submit" disabled={openFolder.isPending}>{openFolder.isPending ? t.loading : t.register}</Button></form></DialogContent></Dialog>
     <Dialog open={creatingClient} onOpenChange={setCreatingClient}><DialogContent><DialogHeader><DialogTitle>{t.newClient}</DialogTitle></DialogHeader><form autoComplete="off" onSubmit={event => {event.preventDefault(); void clientForm.handleSubmit();}} className="grid gap-4 text-ui">
       <clientForm.Field name="name">{field => <Field className="gap-2"><FieldLabel htmlFor="studio-client-name" className="text-ui font-normal">{t.clientName}</FieldLabel><Input id="studio-client-name" name={field.name} value={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.value)} autoComplete="off" required maxLength={160} disabled={createClientMutation.isPending} /></Field>}</clientForm.Field>
-      {createClientMutation.error && <p role="alert" className="text-destructive">{createClientMutation.error.message}</p>}<Button type="submit" disabled={createClientMutation.isPending}>{createClientMutation.isPending ? t.loading : t.newClient}</Button></form></DialogContent></Dialog>
+      {createClientMutation.error && <StudioFailure className="text-destructive" error={createClientMutation.error} />}<Button type="submit" disabled={createClientMutation.isPending}>{createClientMutation.isPending ? t.loading : t.newClient}</Button></form></DialogContent></Dialog>
   </>;
 }
 function StudioFooter({t, locale, changeLocale, restore}: {t: Copy; locale: Locale; changeLocale: (locale: Locale) => void; restore: () => void}) {
   const {theme, setTheme} = useTheme();
   return <div className="flex items-center gap-1 pt-2">
     <DropdownMenu><DropdownMenuTrigger aria-label={t.settings} title={t.settings} className={projectIconButton}><SettingsIcon /></DropdownMenuTrigger><DropdownMenuContent side="top" align="start" className="w-56">
-      <DropdownMenuSub><DropdownMenuSubTrigger><LanguagesIcon /><span className="flex-1">{t.language}</span><span className="text-xs text-muted-foreground">{locale === "de" ? "Deutsch" : "English"}</span></DropdownMenuSubTrigger><DropdownMenuSubContent className="w-44"><DropdownMenuRadioGroup value={locale} onValueChange={value => changeLocale(value as Locale)}>{(["en", "de"] as const).map(value => <DropdownMenuRadioItem closeOnClick key={value} value={value} className="studio-choice" lang={value}>{value === "en" ? "English" : "Deutsch"}</DropdownMenuRadioItem>)}</DropdownMenuRadioGroup></DropdownMenuSubContent></DropdownMenuSub>
+      <DropdownMenuSub><DropdownMenuSubTrigger><LanguagesIcon /><span className="flex-1">{t.language}</span><span className="text-xs text-muted-foreground">{languageNames[locale]}</span></DropdownMenuSubTrigger><DropdownMenuSubContent className="w-44"><DropdownMenuRadioGroup value={locale} onValueChange={value => changeLocale(value as Locale)}>{(Object.keys(languageNames) as Locale[]).map(value => <DropdownMenuRadioItem closeOnClick key={value} value={value} className="studio-choice" lang={value}>{languageNames[value]}</DropdownMenuRadioItem>)}</DropdownMenuRadioGroup></DropdownMenuSubContent></DropdownMenuSub>
       <DropdownMenuSub><DropdownMenuSubTrigger><PaletteIcon /><span className="flex-1">{t.appearance}</span><span className="text-xs text-muted-foreground">{t[theme]}</span></DropdownMenuSubTrigger><DropdownMenuSubContent className="w-44"><DropdownMenuRadioGroup value={theme} onValueChange={value => setTheme(value as "system" | "light" | "dark")}>{(["system", "light", "dark"] as const).map(value => <DropdownMenuRadioItem closeOnClick key={value} value={value} className="studio-choice">{t[value]}</DropdownMenuRadioItem>)}</DropdownMenuRadioGroup></DropdownMenuSubContent></DropdownMenuSub>
       <DropdownMenuSeparator /><DropdownMenuItem onClick={restore}>{t.restore}</DropdownMenuItem>
     </DropdownMenuContent></DropdownMenu>
@@ -189,6 +192,7 @@ function ScrollPage({children}: {children: ReactNode}) {
 }
 function Project({project, thread, threads, openThread, openVariant, t, navigation, section, setSection, newThread}: {project: StudioProjectSummary; thread?: StudioThread; threads: StudioThread[]; openThread: (thread: StudioThread) => void; openVariant: (branch: string) => void; t: Copy; navigation: ReactNode; section: Section; setSection: (section: Section) => void; newThread: (input: {branch?: string; fromCheckpoint?: string}) => void}) {
   const queryClient = useQueryClient();
+  const {locale} = useStudioLocale();
   const details = useQuery({queryKey: ["studio-project", project.id], queryFn: () => projectDetails({data: {projectId: project.id}}), refetchInterval: 5000});
   const [versionId, setVersionId] = useState<string>();
   const [grantFor, setGrantFor] = useState<(() => void) | null>(null);
@@ -214,7 +218,11 @@ function Project({project, thread, threads, openThread, openVariant, t, navigati
   const catalog = useQuery({queryKey: ["viewer-catalog"], queryFn: () => fetch(`${ASSET_BASE}index.json`, {method: "HEAD"}).then(response => response.ok, () => false), staleTime: Infinity});
   const [drafted, setDrafted] = useState<string>();
   const storeHandEdits = async (next: PlanEdits) => {
-    await saveEdits({data: {projectId: project.id, branch: branch!.name, edits: next}});
+    try {
+      await saveEdits({data: {projectId: project.id, branch: branch!.name, edits: next}});
+    } catch (error) {
+      throw new Error(studioFailure(error instanceof Error ? error : new Error(String(error)), locale).message);
+    }
     setVersionId(undefined);
     await queryClient.invalidateQueries();
   };
@@ -254,11 +262,11 @@ function Project({project, thread, threads, openThread, openVariant, t, navigati
   const actions = <>
     {views("mr-1 max-lg:hidden")}
     {branch && <ProjectPanel projectId={project.id} projectName={project.name} clientName={details.data?.source?.manifest.client.name} branch={branch} branches={branches} versions={versions} version={version} following={!versionId} selectVersion={setVersionId} versionLabel={versionLabel} threads={threads} threadId={thread?.id} openThread={openThread} openVariant={openVariant} newVariant={checkpointId => newThread({fromCheckpoint: checkpointId})} makePrimary={() => primary.mutate()} reveal={() => reveal()} build={() => ensureGrant(() => build.mutate())} building={build.isPending} buildError={build.error?.message} compare={compare} openHandoff={() => setExportOpen(true)} revoke={() => revoke.mutate()} t={t} />}
-    <Button size="sm" variant="outline" className="mx-1 max-md:size-9 max-md:p-0" disabled={!source || !branch || build.isPending} title={build.error?.message} onClick={() => ensureGrant(() => build.mutate())}><HammerIcon /><span className="max-md:sr-only">{build.isPending ? t.building : t.buildAction}</span></Button>
+    <Button size="sm" variant="outline" className="mx-1 max-md:size-9 max-md:p-0" disabled={!source || !branch || build.isPending} title={build.isError ? t.buildFailed : undefined} onClick={() => ensureGrant(() => build.mutate())}><HammerIcon /><span className="max-md:sr-only">{build.isPending ? t.building : t.buildAction}</span></Button>
     <DropdownMenu><DropdownMenuTrigger className={projectIconButton} aria-label={t.projectSections} title={t.projectSections}><MoreHorizontalIcon /></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-60"><DropdownMenuRadioGroup value={section} onValueChange={value => setSection(value as Section)}>{toolSections.map(value => <DropdownMenuRadioItem closeOnClick key={value} value={value} className="studio-choice">{t[value]}</DropdownMenuRadioItem>)}</DropdownMenuRadioGroup><DropdownMenuSeparator /><DropdownMenuItem render={<a href="https://arch.enstate-labs.workers.dev/staff" target="_blank" rel="noreferrer" />}><ArrowUpRightIcon />{t.hosted}</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
   </>;
   const tool = (content: ReactNode) => <ScrollPage><h2 className="text-lg font-medium">{t[view as typeof toolSections[number]]}</h2>{content}</ScrollPage>;
-  const content = details.isError ? <div className="m-auto grid gap-3"><p role="alert">{details.error.message}</p><Button onClick={() => {void details.refetch();}}>{t.retry}</Button></div>
+  const content = details.isError ? <div className="m-auto grid gap-3"><StudioFailure error={details.error} /><Button onClick={() => {void details.refetch();}}>{t.retry}</Button></div>
     : view === "preview" && version ? <VersionPreview key={version.id} version={version} editing={editing} editsPending={edits.isLoading || catalog.isLoading} adopt={adopt} rebuild={source && branch ? () => ensureGrant(() => build.mutate()) : undefined} rebuilding={build.isPending} t={t} />
     : view === "rounds" && branch && thread ? <Rounds projectId={project.id} threadId={thread.id} branch={branch} versions={allVersions} versionLabel={versionLabel} openVersion={showVersion} compare={compare} forkFrom={checkpointId => newThread({fromCheckpoint: checkpointId})} ensureGrant={ensureGrant} initialRequest={edits.data && hasEdits(edits.data) ? drafted : undefined} t={t} />
     : view === "compare" ? <Compare projectId={project.id} versions={versions} base={compared?.base} target={compared?.target} select={(base, target) => setCompared({base, target})} versionLabel={versionLabel} t={t} />
@@ -275,7 +283,7 @@ function Project({project, thread, threads, openThread, openVariant, t, navigati
     : view === "outputs" ? tool(version ? <VersionMedia version={version} t={t} /> : <p className="text-muted-foreground">{t.noVersions}</p>)
     : tool(version ? <Notes key={version.id} projectId={project.id} version={version} notes={details.data?.notes ?? []} t={t} /> : <p className="text-muted-foreground">{t.noVersions}</p>);
   const client = details.data?.source?.manifest.client.name;
-  return <><ProjectPage title={thread?.title ?? project.name} meta={thread ? `${project.name}${client ? ` · ${client}` : ""}` : undefined} navigation={navigation} actions={actions}>{views("shrink-0 border-b px-2 py-1.5 lg:hidden")}{content}</ProjectPage><Dialog open={exportOpen} onOpenChange={setExportOpen}><DialogContent><DialogHeader><DialogTitle>{t.export}</DialogTitle></DialogHeader><Handoff key={version?.id} checkpointId={version?.checkpointId} t={t} /></DialogContent></Dialog><Dialog open={!!grantFor} onOpenChange={value => {if (!value && !grant.isPending) setGrantFor(null);}}><DialogContent><DialogHeader><DialogTitle>{t.grantTitle}</DialogTitle><DialogDescription>{t.executionConfirmation} {t.grantHint}</DialogDescription></DialogHeader><p className="break-all font-mono text-xs">{branch?.directory}</p>{grant.error && <p role="alert" className="text-destructive">{grant.error.message}</p>}<div className="flex justify-end gap-2"><Button variant="ghost" disabled={grant.isPending} onClick={() => setGrantFor(null)}>{t.cancel}</Button><Button disabled={!branch || grant.isPending} onClick={() => grant.mutate()}>{grant.isPending ? t.loading : t.authorizeBuild}</Button></div></DialogContent></Dialog></>;
+  return <><ProjectPage title={thread ? threadTitle(thread.title, t) : project.name} meta={thread ? `${project.name}${client ? ` · ${client}` : ""}` : undefined} navigation={navigation} actions={actions}>{views("shrink-0 border-b px-2 py-1.5 lg:hidden")}{content}</ProjectPage><Dialog open={exportOpen} onOpenChange={setExportOpen}><DialogContent><DialogHeader><DialogTitle>{t.export}</DialogTitle></DialogHeader><Handoff key={version?.id} checkpointId={version?.checkpointId} t={t} /></DialogContent></Dialog><Dialog open={!!grantFor} onOpenChange={value => {if (!value && !grant.isPending) setGrantFor(null);}}><DialogContent><DialogHeader><DialogTitle>{t.grantTitle}</DialogTitle><DialogDescription>{t.executionConfirmation} {t.grantHint}</DialogDescription></DialogHeader><p className="break-all font-mono text-xs">{branch?.directory}</p>{grant.error && <StudioFailure className="text-destructive" error={grant.error} />}<div className="flex justify-end gap-2"><Button variant="ghost" disabled={grant.isPending} onClick={() => setGrantFor(null)}>{t.cancel}</Button><Button disabled={!branch || grant.isPending} onClick={() => grant.mutate()}>{grant.isPending ? t.loading : t.authorizeBuild}</Button></div></DialogContent></Dialog></>;
 }
 /** `editsPending` holds the viewer back until it is known whether it opens editable; it reads that once. */
 function VersionPreview({version, editing, editsPending, adopt, rebuild, rebuilding, t}: {version: StudioVersion; editing?: ViewerEditing; editsPending: boolean; adopt?: () => void; rebuild?: () => void; rebuilding: boolean; t: Copy}) {
@@ -283,25 +291,27 @@ function VersionPreview({version, editing, editsPending, adopt, rebuild, rebuild
   // Built for a viewer this Studio cannot open: the project folder can be built again here.
   const mismatch = preview.isError && preview.error.message === VIEWER_MISMATCH;
   const [ready, setReady] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(false);
   const currentViewer = useRef<ViewerInstance | null>(null);
   const onViewer = useCallback((viewer: ViewerInstance | null) => {
     currentViewer.current = viewer;
     setReady(false);
+    setError(false);
     if (viewer) void viewer.ready.then(() => {
       if (currentViewer.current === viewer) setReady(true);
     }).catch(() => {
-      if (currentViewer.current === viewer) setError(t.error);
+      if (currentViewer.current === viewer) setError(true);
     });
-  }, [t.error]);
-  const status = <div className="flex items-center gap-2"><p role="status" className="pointer-events-none rounded-lg bg-background/90 px-3 py-2 text-xs shadow-sm">{error || (ready ? t.ready : t.preparing)}</p>{adopt && ready && <Button size="xs" variant="outline" className="pointer-events-auto" onClick={adopt}>{t.adoptHandEdits}</Button>}</div>;
-  return <div data-studio-preview={error ? "error" : ready ? "ready" : "pending"} className="relative size-full min-h-0">{preview.data && !editsPending ? <ViewerSurface planUrl={preview.data.planUrl} assetBase={preview.data.assetBase} artifactId={preview.data.artifactHash} onViewer={onViewer} top={status} editing={editing && {...editing, dropped: preview.data.handEditsDropped}} /> : <div className="grid size-full place-items-center p-6"><div className="grid gap-3 text-center text-ui"><p role={preview.isError ? "alert" : "status"}>{mismatch ? t.viewerMismatch : preview.isError ? preview.error.message : t.preparing}</p>{mismatch && rebuild ? <Button disabled={rebuilding} onClick={rebuild}>{rebuilding ? t.loading : t.rebuildHere}</Button> : preview.isError && <Button onClick={() => {void preview.refetch();}}>{t.retry}</Button>}</div></div>}</div>;
+  }, []);
+  const status = <div className="flex items-center gap-2"><p role="status" className="pointer-events-none rounded-lg bg-background/90 px-3 py-2 text-xs shadow-sm">{error ? t.error : ready ? t.ready : t.preparing}</p>{adopt && ready && <Button size="xs" variant="outline" className="pointer-events-auto" onClick={adopt}>{t.adoptHandEdits}</Button>}</div>;
+  return <div data-studio-preview={error ? "error" : ready ? "ready" : "pending"} className="relative size-full min-h-0">{preview.data && !editsPending ? <ViewerSurface planUrl={preview.data.planUrl} assetBase={preview.data.assetBase} artifactId={preview.data.artifactHash} onViewer={onViewer} top={status} editing={editing && {...editing, dropped: preview.data.handEditsDropped}} /> : <div className="grid size-full place-items-center p-6"><div className="grid gap-3 text-center text-ui">{preview.isError && !mismatch ? <StudioFailure error={preview.error} /> : <p role={mismatch ? "alert" : "status"}>{mismatch ? t.viewerMismatch : t.preparing}</p>}{mismatch && rebuild ? <Button disabled={rebuilding} onClick={rebuild}>{rebuilding ? t.loading : t.rebuildHere}</Button> : preview.isError && <Button onClick={() => {void preview.refetch();}}>{t.retry}</Button>}</div></div>}</div>;
 }
 function VersionMedia({version, t}: {version: StudioVersion; t: Copy}) {
   if (!version.outputs.length) return <p className="text-muted-foreground">{t.noOutputs}</p>;
   return <div className="space-y-4">{version.outputs.map(output => <figure key={output.id} className="space-y-2">{output.kind === "still" ? <a href={output.url} target="_blank" rel="noreferrer"><img src={output.url} alt={output.label} loading="lazy" className="w-full rounded-lg border object-contain" /></a> : <video src={output.url} aria-label={output.label} controls muted playsInline preload="metadata" className="w-full rounded-lg border" />}<figcaption>{output.label}<a href={output.url} download target="_blank" rel="noreferrer" className="block text-xs underline">{t.openOutput}</a></figcaption></figure>)}</div>;
 }
 function Notes({projectId, version, notes, t}: {projectId: string; version: StudioVersion; notes: ReviewNote[]; t: Copy}) {
+  const format = useStudioFormat();
   const queryClient = useQueryClient();
   const save = useMutation({mutationFn: (body: string) => saveNote({data: {projectId, checkpointId: version.checkpointId, body}}), onSuccess: () => queryClient.invalidateQueries({queryKey: ["studio-project", projectId]})});
   const form = useForm({
@@ -312,7 +322,7 @@ function Notes({projectId, version, notes, t}: {projectId: string; version: Stud
     },
   });
   const selected = notes.filter(note => note.checkpointId === version.checkpointId);
-  return <div className="grid gap-5"><p className="text-xs text-muted-foreground">{t.notesHint}</p><form autoComplete="off" className="grid gap-2" onSubmit={event => {event.preventDefault(); void form.handleSubmit();}}><form.Field name="body">{field => <Field className="gap-2"><FieldLabel htmlFor="studio-comment" className="sr-only">{t.comment}</FieldLabel><Textarea id="studio-comment" name={field.name} value={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.value)} autoComplete="off" required maxLength={8000} disabled={save.isPending} /></Field>}</form.Field><Button type="submit" disabled={save.isPending}>{save.isPending ? t.loading : t.save}</Button></form>{save.error && <p role="alert" className="text-destructive">{save.error.message}</p>}{!selected.length && <p>{t.noComments}</p>}{selected.map(note => <article key={note.id} className="space-y-2 border-b pb-4"><p className="text-xs text-muted-foreground">{note.author} · {note.createdAt}</p><p className="whitespace-pre-wrap">{note.body}</p></article>)}</div>;
+  return <div className="grid gap-5"><p className="text-xs text-muted-foreground">{t.notesHint}</p><form autoComplete="off" className="grid gap-2" onSubmit={event => {event.preventDefault(); void form.handleSubmit();}}><form.Field name="body">{field => <Field className="gap-2"><FieldLabel htmlFor="studio-comment" className="sr-only">{t.comment}</FieldLabel><Textarea id="studio-comment" name={field.name} value={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.value)} autoComplete="off" required maxLength={8000} disabled={save.isPending} /></Field>}</form.Field><Button type="submit" disabled={save.isPending}>{save.isPending ? t.loading : t.save}</Button></form>{save.error && <StudioFailure className="text-destructive" error={save.error} />}{!selected.length && <p>{t.noComments}</p>}{selected.map(note => <article key={note.id} className="space-y-2 border-b pb-4"><p className="text-xs text-muted-foreground">{note.author} · {format.date(note.createdAt, {dateStyle: "medium", timeStyle: "short"})}</p><p className="whitespace-pre-wrap">{note.body}</p></article>)}</div>;
 }
 function Handoff({checkpointId, t}: {checkpointId?: string; t: Copy}) {
   const formId = useId();
@@ -337,5 +347,5 @@ function Handoff({checkpointId, t}: {checkpointId?: string; t: Copy}) {
       <restoreForm.Field name="bundle">{field => <Field className="gap-2"><FieldLabel htmlFor={`${formId}-restore-bundle`} className="sr-only">{t.bundle}</FieldLabel><Input id={`${formId}-restore-bundle`} name={field.name} value={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.value)} autoComplete="off" required placeholder={t.bundle} disabled={action.isPending} /></Field>}</restoreForm.Field>
       <restoreForm.Field name="directory">{field => <Field className="gap-2"><FieldLabel htmlFor={`${formId}-restore-directory`} className="sr-only">{t.destination}</FieldLabel><Input id={`${formId}-restore-directory`} name={field.name} value={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.value)} autoComplete="off" required placeholder={t.destination} disabled={action.isPending} /></Field>}</restoreForm.Field>
       <restoreForm.Field name="activate">{field => <Field orientation="horizontal" className="items-start gap-2 text-xs"><input id={`${formId}-restore-activate`} type="checkbox" name={field.name} checked={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.checked)} autoComplete="off" className="mt-0.5" disabled={action.isPending} /><FieldLabel htmlFor={`${formId}-restore-activate`} className="text-xs font-normal">{t.activateRestoredSource}</FieldLabel></Field>}</restoreForm.Field>
-      <Button type="submit" variant="outline" disabled={action.isPending}>{t.restore}</Button></form>{action.error && <p role="alert" className="text-destructive">{action.error.message}</p>}<pre className="overflow-auto whitespace-pre-wrap text-xs">{text}</pre></div>;
+      <Button type="submit" variant="outline" disabled={action.isPending}>{t.restore}</Button></form>{action.error && <StudioFailure className="text-destructive" error={action.error} />}<pre className="overflow-auto whitespace-pre-wrap text-xs">{text}</pre></div>;
 }

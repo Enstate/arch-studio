@@ -1,6 +1,6 @@
 import { type Locale, useLocale } from "./locale";
 
-const TAGS: Record<Locale, string> = { de: "de-DE", en: "en-US" };
+const TAGS: Record<Locale, string> = { de: "de-DE", en: "en-US", es: "es", pt: "pt-BR" };
 
 const cache = new Map<string, Intl.NumberFormat | Intl.DateTimeFormat | Intl.RelativeTimeFormat>();
 
@@ -31,7 +31,7 @@ function formatters(locale: Locale) {
 
 export type Format = ReturnType<typeof formatters>;
 
-const byLocale: Record<Locale, Format> = { de: formatters("de"), en: formatters("en") };
+const byLocale: Record<Locale, Format> = { de: formatters("de"), en: formatters("en"), es: formatters("es"), pt: formatters("pt") };
 
 /** Numbers, dates and relative times in a language, for code outside components. */
 export const formatFor = (locale: Locale) => byLocale[locale];

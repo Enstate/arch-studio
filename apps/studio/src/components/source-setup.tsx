@@ -1,3 +1,4 @@
+import { StudioFailure } from "./studio-failure";
 import { Button } from "@arch/ui/components/button";
 import { Field, FieldLabel } from "@arch/ui/components/field";
 import { Input } from "@arch/ui/components/input";
@@ -33,7 +34,7 @@ export function SourceSetup({projectId, attached, confirmationOnly = false, t}: 
       <p className="text-xs text-muted-foreground">{initialize ? t.intakeHint : t.inspectSource}</p>
       <Button size="sm" type="submit" variant={attached ? "outline" : "default"} className="justify-self-start" disabled={setup.isPending}>{setup.isPending ? t.loading : initialize ? t.initialize : t.register}</Button>
     </form>
-    {setup.error && <p role="alert" className="text-xs text-destructive">{setup.error.message}</p>}
+    {setup.error && <StudioFailure className="text-xs text-destructive" error={setup.error} />}
     {confirmation}
   </div>;
 }

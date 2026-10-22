@@ -1,3 +1,4 @@
+import { studioText } from "../apps/studio/src/lib/messages";
 import assert from 'node:assert/strict';
 import { mkdtemp, realpath, rm, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -51,8 +52,9 @@ try {
   const plan=JSON.parse(await readFile(planPath,'utf8'));
   plan.name='Sample house desktop verification';
   await writeFile(planPath,JSON.stringify(plan));
-  await page.getByRole('button',{name:/^(Build|Erstellen)$/}).click();
-  await page.getByRole('dialog').getByRole('button',{name:/^(Execute source and build|Quellcode ausführen und erstellen)$/}).click();
+  const t = studioText[(await page.locator('html').getAttribute('lang')) as keyof typeof studioText] ?? studioText.en;
+  await page.getByRole('button',{name:t.buildAction,exact:true}).click();
+  await page.getByRole('dialog').getByRole('button',{name:t.authorizeBuild,exact:true}).click();
   await page.waitForFunction(prior=>(document.querySelector('[data-studio-version]'))?.getAttribute('data-studio-version')!==prior,priorVersion).catch(async error=>{console.error('Build body:',await page.locator('body').innerText());throw error;});
   await page.locator('[data-studio-preview="ready"]').waitFor({timeout:120000});
   await page.getByRole('progressbar').waitFor({state:'hidden',timeout:10000});

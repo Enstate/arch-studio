@@ -57,7 +57,7 @@ export async function createProject({ data }: { data: { name: string; client: { 
       const client = data.client === null ? catalog.clients.find(item => item.id === localClient.id) ?? localClient
         : "id" in data.client ? catalog.clients.find(item => item.id === (data.client as { id: string }).id)
         : { id: clientKey(catalog, data.client.name), name: data.client.name };
-      if (!client) throw new Error("Unknown client.");
+      if (!client) throw new Error("ARCH_CLIENT_MISSING");
       const initialized = await initializeProject({ ...(data.references.length ? { inputsDirectory: await fs.realpath(staging) } : {}), directory: path.join(await fs.realpath(branches), "main"), id, name: data.name, client, description: data.brief });
       if (!catalog.clients.some(item => item.id === client.id)) catalog.clients.push(client);
       const projectId = randomUUID();
@@ -106,14 +106,14 @@ export async function projectDetails({ data }: { data: { projectId: string } }):
   return { project, source: { ...inspection.project, manifest: current.manifest }, intake, intakeError, versions, notes: inspection.notes, branches };
 }
 function requireSourceIdentity(project: StudioProjectDetails["project"], source: Pick<Awaited<ReturnType<typeof inspectSource>>, "manifest">) {
-  if (project.sourceId && source.manifest.id !== project.sourceId) throw new Error("The source identity changed. Open the correct source folder.");
-  if (source.manifest.client.id !== project.clientId) throw new Error("The source client ID must exactly match the selected client ID. Restore this project's original client ID before continuing.");
+  if (project.sourceId && source.manifest.id !== project.sourceId) throw new Error("ARCH_SOURCE_CHANGED");
+  if (source.manifest.client.id !== project.clientId) throw new Error("ARCH_CLIENT_CHANGED");
 }
 function attachSource(catalog: StudioCatalog, projectId: string, source: Awaited<ReturnType<typeof registerProject>>) {
   const project = requireProject(catalog, projectId);
   requireSourceIdentity(project, source);
-  if (project.sourceId && project.sourceId !== source.manifest.id) throw new Error("This project already has a source.");
-  if (catalog.projects.some(other => other.id !== project.id && other.sourceId === source.manifest.id)) throw new Error("This source already belongs to another Studio project.");
+  if (project.sourceId && project.sourceId !== source.manifest.id) throw new Error("ARCH_SOURCE_ATTACHED");
+  if (catalog.projects.some(other => other.id !== project.id && other.sourceId === source.manifest.id)) throw new Error("ARCH_SOURCE_IN_USE");
   project.sourceId = source.manifest.id;
   return source;
 }
@@ -129,7 +129,7 @@ export async function openProjectFolder({ data }: { data: { directory: string } 
   });
   const catalog = await localCatalog();
   const project = catalog.projects.find(project => project.sourceId === source.manifest.id);
-  if (!project) throw new Error("The source was not imported into Studio.");
+  if (!project) throw new Error("ARCH_SOURCE_IMPORT");
   requireSourceIdentity(project, source);
   return { clientId: project.clientId, projectId: project.id };
 }
@@ -146,9 +146,9 @@ export async function initializeSource({ data }: { data: { inputsDirectory: stri
   requireStudio();
   return changeCatalog(async catalog => {
     const project = requireProject(catalog, data.projectId);
-    if (project.sourceId) throw new Error("This project already has a source. Continue that folder instead.");
+    if (project.sourceId) throw new Error("ARCH_SOURCE_ATTACHED");
     const client = catalog.clients.find(client => client.id === project.clientId);
-    if (!client) throw new Error("Unknown client.");
+    if (!client) throw new Error("ARCH_CLIENT_MISSING");
     const id = `source-${randomBytes(12).toString("hex")}`;
     // Initialization creates this exact identity from catalog values; no existing
     // source is registered before the selected project's binding is validated.
@@ -159,11 +159,11 @@ export async function initializeSource({ data }: { data: { inputsDirectory: stri
 async function requireSourceBinding(projectId: string, sourceId: string) {
   return changeCatalog(async catalog => {
     const project = requireProject(catalog, projectId);
-    if (project.sourceId !== sourceId) throw new Error("The source does not belong to this Studio project.");
+    if (project.sourceId !== sourceId) throw new Error("ARCH_SOURCE_CHANGED");
     const source = (await listProjects()).find(source => source.manifest.id === sourceId);
-    if (!source) throw new Error("Open the source folder first.");
+    if (!source) throw new Error("ARCH_SOURCE_REQUIRED");
     const current = await inspectSource(source.directory);
-    if (current.manifest.id !== sourceId) throw new Error("The source identity changed. Open the correct source folder.");
+    if (current.manifest.id !== sourceId) throw new Error("ARCH_SOURCE_CHANGED");
     attachSource(catalog, projectId, current);
     const registered = await registerProject(source.directory);
     attachSource(catalog, projectId, registered);
@@ -172,16 +172,16 @@ async function requireSourceBinding(projectId: string, sourceId: string) {
 }
 export async function buildVersion({ data }: { data: { sourceId: string; projectId: string; branch: string; authorizeSourceExecution: true } }) {
   requireStudio();
-  if (data.authorizeSourceExecution !== true) throw new Error("Building requires explicit permission to execute trusted source code.");
+  if (data.authorizeSourceExecution !== true) throw new Error("ARCH_BUILDS_REQUIRED");
   const project = await requireSourceBinding(data.projectId, data.sourceId);
   const built = await buildProjectArtifact(data.sourceId, { authorizeSourceExecution: true, branch: data.branch });
-  if (built.checkpoint.project.id !== data.sourceId || built.checkpoint.project.client.id !== project.clientId) throw new Error("The built source identity does not match this project.");
+  if (built.checkpoint.project.id !== data.sourceId || built.checkpoint.project.client.id !== project.clientId) throw new Error("ARCH_SOURCE_CHANGED");
   await requireSourceBinding(data.projectId, data.sourceId);
   return { versionId: built.checkpoint.id, checkpointId: built.checkpoint.id, artifactHash: built.artifactHash };
 }
 async function boundSource(projectId: string) {
   const project = requireProject(await localCatalog(), projectId);
-  if (!project.sourceId) throw new Error("Open a source folder first.");
+  if (!project.sourceId) throw new Error("ARCH_SOURCE_REQUIRED");
   return project.sourceId;
 }
 export async function createBranch({ data }: { data: { projectId: string; name: string; from: string } }) {
@@ -200,14 +200,14 @@ export async function discardChanges({ data }: { data: { projectId: string; name
 export async function projectEdits({ data }: { data: { projectId: string; branch: string } }) {
   requireStudio();
   const line = (await projectBranches(await boundSource(data.projectId))).branches.find(item => item.name === data.branch);
-  if (!line) throw new Error("Unknown branch");
+  if (!line) throw new Error("ARCH_ITEM_MISSING");
   return handEdits(line.directory);
 }
 /** Show a branch folder, or one file in it, in Finder or the platform file manager. */
 export async function revealInFolder({ data }: { data: { projectId: string; branch: string; path?: string } }) {
   requireStudio();
   const line = (await projectBranches(await boundSource(data.projectId))).branches.find(item => item.name === data.branch);
-  if (!line) throw new Error("Unknown branch");
+  if (!line) throw new Error("ARCH_ITEM_MISSING");
   let target = line.directory;
   if (data.path) {
     relativeProjectPath.parse(data.path);
@@ -249,7 +249,7 @@ export async function restoreSource({ data }: { data: { bundle: string; director
 }
 export async function saveNote({ data }: { data: { projectId: string; checkpointId: string; body: string } }) {
   requireStudio(); const project = requireProject(await localCatalog(), data.projectId);
-  if (!project.sourceId) throw new Error("Open a source folder before adding notes.");
+  if (!project.sourceId) throw new Error("ARCH_SOURCE_REQUIRED");
   return addReviewNote(project.sourceId, { checkpointId: data.checkpointId, body: data.body, author: userInfo().username });
 }
 export async function referenceResponse(request: Request, checkpointId: string, token: string, relative: string) {

@@ -7,6 +7,8 @@ import { cn } from "@arch/ui/lib/utils";
 import { ChevronDownIcon, ChevronRightIcon, SearchIcon, StarIcon, ZapIcon } from "lucide-react";
 import { type ComponentProps, type SVGProps, useState } from "react";
 import type { studioText } from "../lib/messages";
+import { useStudioLocale } from "../lib/locale";
+import { translateModelSettings } from "../lib/model-settings";
 
 // Ported from T3 Code's ProviderModelPicker, ModelPickerContent, ModelListRow,
 // ModelPickerSidebar, TraitsPicker and Icons (apps/web/src/components, MIT).
@@ -138,7 +140,8 @@ export function settingValue(setting: AgentModelSetting, settings: ModelSettings
 
 /** Reasoning effort and other per-model traits, as in T3 Code's TraitsPicker. */
 export function TraitsPicker({model, settings, onChange, t}: {model?: AgentModel; settings: ModelSettings; onChange: (settings: ModelSettings) => void; t: Copy}) {
-  const descriptors = model?.settings ?? [];
+  const {locale} = useStudioLocale();
+  const descriptors = translateModelSettings(model?.settings ?? [], locale);
   if (!descriptors.length) return null;
   const selects = descriptors.filter((setting): setting is Extract<AgentModelSetting, {type: "select"}> => setting.type === "select");
   const booleans = descriptors.filter((setting): setting is Extract<AgentModelSetting, {type: "boolean"}> => setting.type === "boolean");

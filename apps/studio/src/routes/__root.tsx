@@ -9,6 +9,7 @@ import { session } from "../lib/server";
 import { rememberStudioSession } from "../lib/browser-session";
 import css from "../index.css?url";
 import { useStudioLocale } from "../lib/locale";
+import { studioText } from "../lib/messages";
 
 export const Route = createRootRouteWithContext<{queryClient: QueryClient}>()({
   ssr: false,
@@ -23,6 +24,7 @@ export const Route = createRootRouteWithContext<{queryClient: QueryClient}>()({
   shellComponent: Document,
   component: Outlet,
   errorComponent: StudioAccess,
+  notFoundComponent: StudioNotFound,
 });
 function Document({children}: {children: ReactNode}) {
   const {locale} = useStudioLocale();
@@ -30,5 +32,11 @@ function Document({children}: {children: ReactNode}) {
 }
 
 function StudioAccess() {
-  return <main className="mx-auto flex min-h-screen max-w-xl flex-col justify-center gap-4 px-6"><h1 className="text-xl font-semibold">Arch Studio</h1><p>Open the Studio link printed in your terminal. Desktop users can restart Arch Studio.</p><p lang="de">Öffne den Studio-Link aus deinem Terminal. Starte die Desktop-App bei Bedarf neu.</p></main>;
+  const {locale} = useStudioLocale();
+  return <main className="mx-auto flex min-h-screen max-w-xl flex-col justify-center gap-4 px-6"><h1 className="text-xl font-semibold">Arch Studio</h1><p>{studioText[locale].sessionRequired}</p></main>;
+}
+
+function StudioNotFound() {
+  const {locale} = useStudioLocale();
+  return <main className="mx-auto flex min-h-screen max-w-xl flex-col justify-center gap-4 px-6"><h1 className="text-xl font-semibold">Arch Studio</h1><p>{studioText[locale].notFound}</p></main>;
 }

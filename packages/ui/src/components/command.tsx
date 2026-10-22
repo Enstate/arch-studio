@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { Command as CommandPrimitive } from "cmdk"
+import { useUiLabels } from "@arch/ui/lib/ui-labels"
 import { cn } from "@arch/ui/lib/utils"
 
 import {
@@ -34,8 +35,8 @@ function Command({
 }
 
 function CommandDialog({
-  title = "Befehle",
-  description = "Suchen Sie nach einem Befehl oder Projekt.",
+  title,
+  description,
   children,
   className,
   showCloseButton = false,
@@ -47,6 +48,7 @@ function CommandDialog({
   showCloseButton?: boolean
   children: React.ReactNode
 }) {
+  const labels = useUiLabels()
   return (
     <Dialog {...props}>
       <DialogContent
@@ -57,8 +59,8 @@ function CommandDialog({
         showCloseButton={showCloseButton}
       >
         <DialogHeader className="sr-only">
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
+          <DialogTitle>{title ?? labels.navigation}</DialogTitle>
+          <DialogDescription>{description ?? labels.navigationDescription}</DialogDescription>
         </DialogHeader>
         {children}
       </DialogContent>

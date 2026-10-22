@@ -2,6 +2,7 @@ const { app, BrowserWindow, session, shell, ipcMain, Menu, dialog, nativeTheme }
 const { spawn, spawnSync } = require('node:child_process');
 const path = require('node:path');
 const { createDesktopUpdates } = require('./updates.cjs');
+const { menuLabels } = require('./menu-labels.cjs');
 app.setName('Arch Studio');
 let server;
 let quitting = false;
@@ -63,8 +64,10 @@ app.whenReady().then(async () => {
   if (!validBootstrapUrl(bootstrapUrl)) throw new Error('Invalid local Studio bootstrap URL');
   let origin = new URL(bootstrapUrl).origin;
   const backgroundColor = () => nativeTheme.shouldUseDarkColors ? '#121212' : '#ffffff';
+  const developmentIcon = !app.isPackaged ? path.join(__dirname, 'icon.png') : undefined;
+  if (developmentIcon) app.dock?.setIcon(developmentIcon);
   const window = new BrowserWindow({
-    width: 1440, height: 960, backgroundColor: backgroundColor(),
+    width: 1440, height: 960, backgroundColor: backgroundColor(), icon: developmentIcon,
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 19 } } : {}),
     webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs') },
   });
@@ -119,21 +122,44 @@ app.whenReady().then(async () => {
       return updates[method]();
     });
   }
-  const checkForUpdates = { label: 'Check for Updates…', click: () => { void updates.check(); } };
-  const appMenu = process.platform === 'darwin' ? [
-    { label: 'About Arch Studio', role: 'about' },
-    checkForUpdates,
-    { type: 'separator' },
-    { role: 'services' },
-    { type: 'separator' },
-    { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' },
-    { type: 'separator' },
-    { role: 'quit' },
-  ] : [checkForUpdates, { type: 'separator' }, { role: 'quit' }];
-  Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { label: 'Arch Studio', submenu: appMenu },
-    { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
-  ]));
+  const systemLanguages = [...app.getPreferredSystemLanguages(), app.getLocale()];
+  let currentMenuLabels;
+  const applyMenuLabels = labels => {
+    if (labels === currentMenuLabels || window.isDestroyed()) return;
+    currentMenuLabels = labels;
+    const checkForUpdates = { label: labels.checkForUpdates, click: () => { void updates.check(); } };
+    const appMenu = process.platform === 'darwin' ? [
+      { label: labels.about, role: 'about' },
+      checkForUpdates,
+      { type: 'separator' },
+      { role: 'services' },
+      { type: 'separator' },
+      { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' },
+      { type: 'separator' },
+      { role: 'quit' },
+    ] : [checkForUpdates, { type: 'separator' }, { role: 'quit' }];
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      { label: 'Arch Studio', submenu: appMenu },
+      { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
+    ]));
+  };
+  const localeUrl = new URL(bootstrapUrl).origin;
+  const cookies = session.defaultSession.cookies;
+  let localeRevision = 0;
+  const refreshMenuLocale = async () => {
+    const revision = ++localeRevision;
+    const preferences = await cookies.get({ url: `${localeUrl}/`, name: 'arch-locale' }).catch(() => []);
+    if (revision === localeRevision) applyMenuLabels(menuLabels(preferences[0]?.value, systemLanguages));
+  };
+  const localeChanged = (_event, cookie) => {
+    if (cookie.name === 'arch-locale' && cookie.domain.replace(/^\./, '') === new URL(localeUrl).hostname && cookie.path === '/') {
+      void refreshMenuLocale();
+    }
+  };
+  cookies.on('changed', localeChanged);
+  window.once('closed', () => { ++localeRevision; cookies.removeListener('changed', localeChanged); });
+  applyMenuLabels(menuLabels(undefined, systemLanguages));
+  await refreshMenuLocale();
   window.webContents.on('will-navigate', (event, url) => { if (new URL(url).origin !== origin) event.preventDefault(); });
   window.webContents.on('will-redirect', (event, url) => { if (new URL(url).origin !== origin) event.preventDefault(); });
   window.webContents.setWindowOpenHandler(({url}) => {

@@ -22,13 +22,13 @@ export async function session({ token }: { token?: string } = {}) {
   const request = getRequest();
   studioOrigin(request);
   if (!valid(request.headers.get(studioSessionHeader)) && !valid(token, process.env.ARCH_STUDIO_BOOTSTRAP ?? "")) {
-    throw new Error("Open the Studio link printed in your terminal. Öffne den Studio-Link aus deinem Terminal.");
+    throw new Error("ARCH_SESSION_REQUIRED");
   }
   return { local: true as const, secret };
 }
 export function requireStudio(request?: Request) {
   const current = request ?? getRequest();
   const origin = studioOrigin(current);
-  if (!valid(current.headers.get(studioSessionHeader))) throw new Error("Open the Studio link printed in your terminal.");
+  if (!valid(current.headers.get(studioSessionHeader))) throw new Error("ARCH_SESSION_REQUIRED");
   return origin;
 }
