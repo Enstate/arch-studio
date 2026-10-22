@@ -68,6 +68,8 @@ try {
   console.log(JSON.stringify({nativeUiScale:scaling,captureWidth:png.readUInt32BE(16),captureHeight:png.readUInt32BE(20)}));
   await view('files').click();
   await electron.evaluate(({session}) => { session.defaultSession.on('will-download', (_event,item)=>item.setSavePath(`${process.env.ARCH_HOME}/desktop-reference.json`)); });
+  // Narrow windows list files until one is opened; wide ones open the first beside the list.
+  await page.getByText('sample-house.json',{exact:true}).first().click();
   await page.getByRole('link',{name:/sample-house\.json/}).first().click({timeout:30000}).catch(async error=>{console.error('Files body:',await page.locator('body').innerText());throw error;});
   const download=path.join(home,'desktop-reference.json');
   for(let i=0;i<100;i++){try{await readFile(download);break;}catch{await new Promise(resolve=>setTimeout(resolve,50));}}
