@@ -10,8 +10,15 @@ import type { Furniture, Plan, Vec2 } from '../plan/schema.ts';
 import { surfaceFinish, surfaceId } from '../plan/surfaces.ts';
 import { Carry, PlacementMarker } from './handling.ts';
 
-/** Hand editing in a viewer made `editable`: pieces move by drag, and surfaces take new finishes. */
+/**
+ * Hand editing in a viewer made `editable`: between `start` and `stop`, pieces move by drag and
+ * surfaces take new finishes, in the house already on show.
+ */
 export interface ViewerEditor {
+  /** Takes the house apart in place so it can be edited; pieces answer the pointer until `stop`. */
+  start(): Promise<void>;
+  /** Ends editing and merges the house again for frame rate, keeping the edits on show. */
+  stop(): Promise<void>;
   /** Shows the plan as loaded with these edits laid over it, which may hold saved ones again. */
   setEdits(edits: PlanEdits): Promise<void>;
   /** The plan with the edits on show. */
@@ -81,6 +88,17 @@ export function createEditor(host: EditorHost): ViewerEditor {
   let events: EditorEvents | null = null;
   let selected: string | null = null;
   let queue = Promise.resolve();
+  /** Editing between `start` and `stop`; outside it, the pointer only steers the camera. */
+  let active = false;
+  const allowed = () => active && host.allowed();
+  /** Runs after the edits already queued, failed or not, unless the viewer is gone. */
+  const after = (run: () => void) => {
+    const next = () => {
+      if (!signal.aborted) run();
+    };
+    queue = queue.then(next, next);
+    return queue;
+  };
 
   const marker = new PlacementMarker();
   host.scene.add(marker.group);
@@ -190,7 +208,7 @@ export function createEditor(host: EditorHost): ViewerEditor {
   canvas.addEventListener('pointerdown', (e) => {
     down = { x: e.clientX, y: e.clientY };
     dragged = false;
-    if (e.button !== 0 || e.pointerType !== 'mouse' || e.shiftKey || e.metaKey || e.ctrlKey || !host.allowed()) return;
+    if (e.button !== 0 || e.pointerType !== 'mouse' || e.shiftKey || e.metaKey || e.ctrlKey || !allowed()) return;
     const id = pieceAt(e.clientX, e.clientY);
     if (!id) return;
     // The camera does not move under a press on a piece.
@@ -292,13 +310,13 @@ export function createEditor(host: EditorHost): ViewerEditor {
       e.stopImmediatePropagation();
       return;
     }
-    if (!host.allowed() || !down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > DRAG_START) return;
+    if (!allowed() || !down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > DRAG_START) return;
     if (!pieceAt(e.clientX, e.clientY)) select(null);
   }, { capture: true, signal });
 
   let hoverAt = 0;
   canvas.addEventListener('pointermove', (e) => {
-    if (press || e.buttons || !host.allowed() || e.timeStamp - hoverAt < 60) return;
+    if (press || e.buttons || !allowed() || e.timeStamp - hoverAt < 60) return;
     hoverAt = e.timeStamp;
     const id = pieceAt(e.clientX, e.clientY);
     if (id) canvas.style.cursor = locked(id) ? 'pointer' : 'grab';
@@ -327,8 +345,25 @@ export function createEditor(host: EditorHost): ViewerEditor {
   }
 
   return {
+    start() {
+      active = true;
+      return after(() => {
+        house.editor.unmerge();
+        host.changed();
+      });
+    },
+    stop() {
+      if (signal.aborted) return queue;
+      if (press) letGo(true);
+      active = false;
+      select(null);
+      return after(() => {
+        house.editor.merge();
+        host.changed();
+      });
+    },
     setEdits(edits) {
-      queue = queue.then(() => show(edits));
+      queue = queue.then(() => (signal.aborted ? undefined : show(edits)));
       return queue;
     },
     plan: () => edited,

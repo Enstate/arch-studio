@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { isAbsolute, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { isAbsolute, join, resolve } from 'node:path';
 const root = fileURLToPath(new URL('..', import.meta.url));
-const archHome = process.env.ARCH_HOME ?? resolve(root, '.arch/dev-store');
+// One development store for every checkout, so worktrees open the same projects.
+const archHome = process.env.ARCH_HOME ?? join(homedir(), '.arch-studio', 'dev-store');
 if (!isAbsolute(archHome)) throw new Error('ARCH_HOME must be absolute');
 const port = process.env.ARCH_STUDIO_PORT ?? '3101';
 if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Invalid Studio port');
