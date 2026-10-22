@@ -3,14 +3,14 @@ import { compressArtifactModels } from "./compress.ts";
 import { cameraView } from "@arch/viewer/plan/levels";
 import { applyEdits, hasEdits, type PlanEdits } from "@arch/viewer/plan/edits";
 import type { Plan } from "@arch/viewer/plan/schema";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { z } from "zod";
 import { promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
@@ -1631,10 +1631,16 @@ export async function buildProjectArtifact(projectId: string, options: { authori
   await fs.mkdir(output,{recursive:true});
   await new Promise<void>((resolve,reject) => {
     if (sourceBuildsStopping) { reject(new Error("Source builds are stopping")); return; }
-    const child = spawn(process.env.ARCH_BUN || (process.versions.bun ? process.execPath : path.join(homedir(),".bun/bin/bun")),["run",current.manifest.entry],{cwd:current.directory,stdio:["ignore","ignore","pipe"],env:{PATH:"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",ARCH_ARTIFACT_OUTPUT:output},detached:true});
+    const windows = process.platform === "win32";
+    // Windows has no process groups, and Bun there needs SystemRoot and a temporary directory.
+    const env = windows
+      ? {PATH:path.join(process.env.SystemRoot ?? "C:\\Windows","System32"),SystemRoot:process.env.SystemRoot ?? "C:\\Windows",TEMP:tmpdir(),TMP:tmpdir(),ARCH_ARTIFACT_OUTPUT:output}
+      : {PATH:"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",ARCH_ARTIFACT_OUTPUT:output};
+    const child = spawn(process.env.ARCH_BUN || (process.versions.bun ? process.execPath : path.join(homedir(),".bun/bin",windows ? "bun.exe" : "bun")),["run",current.manifest.entry],{cwd:current.directory,stdio:["ignore","ignore","pipe"],env,detached:!windows,windowsHide:true});
     const stop = () => {
       if (child.pid === undefined) return;
-      try { process.kill(-child.pid, "SIGKILL"); } catch {}
+      if (windows) spawnSync("taskkill",["/pid",String(child.pid),"/T","/F"],{stdio:"ignore",windowsHide:true});
+      else try { process.kill(-child.pid, "SIGKILL"); } catch {}
     };
     sourceBuildProcesses.add(stop);
     const diagnostic = Buffer.alloc(4096);

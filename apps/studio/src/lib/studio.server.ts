@@ -299,5 +299,9 @@ export async function artifactResponse(request: Request, checkpointId: string, t
       return new Response(request.method === "HEAD" ? null : new Uint8Array(content.subarray(start, end + 1)), { status: 206, headers });
     }
     return new Response(request.method === "HEAD" ? null : new Uint8Array(content), { headers });
-  } catch { return new Response(null, { status: 404 }); }
+  } catch (error) {
+    // Callers only learn "not found"; the local log keeps the reason.
+    console.error(`Artifact request failed: ${error instanceof Error ? error.message : String(error)}`);
+    return new Response(null, { status: 404 });
+  }
 }

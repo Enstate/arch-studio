@@ -1,0 +1,2 @@
+# Viewer src/ bytes define the runtime hash, so a Windows checkout must keep LF.
+* text=auto eol=lf

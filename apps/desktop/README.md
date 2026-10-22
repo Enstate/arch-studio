@@ -5,6 +5,11 @@ macOS releases contain `Arch-Studio-<version>-arm64.dmg` for Apple Silicon and
 The app and its bundled Bun/server executables are Developer ID signed. The
 app is notarized and stapled before the DMG and updater ZIP are created.
 
+Windows releases contain `Arch-Studio-Setup-<version>-windows-x64.exe`, a
+per-user NSIS installer. It is not Authenticode signed yet, so SmartScreen warns
+on first install. Installed copies update from `latest.yml` through the same
+update flow; the window menu holds **Check for Updates**.
+
 Installed releases check GitHub Releases after 15 seconds and every four minutes.
 The Studio sidebar and **Arch Studio → Check for Updates** expose the same flow:
 check, choose **Download update**, then confirm **Restart and install**. Checks
@@ -57,6 +62,11 @@ and bundles the matching host-architecture Bun runtime. Run each architecture
 with its matching Bun/Electron toolchain. Installer and updater bytes must stay
 unchanged after `latest-mac.yml` is generated.
 
+A Windows x64 host builds the installer with the same commands; `--release`
+there skips signing and notarization and writes `desktop-windows-x64.json`
+provenance. CI builds a Windows preview on every pull request and runs
+`bun scripts/verify-desktop.ts --preview` against it.
+
 Verification creates a disposable synthetic store, opens the actual packaged
 app, builds a version, downloads its reference and checks shutdown. It uses the
 native macOS display. Do not add `--headless`: Chromium substitutes an 800x600
@@ -68,7 +78,9 @@ asserts the UI pixel ratio matches the display and captures device pixels.
 The tag workflow always builds source archives. Hosted macOS builds and publication
 are opt-in through the repository variable `MACOS_RELEASE_CI_ENABLED=true`, after
 signing credentials are configured. They build native arm64 and x64 apps and one
-merged `latest-mac.yml`. CI needs `MACOS_CERTIFICATE_P12`, `MACOS_CERTIFICATE_PASSWORD`,
+merged `latest-mac.yml`. The Windows job always runs on the tag and uploads the
+installer, blockmap, `latest.yml` and provenance as the `desktop-windows-x64`
+workflow artifact. CI needs `MACOS_CERTIFICATE_P12`, `MACOS_CERTIFICATE_PASSWORD`,
 and either `APPLE_ID`/`APPLE_APP_SPECIFIC_PASSWORD` or
 `APPLE_API_KEY`/`APPLE_API_KEY_ID`/`APPLE_API_ISSUER` secrets. The team is
 `3T885JB4UJ`. An API key secret may contain the P8 text; it is written only to a
@@ -88,6 +100,8 @@ are also required for in-app updates.
 A local release can use the existing macOS Keychain profile without exporting
 its credential to GitHub. Build both architectures from the tag's exact commit,
 put source archives in `release/source` and each architecture's installer,
-update and provenance files in `release/arm64` or `release/x64`, then run the
-same merger and publisher. In-app updates use those published assets regardless
+update and provenance files in `release/arm64` or `release/x64`, download the
+tag run's Windows artifact into `release/windows-x64`
+(`gh run download <run> -n desktop-windows-x64 -D release/windows-x64`), then
+run the same merger and publisher. The publisher requires all three platforms. In-app updates use those published assets regardless
 of whether the signed builds ran locally or in Actions.

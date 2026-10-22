@@ -16,6 +16,10 @@ On macOS, download the Apple Silicon (`arm64`) or Intel (`x64`) DMG from
 Arch Studio into Applications. Installed desktop releases show update status in
 the sidebar and under **Arch Studio → Check for Updates**. Choose when to
 download and restart; saved projects and checkpoints stay on your machine.
+On Windows, run `Arch-Studio-Setup-<version>-windows-x64.exe`. It installs for
+the current user and is not code signed yet, so SmartScreen asks you to confirm
+the first install. Updates work the same way, with **Check for Updates** in the
+window menu.
 The older v0.1.0–v0.1.2 releases contain source packages only.
 
 To run from source:

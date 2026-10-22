@@ -1,5 +1,5 @@
 const { app, BrowserWindow, session, shell, ipcMain, Menu, dialog, nativeTheme } = require('electron');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const path = require('node:path');
 const { createDesktopUpdates } = require('./updates.cjs');
 const { menuLabels } = require('./menu-labels.cjs');
@@ -7,23 +7,28 @@ app.setName('Arch Studio');
 let server;
 let quitting = false;
 let updates;
+const windows = process.platform === 'win32';
+const executable = name => windows ? `${name}.exe` : name;
 function stopServer() {
   if (!server) return;
-  try { process.kill(-server.pid, 'SIGTERM'); } catch {}
+  // Windows has no process groups; taskkill /T stops the server and the builds it started.
+  if (windows) spawnSync('taskkill', ['/pid', String(server.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+  else try { process.kill(-server.pid, 'SIGTERM'); } catch {}
   server = undefined;
 }
 function serverEnvironment(resources) {
   const env = {};
-  for (const key of ['PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'TMP', 'TEMP', 'APPDATA', 'LOCALAPPDATA', 'SystemRoot']) {
+  for (const key of ['PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'TMP', 'TEMP', 'APPDATA', 'LOCALAPPDATA', 'SystemRoot', 'windir', 'USERPROFILE', 'USERNAME', 'HOMEDRIVE', 'HOMEPATH', 'PATHEXT', 'ComSpec', 'SystemDrive', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE']) {
     if (process.env[key]) env[key] = process.env[key];
   }
   if (process.env.ARCH_HOME && !path.isAbsolute(process.env.ARCH_HOME)) throw new Error('ARCH_HOME must be absolute');
-  return { ...env, ...(process.env.ARCH_HOME ? { ARCH_HOME: process.env.ARCH_HOME } : {}), ARCH_VIEWER_ROOT: path.join(resources, 'viewer'), ARCH_BUN: path.join(resources, 'bun'), ARCH_CLIENT_ROOT: path.join(resources, 'client'), ARCH_STUDIO_PORT: '0', ARCH_STUDIO_PARENT_PIPE: '1' };
+  return { ...env, ...(process.env.ARCH_HOME ? { ARCH_HOME: process.env.ARCH_HOME } : {}), ARCH_VIEWER_ROOT: path.join(resources, 'viewer'), ARCH_BUN: path.join(resources, executable('bun')), ARCH_CLIENT_ROOT: path.join(resources, 'client'), ARCH_STUDIO_PORT: '0', ARCH_STUDIO_PARENT_PIPE: '1' };
 }
 function validBootstrapUrl(value) { return typeof value === 'string' && /^http:\/\/127\.0\.0\.1:\d+\/#studio=[a-f0-9]{64}$/.test(value); }
 function startServer() {
   const resources = process.resourcesPath;
-  server = spawn(path.join(resources, 'arch-server'), [], { env: serverEnvironment(resources), stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+  // A detached Windows child would open its own console window.
+  server = spawn(path.join(resources, executable('arch-server')), [], { env: serverEnvironment(resources), stdio: ['pipe', 'pipe', 'pipe'], detached: !windows, windowsHide: true });
   return new Promise((resolve, reject) => {
     let pending = '';
     const timer = setTimeout(() => reject(new Error('Studio server startup timed out')), 30000);
@@ -122,16 +127,17 @@ app.whenReady().then(async () => {
   const applyMenuLabels = labels => {
     if (labels === currentMenuLabels || window.isDestroyed()) return;
     currentMenuLabels = labels;
-    const appMenu = [
+    const checkForUpdates = { label: labels.checkForUpdates, click: () => { void updates.check(); } };
+    const appMenu = process.platform === 'darwin' ? [
       { label: labels.about, role: 'about' },
-      { label: labels.checkForUpdates, click: () => { void updates.check(); } },
+      checkForUpdates,
       { type: 'separator' },
       { role: 'services' },
       { type: 'separator' },
       { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' },
       { type: 'separator' },
       { role: 'quit' },
-    ];
+    ] : [checkForUpdates, { type: 'separator' }, { role: 'quit' }];
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { label: 'Arch Studio', submenu: appMenu },
       { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
