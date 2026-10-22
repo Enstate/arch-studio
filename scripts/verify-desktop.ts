@@ -21,7 +21,8 @@ const demo = spawnSync(process.execPath, ['scripts/demo.ts'], {cwd: root, env: {
 assert.equal(demo.status, 0, demo.stderr);
 const electronEnv = Object.fromEntries(Object.entries({...process.env, ARCH_HOME: home}).filter((entry): entry is [string, string] => entry[1] !== undefined));
 delete electronEnv.ELECTRON_RUN_AS_NODE;
-const electron = await _electron.launch({executablePath, args: [`--user-data-dir=${path.join(temporary,'profile')}`], env: electronEnv});
+// Windows CI runners have no GPU, and Chromium only falls back to software WebGL when asked.
+const electron = await _electron.launch({executablePath, args: [`--user-data-dir=${path.join(temporary,'profile')}`, ...(windows ? ['--enable-unsafe-swiftshader'] : [])], env: electronEnv});
 let origin: string | undefined;
 // Main forwards the Studio server's stderr, which explains failed requests.
 electron.process().stderr?.on('data', data => process.stderr.write(data));
@@ -37,7 +38,7 @@ try {
   await view('preview').click().catch(async error=>{console.error('Renderer body:',await page.locator('body').innerText());throw error;});
   origin = new URL(page.url()).origin;
   assert.equal(new URL(page.url()).hash, '');
-  await page.locator('[data-studio-preview="ready"]').waitFor({timeout:120000}).catch(async error=>{console.error('Preview state:',await page.locator('[data-studio-preview]').first().getAttribute('data-studio-preview').catch(()=>null),'\nRenderer body:',await page.locator('body').innerText());throw error;});
+  await page.locator('[data-studio-preview="ready"]').waitFor({timeout:120000}).catch(async error=>{console.error('Preview state:',await page.locator('[data-studio-preview]').first().getAttribute('data-studio-preview').catch(()=>null),'\nWebGL2:',await page.evaluate(()=>!!document.createElement('canvas').getContext('webgl2')),'\nGPU:',JSON.stringify(await electron.evaluate(({app})=>app.getGPUFeatureStatus())),'\nRenderer body:',await page.locator('body').innerText());throw error;});
   await page.getByRole('progressbar').waitFor({state:'hidden',timeout:10000});
   await page.locator('[data-desktop-update]').waitFor();
   const update = await page.evaluate(() => window.archDesktop!.getUpdateState());
