@@ -132,6 +132,15 @@ interface ClaudeTurnState {
   readonly assistantTextBlockOrder: Array<AssistantTextBlockState>;
   readonly capturedProposedPlanKeys: Set<string>;
   nextSyntheticAssistantBlockIndex: number;
+  /**
+   * Uuids of the prompts this turn sent. Claude Code stamps the frames and the
+   * result that answer a prompt with its uuid, which tells this turn's result
+   * apart from one for a turn the CLI ran first, such as a background task's
+   * notice delivered when a stopped session resumes.
+   */
+  readonly promptUuids?: Set<string>;
+  /** Set once a frame stamped with one of `promptUuids` arrives. */
+  answered?: boolean;
 }
 
 interface AssistantTextBlockState {
@@ -197,6 +206,8 @@ interface ClaudeSessionContext {
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
   stopped: boolean;
+  /** Runs background work, such as a fallback timer, in the session's runtime. */
+  readonly fork: (effect: Effect.Effect<void>) => void;
 }
 
 interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
@@ -882,6 +893,13 @@ function buildPromptText(
 
   const promptEffort = resolvePromptInjectedEffort(caps, rawEffort);
   return applyClaudePromptEffortPrefix(input.input?.trim() ?? "", promptEffort);
+}
+
+/** Uuids of the prompts a frame answers, as Claude Code stamps them. */
+function answeredPromptUuids(message: SDKMessage): string[] {
+  const stamped = message as { user_message_uuid?: unknown; user_message_uuids?: unknown };
+  const uuids = Array.isArray(stamped.user_message_uuids) ? stamped.user_message_uuids : [];
+  return [...uuids, stamped.user_message_uuid].filter((uuid): uuid is string => typeof uuid === "string");
 }
 
 function buildUserMessage(input: {
@@ -2448,6 +2466,32 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const status = turnStatusFromResult(message);
     const errorMessage = message.subtype === "success" ? undefined : message.errors[0];
 
+    // On resume, Claude Code can first run a turn of its own, such as the notice
+    // that a background task of the stopped turn ended, and report its empty
+    // result before it takes our prompt. That result does not end our turn.
+    // Claude Code versions that never stamp prompts get it back after a pause.
+    const turnState = context.turnState;
+    if (
+      turnState?.promptUuids &&
+      !turnState.answered &&
+      message.subtype === "success" &&
+      !answeredPromptUuids(message).some((uuid) => turnState.promptUuids!.has(uuid))
+    ) {
+      context.fork(
+        Effect.sleep("30 seconds").pipe(
+          Effect.andThen(
+            Effect.suspend(() =>
+              context.turnState === turnState && !turnState.answered
+                ? completeTurn(context, status, errorMessage, message)
+                : Effect.void,
+            ),
+          ),
+          Effect.ignore,
+        ),
+      );
+      return;
+    }
+
     if (status === "failed") {
       yield* emitRuntimeError(context, errorMessage ?? "Claude turn failed.");
     }
@@ -2820,6 +2864,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     message: SDKMessage,
   ) {
     yield* ensureThreadId(context, message);
+    const turnState = context.turnState;
+    if (turnState?.promptUuids && !turnState.answered && answeredPromptUuids(message).some((uuid) => turnState.promptUuids!.has(uuid)))
+      turnState.answered = true;
 
     switch (message.type) {
       case "stream_event":
@@ -2960,12 +3007,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     yield* Queue.shutdown(context.promptQueue);
 
-    const streamFiber = context.streamFiber;
-    context.streamFiber = undefined;
-    if (streamFiber && streamFiber.pollUnsafe() === undefined) {
-      yield* Fiber.interrupt(streamFiber);
-    }
-
+    // Close the CLI before stopping the stream reader. A background task the
+    // turn started keeps the CLI's output open, and the reader cannot finish
+    // until the process is gone.
     yield* Effect.try({
       try: () => context.query.close(),
       catch: (cause) =>
@@ -2985,6 +3029,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         }),
       ),
     );
+
+    const streamFiber = context.streamFiber;
+    context.streamFiber = undefined;
+    if (streamFiber && streamFiber.pollUnsafe() === undefined) {
+      yield* Fiber.interrupt(streamFiber);
+    }
 
     const updatedAt = yield* nowIso;
     context.session = {
@@ -3395,6 +3445,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         promptQueue,
         query: queryRuntime,
         streamFiber: undefined,
+        fork: (effect) => {
+          runFork(effect);
+        },
         startedAt,
         basePermissionMode: permissionMode,
         currentApiModelId: apiModelId,
@@ -3548,6 +3601,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         assistantTextBlockOrder: [],
         capturedProposedPlanKeys: new Set(),
         nextSyntheticAssistantBlockIndex: -1,
+        promptUuids: new Set(),
+        answered: false,
       };
 
       const updatedAt = yield* nowIso;
@@ -3572,10 +3627,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
-    const message = yield* buildUserMessageEffect(input, {
-      fileSystem,
-      boundInstanceId,
-    });
+    const promptUuid = yield* randomUUIDv4;
+    const promptTurn = context.turnState;
+    promptTurn?.promptUuids?.add(promptUuid);
+    const message = {
+      ...(yield* buildUserMessageEffect(input, {
+        fileSystem,
+        boundInstanceId,
+      })),
+      uuid: promptUuid as SDKUserMessage["uuid"],
+    };
 
     yield* Queue.offer(context.promptQueue, {
       type: "message",
