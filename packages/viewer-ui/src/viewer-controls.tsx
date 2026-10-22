@@ -651,7 +651,7 @@ function MouseButtonIcon({ button }: { button: "left" | "right" }) {
 
 /** Mouse bindings stay visible; the canvas cursor uses the same rotate and pan symbols. */
 export function NavigationHint({ state }: { state: ViewerState }) {
-  const hint = useT().viewer.navigation;
+  const {navigation: hint, keys} = useT().viewer;
   if (state.mode === "walk" || state.tour.status === "playing" || state.tour.status === "paused") return null;
   const plan = state.mode === "plan";
   return (
@@ -671,7 +671,7 @@ export function NavigationHint({ state }: { state: ViewerState }) {
       ) : (
         <>
           <span className="inline-flex items-center gap-1.5 @max-lg:hidden" title={hint.panAlternative}>
-            <Kbd>Shift</Kbd> + <MouseButtonIcon button="left" /><MoveIcon aria-hidden="true" className="size-3.5" />
+            <Kbd>{keys.shift}</Kbd> + <MouseButtonIcon button="left" /><MoveIcon aria-hidden="true" className="size-3.5" />
             <span>{hint.pan}</span>
             <span className="sr-only">{hint.panAlternative}</span>
           </span>
@@ -700,7 +700,7 @@ export function WalkHint({ state }: { state: ViewerState }) {
 
 function WalkHintCard({ onDismiss }: { onDismiss: () => void }) {
   const touch = matchMedia("(pointer: coarse)").matches;
-  const hint = useT().viewer.walkHint;
+  const {walkHint: hint, keys} = useT().viewer;
   useMountEffect(() => {
     const timer = setTimeout(onDismiss, 7000);
     const onKey = (event: KeyboardEvent) => {
@@ -723,7 +723,7 @@ function WalkHintCard({ onDismiss }: { onDismiss: () => void }) {
               <Kbd key={key}>{key}</Kbd>
             ))}
           </span>
-          {hint.move} · <Kbd>Space</Kbd>{hint.jump} · {hint.look} ·<Kbd>Esc</Kbd>
+          {hint.move} · <Kbd>{keys.space}</Kbd>{hint.jump} · {hint.look} ·<Kbd>{keys.escape}</Kbd>
           {hint.release}
         </>
       )}

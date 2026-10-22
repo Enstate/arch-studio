@@ -1,3 +1,4 @@
+import { StudioFailure } from "./studio-failure";
 import type { AgentProvider, AgentProviderStatus } from "@arch/agent";
 import { Button } from "@arch/ui/components/button";
 import { Spinner } from "@arch/ui/components/spinner";
@@ -12,6 +13,7 @@ import { Dialog, DialogContent, DialogTitle } from "@arch/ui/components/dialog";
 import { agentProviders, answerApproval, threadAgent, discardChanges, interruptRound, resumeRound, roundActivity, roundImage, roundTimeline, startRound } from "../lib/server";
 import type { RoundActivity, RoundEvent, RoundSummary, StudioBranch, StudioVersion } from "../lib/model";
 import type { studioText } from "../lib/messages";
+import { useStudioFormat } from "../lib/locale";
 import { type ModelChoice, type ModelSettings, ModelPicker, settingValue, TraitsPicker } from "./model-picker";
 
 // The timeline and composer follow T3 Code's MessagesTimeline and ChatComposer
@@ -105,6 +107,7 @@ function segments(events: RoundEvent[]): Segment[] {
 }
 
 function RoundTurn({projectId, round, resumable, ensureGrant, version, branch, label, openVersion, compare, forkFrom, revise, t}: {projectId: string; round: RoundSummary; resumable: boolean; ensureGrant: (then: () => void) => void; version?: StudioVersion; branch: StudioBranch; label: (version: StudioVersion) => string; openVersion: (id: string) => void; compare: (base: string, target: string) => void; forkFrom: (checkpointId: string) => void; revise: (text: string) => void; t: Copy}) {
+  const format = useStudioFormat();
   const live = round.status === "running";
   const activity = useRoundActivity(round.id, live);
   const queryClient = useQueryClient();
@@ -134,21 +137,22 @@ function RoundTurn({projectId, round, resumable, ensureGrant, version, branch, l
         {version && version.id !== branch.headId && <Button size="xs" variant="ghost" onClick={() => forkFrom(version.id)}><GitBranchIcon />{t.continueHere}</Button>}
         {round.kind === "critique" && round.summary && <Button size="xs" variant="ghost" onClick={() => revise(round.summary!)}>{t.reviseFromCritique}</Button>}
         {round.status === "failed" && round.kind === "request" && <Button size="xs" variant="ghost" disabled={discard.isPending} onClick={() => discard.mutate()} title={t.discardHint}>{t.discardChanges}</Button>}
-        <span className="ms-auto opacity-0 transition-opacity duration-200 group-hover/assistant:opacity-100">{round.model}{round.completedAt && ` · ${new Date(round.completedAt).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}`}</span>
+        <span className="ms-auto opacity-0 transition-opacity duration-200 group-hover/assistant:opacity-100">{round.model}{round.completedAt && ` · ${format.date(round.completedAt, {hour: "2-digit", minute: "2-digit"})}`}</span>
       </div>
-      {(discard.error ?? resume.error) && <p role="alert" className="px-1 pt-1 text-xs text-destructive">{(discard.error ?? resume.error)!.message}</p>}
+      {(discard.error ?? resume.error) && <StudioFailure className="px-1 pt-1 text-xs text-destructive" error={(discard.error ?? resume.error)!} />}
     </div>}
   </div>;
 }
 
 function UserRow({round, t}: {round: RoundSummary; t: Copy}) {
+  const format = useStudioFormat();
   return <div className="group flex flex-col items-end gap-1 pb-4">
     <div className="relative max-w-[80%] rounded-2xl bg-accent p-3">
       {!!round.attachments.length && <div className="mb-2 flex flex-wrap gap-1.5">{round.attachments.map(item => <span key={item.sha256} className="inline-flex items-center gap-1 rounded-md border border-border/80 bg-background/70 px-1.5 py-0.5 text-[11px] text-muted-foreground">{item.mimeType.startsWith("image/") ? <ImageIcon className="size-3" /> : <FileTextIcon className="size-3" />}{item.name}</span>)}</div>}
       {round.kind === "critique" && <p className="mb-1 flex items-center gap-1 text-[11px] font-medium text-muted-foreground"><ScanSearchIcon className="size-3" />{t.critique}</p>}
       <p className="whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground">{round.request}</p>
     </div>
-    <div className="flex w-full max-w-[80%] items-center justify-end pe-1 text-xs tabular-nums text-muted-foreground opacity-0 transition-opacity duration-200 group-hover:opacity-100">{new Date(round.startedAt).toLocaleString([], {dateStyle: "short", timeStyle: "short"})}</div>
+    <div className="flex w-full max-w-[80%] items-center justify-end pe-1 text-xs tabular-nums text-muted-foreground opacity-0 transition-opacity duration-200 group-hover:opacity-100">{format.date(round.startedAt, {dateStyle: "short", timeStyle: "short"})}</div>
   </div>;
 }
 
@@ -158,8 +162,9 @@ function ChatMarkdown({text}: {text: string}) {
 
 /** "Working for 12s". The activity query repaints every second while the round runs. */
 function WorkingRow({startedAt, t}: {startedAt: string; t: Copy}) {
+  const format = useStudioFormat();
   const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(startedAt)) / 1000));
-  const elapsed = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+  const elapsed = seconds < 60 ? format.duration(seconds, "second") : `${format.duration(Math.floor(seconds / 60), "minute")} ${format.duration(seconds % 60, "second")}`;
   return <div className="py-0.5 pb-4 pl-1.5">
     <div className="flex items-center gap-2 pt-1 text-[11px] tabular-nums text-muted-foreground/70">
       <span className="inline-flex items-center gap-[3px]">
@@ -243,7 +248,7 @@ function WorkGroup({roundId, events, live, cwd, heading, t}: {roundId: string; e
       <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground/65"><ChevronDownIcon className={cn("size-3.5 shrink-0 opacity-70 transition-transform duration-200", expanded && "rotate-180")} /></span>
       <span className="font-medium text-foreground/82">{expanded ? t.showFewerTools : `+${hidden} ${t.previousTools}`}</span>
     </button>}
-    <div className="space-y-px">{entries.slice(hidden).map(entry => <WorkRow key={entry.id} entry={entry} />)}</div>
+    <div className="space-y-px">{entries.slice(hidden).map(entry => <WorkRow key={entry.id} entry={entry} t={t} />)}</div>
     {!!images.length && <div className="flex flex-wrap gap-2 px-0.5 pt-1.5 pb-0.5">{images.map(image => <ViewedImage key={`${image.itemId}:${image.sha256}`} roundId={roundId} image={image} />)}</div>}
   </section>;
 }
@@ -263,7 +268,7 @@ function ViewedImage({roundId, image}: {roundId: string; image: ImageEvent}) {
   </>;
 }
 
-function WorkRow({entry}: {entry: WorkEntry}) {
+function WorkRow({entry, t}: {entry: WorkEntry; t: Copy}) {
   const [expanded, setExpanded] = useState(false);
   const canExpand = !!entry.body;
   const Icon = entry.icon;
@@ -279,7 +284,7 @@ function WorkRow({entry}: {entry: WorkEntry}) {
         </p>
         <div className="flex shrink-0 items-center gap-px text-muted-foreground/55">
           <span className="flex size-4 shrink-0 items-center justify-center">{canExpand ? <ChevronDownIcon className={cn("size-3 shrink-0 opacity-70 transition-transform duration-200", expanded && "rotate-180")} aria-hidden /> : null}</span>
-          <span className="flex size-4 shrink-0 items-center justify-center">{entry.state === "failed" ? <XIcon className="block size-3 shrink-0 text-destructive" aria-label="Failed" /> : entry.state === "done" ? <CheckIcon className="block size-3 shrink-0" aria-label="Completed" /> : entry.state === "running" ? <Spinner className="size-3" /> : null}</span>
+          <span className="flex size-4 shrink-0 items-center justify-center">{entry.state === "failed" ? <XIcon className="block size-3 shrink-0 text-destructive" aria-label={t.statusFailed} /> : entry.state === "done" ? <CheckIcon className="block size-3 shrink-0" aria-label={t.statusDone} /> : entry.state === "running" ? <Spinner className="size-3" /> : null}</span>
         </div>
       </div>
     </div>
@@ -393,6 +398,6 @@ function Composer({projectId, threadId, branch, running, request, setRequest, ca
         </div>
       </div>
     </div>
-    {(start.error || answer.error) && <p role="alert" className="px-4 pt-2 text-xs text-destructive">{(start.error ?? answer.error)!.message}</p>}
+    {(start.error || answer.error) && <StudioFailure className="px-4 pt-2 text-xs text-destructive" error={(start.error ?? answer.error)!} />}
   </form>;
 }

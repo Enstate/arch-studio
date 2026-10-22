@@ -86,6 +86,7 @@ if (['all', 'app'].includes(phase)) {
 }
 const config: Configuration = {
   appId: 'co.enstate.arch.studio', productName: 'Arch Studio', electronVersion,
+  icon: join(root, 'apps/desktop/icon.png'),
   directories: { app: stage, output }, asar: true,
   files: ['main.cjs', 'preload.cjs', 'package.json'],
   extraResources: [{ from: resources, to: '.' }],
@@ -97,6 +98,7 @@ const config: Configuration = {
   // triggers a separate Gatekeeper failure; keep electron-builder's default.
   dmg: { sign: false },
   mac: {
+    icon: join(root, 'apps/desktop/icon.icns'),
     identity: release ? (process.env.CSC_NAME || 'Matias Mora (3T885JB4UJ)') : null,
     hardenedRuntime: release, notarize: false,
     entitlements: join(root, 'apps/desktop/entitlements.mac.plist'),

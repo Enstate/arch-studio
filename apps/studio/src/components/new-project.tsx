@@ -1,3 +1,5 @@
+import { StudioFailure } from "./studio-failure";
+import { studioFailure } from "../lib/studio-errors";
 import { Attachment, AttachmentAction, AttachmentActions, AttachmentContent, AttachmentDescription, AttachmentGroup, AttachmentTitle } from "@arch/ui/components/attachment";
 import { Button } from "@arch/ui/components/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@arch/ui/components/dialog";
@@ -13,6 +15,7 @@ import { toast } from "@arch/ui/components/sonner";
 import { agentProviders, createProject, grantBuilds, startRound } from "../lib/server";
 import type { StudioClient } from "../lib/model";
 import type { studioText } from "../lib/messages";
+import { useStudioFormat, useStudioLocale } from "../lib/locale";
 
 const accepted = ".pdf,.png,.jpg,.jpeg,.webp,.svg,.txt,.md,.json";
 const noClient = "none";
@@ -21,6 +24,8 @@ const intakeRequest = (brief: string) => `Review every reference in this new pro
 
 /** Name, references and an optional brief become a ready project folder in one step. */
 export function NewProject({open, setOpen, clients, defaultClientId, created, t}: {open: boolean; setOpen: (open: boolean) => void; clients: StudioClient[]; defaultClientId?: string; created: (value: {clientId: string; projectId: string}) => void; t: typeof studioText.en}) {
+  const format = useStudioFormat();
+  const {locale} = useStudioLocale();
   const queryClient = useQueryClient();
   const input = useRef<HTMLInputElement>(null);
   const [references, setReferences] = useState<File[]>([]);
@@ -45,7 +50,7 @@ export function NewProject({open, setOpen, clients, defaultClientId, created, t}
           round.set("projectId", created.projectId); round.set("branch", "main"); round.set("kind", "request");
           round.set("request", intakeRequest(values.brief.trim())); round.set("provider", agent.provider); round.set("model", agent.models[0]!.id);
           await startRound({data: round});
-        } catch (error) {toast.error(t.intakeFailed, {description: error instanceof Error ? error.message : undefined});}
+        } catch (error) {toast.error(t.intakeFailed, {description: error instanceof Error ? studioFailure(error, locale).message : undefined});}
       }
       return created;
     },
@@ -57,7 +62,8 @@ export function NewProject({open, setOpen, clients, defaultClientId, created, t}
   });
   const add = (files: FileList | null) => {
     if (!files) return;
-    setReferences(current => [...current, ...[...files].filter(file => !current.some(item => item.name === file.name && item.size === file.size))].slice(0, 100));
+    const selected = [...files];
+    setReferences(current => [...current, ...selected.filter(file => !current.some(item => item.name === file.name && item.size === file.size))].slice(0, 100));
   };
   const reset = (value: boolean) => {
     if (create.isPending) return;
@@ -76,11 +82,11 @@ export function NewProject({open, setOpen, clients, defaultClientId, created, t}
           <Button type="button" size="sm" variant="outline" disabled={create.isPending} onClick={() => input.current?.click()}>{t.addReferences}</Button>
           <input ref={input} id="new-project-references" type="file" multiple accept={accepted} className="sr-only" tabIndex={-1} onChange={event => {add(event.target.files); event.target.value = "";}} />
         </fieldset>
-        {!!references.length && <AttachmentGroup className="max-h-40 overflow-y-auto">{references.map(file => <Attachment key={`${file.name}:${file.size}`} size="xs"><FileIcon className="size-3.5 text-muted-foreground" /><AttachmentContent><AttachmentTitle>{file.name}</AttachmentTitle><AttachmentDescription>{Math.max(1, Math.round(file.size / 1024))} KB</AttachmentDescription></AttachmentContent><AttachmentActions><AttachmentAction aria-label={`${t.removeFile}: ${file.name}`} disabled={create.isPending} onClick={() => setReferences(current => current.filter(item => item !== file))}><XIcon /></AttachmentAction></AttachmentActions></Attachment>)}</AttachmentGroup>}
+        {!!references.length && <AttachmentGroup className="max-h-40 overflow-y-auto">{references.map(file => <Attachment key={`${file.name}:${file.size}`} size="xs"><FileIcon className="size-3.5 text-muted-foreground" /><AttachmentContent><AttachmentTitle>{file.name}</AttachmentTitle><AttachmentDescription>{format.number(Math.max(1, Math.round(file.size / 1024)), {style: "unit", unit: "kilobyte", unitDisplay: "short"})}</AttachmentDescription></AttachmentContent><AttachmentActions><AttachmentAction aria-label={`${t.removeFile}: ${file.name}`} disabled={create.isPending} onClick={() => setReferences(current => current.filter(item => item !== file))}><XIcon /></AttachmentAction></AttachmentActions></Attachment>)}</AttachmentGroup>}
       </Field>
       <form.Field name="brief">{field => <Field className="gap-2"><FieldLabel htmlFor="new-project-brief" className="text-ui font-normal">{t.briefLabel}</FieldLabel><Textarea id="new-project-brief" name={field.name} value={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.value)} autoComplete="off" maxLength={4000} rows={3} placeholder={t.briefPlaceholder} disabled={create.isPending} /></Field>}</form.Field>
       {agent && !!references.length && <form.Field name="startIntake">{field => <Field orientation="horizontal" className="items-start gap-2"><input id="new-project-intake" type="checkbox" name={field.name} checked={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.checked)} className="mt-0.5" disabled={create.isPending} /><FieldLabel htmlFor="new-project-intake" className="grid gap-0.5 text-ui font-normal"><span>{t.startIntake}</span><span className="text-xs text-muted-foreground">{t.startIntakeHint}</span></FieldLabel></Field>}</form.Field>}
-      {create.error && <p role="alert" className="text-destructive">{create.error.message}</p>}
+      {create.error && <StudioFailure className="text-destructive" error={create.error} />}
       <Button type="submit" disabled={create.isPending}>{create.isPending ? t.creatingProject : t.create}</Button>
     </form>
   </DialogContent></Dialog>;

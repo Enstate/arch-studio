@@ -1,3 +1,5 @@
+import { threadTitle } from "../lib/thread-title";
+import { StudioFailure } from "./studio-failure";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@arch/ui/components/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@arch/ui/components/popover";
 import { Spinner } from "@arch/ui/components/spinner";
@@ -8,6 +10,7 @@ import { type ReactNode, useRef, useState } from "react";
 import { addReferences, compareVersions } from "../lib/server";
 import type { StudioBranch, StudioThread, StudioVersion } from "../lib/model";
 import type { studioText } from "../lib/messages";
+import { type StudioFormat, useStudioFormat } from "../lib/locale";
 import { ProjectBadge } from "./thread-sidebar";
 
 // Laid out like T3 Code's floating thread panel: where you work, the line of work, and
@@ -30,9 +33,9 @@ const chevronButton = "grid h-9 w-8 shrink-0 place-items-center rounded-lg text-
 function Section({children, title}: {children: ReactNode; title?: ReactNode}) {
   return <div className="border-t border-border/70 px-1.5 py-1.5 first:border-t-0">{title}{children}</div>;
 }
-function ago(value: string) {
+function ago(value: string, format: StudioFormat) {
   const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(value)) / 60000));
-  return minutes < 1 ? "now" : minutes < 60 ? `${minutes}m` : minutes < 1440 ? `${Math.floor(minutes / 60)}h` : `${Math.floor(minutes / 1440)}d`;
+  return minutes < 1 ? format.relative(0, "second") : minutes < 60 ? format.relative(-minutes, "minute") : minutes < 1440 ? format.relative(-Math.floor(minutes / 60), "hour") : format.relative(-Math.floor(minutes / 1440), "day");
 }
 
 export function ProjectPanel(props: {
@@ -44,6 +47,7 @@ export function ProjectPanel(props: {
   reveal: () => void; build: () => void; building: boolean; buildError?: string; compare: (base: string, target: string) => void; openHandoff: () => void; revoke: () => void; t: Copy;
 }) {
   const {t, branch, version} = props;
+  const format = useStudioFormat();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [threadsOpen, setThreadsOpen] = useState(true);
@@ -68,7 +72,7 @@ export function ProjectPanel(props: {
         <Row icon={<FolderOpenIcon />} label={t.openFolder} onClick={props.reveal} />
         <Row icon={add.isPending ? <Spinner /> : <PlusIcon />} label={add.isPending ? t.addingFiles : t.addFiles} onClick={() => input.current?.click()} disabled={add.isPending} />
         <input ref={input} type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.svg,.txt,.md,.json" className="sr-only" tabIndex={-1} onChange={event => {const files = [...event.target.files ?? []]; event.target.value = ""; if (files.length) add.mutate(files);}} />
-        {add.error && <p role="alert" className="px-2.5 pb-1 text-xs text-destructive">{add.error.message}</p>}
+        {add.error && <StudioFailure className="px-2.5 pb-1 text-xs text-destructive" error={add.error} />}
       </Section>
       <Section>
         <Row icon={<GitBranchIcon />} label={<span className="flex items-center gap-1.5">{variantName(branch.name, t)}{branch.primary && <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{t.primaryBranch}</span>}</span>}
@@ -79,12 +83,12 @@ export function ProjectPanel(props: {
             <DropdownMenuItem disabled={!version} onClick={() => {setOpen(false); if (version) props.newVariant(version.id);}}><PlusIcon />{t.newVariant}</DropdownMenuItem>
             {!branch.primary && <DropdownMenuItem onClick={props.makePrimary}><StarIcon />{t.makePrimary}</DropdownMenuItem>}
           </DropdownMenuContent></DropdownMenu>} />
-        <Row icon={<LayersIcon />} label={version ? props.versionLabel(version).split(" · ")[0] : t.noVersions} detail={version && (props.following ? t.latest : ago(version.createdAt))}
+        <Row icon={<LayersIcon />} label={version ? props.versionLabel(version).split(" · ")[0] : t.noVersions} detail={version && (props.following ? t.latest : ago(version.createdAt, format))}
           menu={<DropdownMenu><DropdownMenuTrigger className={chevronButton} aria-label={t.versions}><ChevronDownIcon className="size-4" /></DropdownMenuTrigger><DropdownMenuContent align="end" className="max-h-80 w-64 overflow-y-auto">
             <DropdownMenuRadioGroup value={props.following ? "latest" : version?.id ?? "latest"} onValueChange={value => props.selectVersion(value === "latest" ? undefined : String(value))}>
               <DropdownMenuRadioItem closeOnClick value="latest" className="studio-choice py-2">{t.followLatest}</DropdownMenuRadioItem>
               <DropdownMenuSeparator />
-              {props.versions.map(item => <DropdownMenuRadioItem closeOnClick key={item.id} value={item.id} className="studio-choice py-2"><span className="grid min-w-0 gap-0.5"><span>{props.versionLabel(item)}<span className="ml-2 text-xs font-normal text-muted-foreground">{item.hasArtifact ? t.ready : t.draft}</span></span><span className="text-xs font-normal text-muted-foreground">{new Date(item.createdAt).toLocaleString([], {dateStyle: "medium", timeStyle: "short"})}</span></span></DropdownMenuRadioItem>)}
+              {props.versions.map(item => <DropdownMenuRadioItem closeOnClick key={item.id} value={item.id} className="studio-choice py-2"><span className="grid min-w-0 gap-0.5"><span>{props.versionLabel(item)}<span className="ml-2 text-xs font-normal text-muted-foreground">{item.hasArtifact ? t.ready : t.draft}</span></span><span className="text-xs font-normal text-muted-foreground">{format.date(item.createdAt, {dateStyle: "medium", timeStyle: "short"})}</span></span></DropdownMenuRadioItem>)}
             </DropdownMenuRadioGroup>
           </DropdownMenuContent></DropdownMenu>} />
         <Row icon={props.building ? <Spinner /> : props.buildError ? <CircleAlertIcon className="text-destructive" /> : <HammerIcon />} label={props.building ? t.building : t.buildNow} detail={props.buildError ? t.buildFailed : undefined} onClick={props.build} disabled={props.building} />
@@ -95,7 +99,7 @@ export function ProjectPanel(props: {
       <Section title={<button type="button" aria-expanded={threadsOpen} onClick={() => setThreadsOpen(value => !value)} className="flex h-8 w-full items-center gap-2 px-2.5 text-left">
         <span className="text-xs font-medium text-muted-foreground">{t.threadsOnVariant} ({siblings.length})</span><span className="h-px flex-1 bg-border/60" /><ChevronDownIcon className={cn("size-3 text-muted-foreground/60 transition-transform", threadsOpen && "rotate-180")} />
       </button>}>
-        {threadsOpen && (siblings.length ? siblings.map(thread => <Row key={thread.id} icon={thread.status === "working" ? <CircleDashedIcon className="text-sky-600 dark:text-sky-400" /> : thread.status === "approval" || thread.status === "failed" ? <CircleAlertIcon className="text-amber-600 dark:text-amber-300" /> : <CheckIcon />} label={thread.title} detail={ago(thread.latestRequestAt ?? thread.createdAt)} onClick={() => {setOpen(false); props.openThread(thread);}} />)
+        {threadsOpen && (siblings.length ? siblings.map(thread => <Row key={thread.id} icon={thread.status === "working" ? <CircleDashedIcon className="text-sky-600 dark:text-sky-400" /> : thread.status === "approval" || thread.status === "failed" ? <CircleAlertIcon className="text-amber-600 dark:text-amber-300" /> : <CheckIcon />} label={threadTitle(thread.title, t)} detail={ago(thread.latestRequestAt ?? thread.createdAt, format)} onClick={() => {setOpen(false); props.openThread(thread);}} />)
           : <p className="px-2.5 pb-1.5 text-xs text-muted-foreground">{t.noOtherThreads}</p>)}
       </Section>
       <Section><Row icon={<CircleAlertIcon />} label={<span className="text-xs text-muted-foreground">{t.revokeBuilds}</span>} onClick={() => {setOpen(false); props.revoke();}} /></Section>

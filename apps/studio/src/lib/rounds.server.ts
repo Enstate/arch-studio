@@ -135,7 +135,7 @@ function onBranch<T>(sourceId: string, branch: string, work: () => Promise<T>): 
 type ThreadRow = { id: string; source_id: string; branch: string; title: string };
 function requireThread(sourceId: string, threadId: string): ThreadRow {
   const row = rounds().prepare("SELECT id, source_id, branch, title FROM threads WHERE id=? AND source_id=?").get(threadId, sourceId);
-  if (!row) throw new Error("Unknown thread");
+  if (!row) throw new Error("ARCH_ITEM_MISSING");
   return row as unknown as ThreadRow;
 }
 /** Approval requests the running round on a branch is waiting on. */
@@ -154,14 +154,14 @@ function bindShutdown() {
 
 async function sourceOf(projectId: string) {
   const project = requireProject(await localCatalog(), projectId);
-  if (!project.sourceId) throw new Error("Open a source folder before starting a round.");
+  if (!project.sourceId) throw new Error("ARCH_SOURCE_REQUIRED");
   return project.sourceId;
 }
 async function branchLine(sourceId: string, branch: string) {
   const branches = await projectBranches(sourceId);
   const line = branches.branches.find(item => item.name === branch);
-  if (!line) throw new Error("Unknown branch");
-  if (line.archived) throw new Error("Restore the archived branch before working on it.");
+  if (!line) throw new Error("ARCH_ITEM_MISSING");
+  if (line.archived) throw new Error("ARCH_RESTORE_VARIANT");
   return line;
 }
 
@@ -291,12 +291,12 @@ export async function startRound({ data }: { data: { projectId: string; threadId
   const thread = requireThread(sourceId, data.threadId);
   const branch = thread.branch;
   let line = await branchLine(sourceId, branch);
-  if (data.kind === "request" && !(await buildGrant({ data: { projectId: data.projectId, branch } })).granted) throw new Error("Allow local builds for this project before starting a round.");
-  if (data.kind === "critique" && !line.headId) throw new Error("Build a version before asking for a critique.");
+  if (data.kind === "request" && !(await buildGrant({ data: { projectId: data.projectId, branch } })).granted) throw new Error("ARCH_BUILDS_REQUIRED");
+  if (data.kind === "critique" && !line.headId) throw new Error("ARCH_VERSION_REQUIRED");
   const key = thread.id;
-  if (activeThreads.has(key)) throw new Error("A round is already running in this thread.");
+  if (activeThreads.has(key)) throw new Error("ARCH_ROUND_RUNNING");
   const owner = rounds().prepare("SELECT provider FROM thread_agents WHERE thread_id=?").get(thread.id);
-  if (data.kind === "request" && owner && owner.provider !== data.provider) throw new Error("This thread continues its existing agent session. Start a new thread to use another agent.");
+  if (data.kind === "request" && owner && owner.provider !== data.provider) throw new Error("ARCH_AGENT_LOCKED");
   activeThreads.add(key);
   bindShutdown();
   try {
@@ -409,9 +409,9 @@ export async function saveEdits({ data }: { data: { projectId: string; branch: s
   requireStudio();
   const sourceId = await sourceOf(data.projectId);
   const line = await branchLine(sourceId, data.branch);
-  if (!(await buildGrant({ data: { projectId: data.projectId, branch: data.branch } })).granted) throw new Error("Allow local builds for this project before saving hand edits.");
+  if (!(await buildGrant({ data: { projectId: data.projectId, branch: data.branch } })).granted) throw new Error("ARCH_BUILDS_REQUIRED");
   const running = rounds().prepare("SELECT id FROM rounds WHERE source_id=? AND branch=? AND status='running'").all(sourceId, data.branch).some(row => active.has(String(row.id)));
-  if (running) throw new Error("A round is working on this design. Save your hand edits when it finishes.");
+  if (running) throw new Error("ARCH_EDITS_BUSY");
   return onBranch(sourceId, data.branch, async () => {
     await saveHandEdits(line.directory, data.edits, sharedLibrary());
     return buildVersion({ data: { sourceId, projectId: data.projectId, branch: data.branch, authorizeSourceExecution: true } });
@@ -436,9 +436,9 @@ export async function resumeRound({ data }: { data: { projectId: string; roundId
   requireStudio();
   const sourceId = await sourceOf(data.projectId);
   const row = rounds().prepare("SELECT * FROM rounds WHERE id=? AND source_id=?").get(data.roundId, sourceId);
-  if (!row || row.kind !== "request" || row.provider === null) throw new Error("Only a stopped request round can be continued.");
+  if (!row || row.kind !== "request" || row.provider === null) throw new Error("ARCH_RESUME_STOPPED");
   const previous = summary(row);
-  if (previous.status !== "interrupted" && previous.status !== "failed") throw new Error("Only a stopped request round can be continued.");
+  if (previous.status !== "interrupted" && previous.status !== "failed") throw new Error("ARCH_RESUME_STOPPED");
   const agent = rounds().prepare("SELECT settings FROM thread_agents WHERE thread_id=?").get(String(row.thread_id));
   const original = previous.request?.replace(/^Continue where you stopped\.[\s\S]*?Original request:\n\n/, "") ?? "";
   const request = `Continue where you stopped. The previous round ended before it finished, and its edits are still in the folder. Pick up from there.\n\nOriginal request:\n\n${original}`;
@@ -447,7 +447,7 @@ export async function resumeRound({ data }: { data: { projectId: string; roundId
 export async function interruptRound({ data }: { data: { roundId: string } }) {
   requireStudio();
   const round = active.get(data.roundId);
-  if (!round) throw new Error("This round is not running.");
+  if (!round) throw new Error("ARCH_ROUND_STOPPED");
   round.interrupted = true;
   await round.turn?.interrupt();
   return { interrupted: true };
@@ -455,7 +455,7 @@ export async function interruptRound({ data }: { data: { roundId: string } }) {
 export async function answerApproval({ data }: { data: { roundId: string; requestId: string; decision: "accept" | "decline" } }) {
   requireStudio();
   const round = active.get(data.roundId);
-  if (!round?.turn) throw new Error("This round is not waiting for approval.");
+  if (!round?.turn) throw new Error("ARCH_NO_APPROVAL");
   await round.turn.respond(data.requestId, data.decision);
   return { answered: true };
 }
@@ -481,7 +481,7 @@ export async function roundTimeline({ data }: { data: { projectId: string } }): 
 export async function roundActivity({ data }: { data: { roundId: string; after: number } }): Promise<RoundActivity> {
   requireStudio();
   const row = rounds().prepare("SELECT * FROM rounds WHERE id=?").get(data.roundId);
-  if (!row) throw new Error("Unknown round");
+  if (!row) throw new Error("ARCH_ITEM_MISSING");
   const events = rounds().prepare("SELECT seq, event FROM round_events WHERE round_id=? AND seq>=? ORDER BY seq").all(data.roundId, data.after).map(item => JSON.parse(String(item.event)) as RoundEvent);
   return { round: summary(row), from: data.after, events };
 }
@@ -562,7 +562,7 @@ export async function updateThread({ data }: { data: { projectId: string; thread
   // Unread means the latest completion is newer than the last visit.
   else if (action.kind === "unread") run("UPDATE threads SET last_visited_at='1970-01-01T00:00:00.000Z' WHERE id=?");
   else {
-    if (activeThreads.has(data.threadId)) throw new Error("Stop the running round before archiving this thread.");
+    if (activeThreads.has(data.threadId)) throw new Error("ARCH_STOP_TO_ARCHIVE");
     run("UPDATE threads SET archived_at=? WHERE id=?", now);
   }
   return { updated: true };

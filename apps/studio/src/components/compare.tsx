@@ -1,3 +1,4 @@
+import { StudioFailure } from "./studio-failure";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@arch/ui/components/select";
 import { Switch } from "@arch/ui/components/switch";
 import { ViewerSurface, type ViewerInstance } from "@arch/viewer-ui";
@@ -61,12 +62,12 @@ export function Compare({projectId, versions, base, target, select, versionLabel
       <section className="grid content-start gap-2"><h3 className="text-xs font-medium text-muted-foreground">{t.changedFiles}{changes && ` · ${authored.length}`}</h3>
         <ul className="grid max-h-48 gap-0.5 overflow-y-auto font-mono text-xs">{authored.map(file => <li key={file.path} className="flex gap-2"><span className="w-4 shrink-0 text-muted-foreground">{file.change === "added" ? "+" : file.change === "removed" ? "−" : "~"}</span><span className="truncate">{file.path}</span></li>)}</ul>
       </section>
-      {comparison.error && <p role="alert" className="text-xs text-destructive">{comparison.error.message}</p>}
+      {comparison.error && <StudioFailure className="text-xs text-destructive" error={comparison.error} />}
     </div></div>
   </div>;
 }
 
 function ComparePane({version, onViewer, t}: {version: StudioVersion; onViewer: (viewer: ViewerInstance | null) => void; t: Copy}) {
   const preview = useQuery({queryKey: ["studio-preview", version.checkpointId], queryFn: () => openVersion({data: {checkpointId: version.checkpointId}}), staleTime: 60_000, retry: false});
-  return <div className="relative min-h-64 bg-background">{preview.data ? <ViewerSurface planUrl={preview.data.planUrl} assetBase={preview.data.assetBase} artifactId={preview.data.artifactHash} onViewer={onViewer} /> : <p role={preview.isError ? "alert" : "status"} className="grid size-full place-items-center p-6 text-xs text-muted-foreground">{preview.isError ? (preview.error.message === VIEWER_MISMATCH ? t.viewerMismatch : preview.error.message) : t.preparing}</p>}</div>;
+  return <div className="relative min-h-64 bg-background">{preview.data ? <ViewerSurface planUrl={preview.data.planUrl} assetBase={preview.data.assetBase} artifactId={preview.data.artifactHash} onViewer={onViewer} /> : (preview.isError && preview.error.message !== VIEWER_MISMATCH ? <StudioFailure error={preview.error} className="p-6 text-xs text-muted-foreground" /> : <p role={preview.isError ? "alert" : "status"} className="grid size-full place-items-center p-6 text-xs text-muted-foreground">{preview.isError ? t.viewerMismatch : t.preparing}</p>)}</div>;
 }
