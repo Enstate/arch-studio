@@ -23,18 +23,21 @@ const electronEnv = Object.fromEntries(Object.entries({...process.env, ARCH_HOME
 delete electronEnv.ELECTRON_RUN_AS_NODE;
 const electron = await _electron.launch({executablePath, args: [`--user-data-dir=${path.join(temporary,'profile')}`], env: electronEnv});
 let origin: string | undefined;
+// Main forwards the Studio server's stderr, which explains failed requests.
+electron.process().stderr?.on('data', data => process.stderr.write(data));
 try {
   const page = await electron.firstWindow();
   assert.equal(await electron.evaluate(({app}) => app.commandLine.hasSwitch('headless')), false, 'Desktop UI verification must use the native display');
   page.on('pageerror', error => console.error('Renderer error:',error.message));
   page.on('console', message => {if(message.type()==='error') console.error('Renderer console:',message.text());});
+  page.on('response', response => {if(response.status()>=400) console.error('Failed request:',response.status(),new URL(response.url()).pathname);});
   page.setDefaultTimeout(30000);
   // Studio opens the demo's thread on its Rounds view; the model has its own view.
   const view = (name: string) => page.locator(`[data-studio-view="${name}"]:visible`).first();
   await view('preview').click().catch(async error=>{console.error('Renderer body:',await page.locator('body').innerText());throw error;});
   origin = new URL(page.url()).origin;
   assert.equal(new URL(page.url()).hash, '');
-  await page.locator('[data-studio-preview="ready"]').waitFor({timeout:120000});
+  await page.locator('[data-studio-preview="ready"]').waitFor({timeout:120000}).catch(async error=>{console.error('Preview state:',await page.locator('[data-studio-preview]').first().getAttribute('data-studio-preview').catch(()=>null),'\nRenderer body:',await page.locator('body').innerText());throw error;});
   await page.getByRole('progressbar').waitFor({state:'hidden',timeout:10000});
   await page.locator('[data-desktop-update]').waitFor();
   const update = await page.evaluate(() => window.archDesktop!.getUpdateState());
