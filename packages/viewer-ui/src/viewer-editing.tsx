@@ -18,8 +18,8 @@ import type { ViewerInstance, ViewerState } from "./viewer-model";
 export interface ViewerEditing {
   /** Hand edits saved with the version on show. */
   saved: PlanEdits;
-  /** The full shared library the trays offer, e.g. "/viewer/library/". */
-  catalogBase: string;
+  /** The full shared library the trays offer, e.g. "/viewer/library/". Absent when the host has none. */
+  catalogBase?: string;
   /** Saves the edits as a new version; resolves once it is built. */
   save(edits: PlanEdits): Promise<void>;
   /** Hand edits the version on show could no longer apply. */
