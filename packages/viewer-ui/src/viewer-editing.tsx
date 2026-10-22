@@ -137,6 +137,7 @@ export function EditSession({
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
   useMountEffect(() => {
+    editor.start();
     void editor.setEdits(history.present);
     editor.listen({ onSelect: () => undefined, onPlace: (id, position, rotation) => placed.current(id, position, rotation) });
     const warn = (e: BeforeUnloadEvent) => {
@@ -146,6 +147,9 @@ export function EditSession({
     return () => {
       editor.listen(null);
       removeEventListener("beforeunload", warn);
+      // Unsaved edits leave with the session; the house goes back to the version on show.
+      void editor.setEdits(editing.saved);
+      editor.stop();
     };
   });
 

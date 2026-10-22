@@ -62,8 +62,17 @@ async function editable() {
     changed: () => undefined, report: () => undefined, catalog: { models: [], textures: [] }, signal: abort.signal,
   });
   editor.listen({ onSelect: () => undefined, onPlace: (id, position, rotation) => placed.push([id, position, rotation]) });
+  await editor.start();
   return { house, editor, placed };
 }
+
+const meshCount = (o: THREE.Object3D) => {
+  let n = 0;
+  o.traverse((c) => {
+    if ((c as THREE.Mesh).isMesh) n++;
+  });
+  return n;
+};
 
 const floorOf = (house: BuiltHouse, room: string) => {
   let found: THREE.Mesh | undefined;
@@ -146,4 +155,38 @@ test('painting one side of a wall leaves the other side and the other walls alon
   }
   const north = house.walls.children.find((o) => o.userData.id === 'n') as THREE.Mesh;
   expect(((north.material as THREE.MeshStandardMaterial[]).map((m) => `#${m.color.getHexString()}`))).not.toContain('#2f3d55');
+});
+
+test('an editable house shows merged until editing starts, and merges again when it stops', async () => {
+  const { house, editor } = await editable();
+  const apart = meshCount(house.root);
+  await editor.stop();
+  const merged = meshCount(house.root);
+  expect(merged).toBeLessThan(apart);
+  expect(floorOf(house, 'living')).toBeUndefined();
+  const ids = () => {
+    const out: string[] = [];
+    house.root.traverse((o) => void out.push(o.uuid));
+    return out.sort();
+  };
+  const mergedIds = ids();
+
+  // Nothing changed while apart: the same merged meshes come back.
+  await editor.start();
+  expect(meshCount(house.root)).toBe(apart);
+  await editor.stop();
+  expect(ids()).toEqual(mergedIds);
+
+  // A painted floor merges again with its new finish.
+  await editor.start();
+  await editor.setEdits(paintSurfaces(NO_EDITS, editor.plan(), ['floor:living'], { color: '#c96f4a' }, null));
+  await editor.stop();
+  const colors = new Set<string>();
+  house.floors.traverse((o) => {
+    const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+    if (m?.color) colors.add(`#${m.color.getHexString()}`);
+  });
+  expect(colors.has('#c96f4a')).toBe(true);
+  expect(ids()).not.toEqual(mergedIds);
+  expect(meshCount(house.root)).toBe(merged);
 });

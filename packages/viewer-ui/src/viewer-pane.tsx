@@ -2,7 +2,6 @@ import { useMountEffect } from "@arch/ui/hooks/use-mount-effect";
 import { cn } from "@arch/ui/lib/utils";
 import { ChevronUpIcon } from "lucide-react";
 import { type ReactNode, useCallback, useId, useMemo, useRef, useState } from "react";
-import type { ViewerView } from "@arch/viewer/react";
 
 import { useT } from "./locale";
 
@@ -80,22 +79,14 @@ export function ViewerSurface({
   onError,
 }: ViewerSurfaceProps) {
   const [viewer, setViewer] = useState<ViewerInstance | null>(null);
-  // Editing loads the house again in its editable form; the camera comes back where it was.
+  // Editing happens in the house on show: the viewer is built editable whenever a host offers it,
+  // and the Edit button only takes the house apart in place.
   const [editingOn, setEditingOn] = useState(false);
-  const carriedView = useRef<ViewerView | null>(null);
   const dropTarget = useRef<DropHandlers | null>(null);
   const reportViewer = useCallback((next: ViewerInstance | null) => {
-    if (next && carriedView.current) {
-      next.setView(carriedView.current);
-      carriedView.current = null;
-    }
     setViewer(next);
     onViewer?.(next);
   }, [onViewer]);
-  const switchEditing = (on: boolean) => {
-    carriedView.current = viewer?.getView() ?? null;
-    setEditingOn(on);
-  };
   const editable = !!editing && editingOn;
   const state = useViewerState(viewer);
   const actions = useMemo(() => viewer && viewerActions(viewer), [viewer]);
@@ -149,10 +140,10 @@ export function ViewerSurface({
       )}
     >
       <ViewerStage
-        key={`${artifactId ?? planUrl}${editable ? ":edit" : ""}`}
+        key={`${artifactId ?? planUrl}${editing ? ":editable" : ""}`}
         planUrl={planUrl}
         assetBase={assetBase}
-        editable={editable ? { catalogBase: editing.catalogBase } : undefined}
+        editable={editing && { catalogBase: editing.catalogBase }}
         posterUrl={posterUrl}
         onViewer={reportViewer}
         onProgress={onProgress}
@@ -161,7 +152,7 @@ export function ViewerSurface({
 
       {viewer && state && actions && (
         <div className="pointer-events-none absolute top-1/2 left-3 flex -translate-y-1/2 flex-col items-start gap-2">
-          {editing && !editable && <EditButton onStart={() => switchEditing(true)} />}
+          {editing && viewer.editor && !editable && <EditButton onStart={() => setEditingOn(true)} />}
           <LevelPicker viewer={viewer} state={state} actions={actions} />
           <DesignOptionPicker viewer={viewer} state={state} actions={actions} />
         </div>
@@ -184,7 +175,7 @@ export function ViewerSurface({
           state={state}
           editing={editing}
           dropTarget={dropTarget}
-          onDone={() => switchEditing(false)}
+          onDone={() => setEditingOn(false)}
         />
       )}
 

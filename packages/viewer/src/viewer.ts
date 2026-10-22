@@ -158,8 +158,8 @@ export interface ViewerOptions {
   onModeChange?: (mode: ViewerMode) => void;
   onRoomChange?: (room: RoomInfo | null) => void;
   /**
-   * Builds the house for hand editing (see `Viewer.editor`): every piece and surface stays its own
-   * mesh, which costs frame rate, so turn it on only while someone edits.
+   * Lets someone edit the house by hand (see `Viewer.editor`). It shows merged as usual and comes
+   * apart in place only between `editor.start()` and `editor.stop()`, which costs frame rate.
    */
   editable?: boolean;
   /** The full shared library, for an editable viewer, e.g. "/viewer/library/". */

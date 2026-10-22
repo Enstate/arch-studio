@@ -94,8 +94,9 @@ export interface BuiltHouse {
 }
 
 /**
- * An editable house keeps every piece, wall and floor as its own mesh, so pieces can move and
- * surfaces take new finishes without a rebuild. It draws far more calls than a merged house.
+ * An editable house can take every piece, wall and floor back out of its merged meshes, so pieces
+ * can move and surfaces take new finishes without a rebuild. Taken apart it draws far more calls,
+ * so it stays merged outside editing.
  */
 export interface HouseEditor {
   /** Each piece's object by plan id; its `userData.piece` is the plan entry it was built from. */
@@ -105,6 +106,10 @@ export interface HouseEditor {
   remove(id: string): void;
   /** Gives every wall face and floor the finish `plan` names for it now. */
   repaint(plan: Plan): void;
+  /** Takes the merged walls, floors and pieces apart in place, so they can move and take finishes. */
+  unmerge(): void;
+  /** Merges them again for frame rate, reusing the last merge when nothing changed in between. */
+  merge(): void;
 }
 
 /** Plan (x, y) to world (x, height, y). */
@@ -492,7 +497,13 @@ function buildDaylight(plan: Plan) {
  * small meshes (wall pieces, trims, cushions, books); each is a draw call in every pass,
  * which cost more CPU per frame than 120 fps allows. Visibility per group still works.
  */
-function mergeStatic(group: THREE.Object3D) {
+/** What one merge took apart and what it made, so an editable house can undo it in place. */
+interface Merge {
+  originals: { mesh: THREE.Mesh; parent: THREE.Object3D }[];
+  merged: { mesh: THREE.Mesh; parent: THREE.Object3D }[];
+}
+
+function mergeStatic(group: THREE.Object3D): Merge {
   group.updateMatrixWorld(true);
   const toWorld = new THREE.Matrix4().copy(group.matrixWorld).invert();
   const buckets = new Map<string, { mat: THREE.Material; cast: boolean; recv: boolean; geos: THREE.BufferGeometry[] }>();
@@ -546,16 +557,20 @@ function mergeStatic(group: THREE.Object3D) {
     g.dispose();
     doomed.push(mesh);
   });
+  const originals = doomed.map((mesh) => ({ mesh, parent: mesh.parent! }));
   for (const mesh of doomed) mesh.removeFromParent();
   // Empty helper groups left behind are harmless; drop them to keep traversal short.
+  const merged: Merge['merged'] = [];
   for (const { mat, cast, recv, geos } of buckets.values()) {
-    const merged = mergeGeometries(geos, false);
-    if (!merged) continue;
-    const out = new THREE.Mesh(merged, mat);
+    const geometry = mergeGeometries(geos, false);
+    if (!geometry) continue;
+    const out = new THREE.Mesh(geometry, mat);
     out.castShadow = cast;
     out.receiveShadow = recv;
     group.add(out);
+    merged.push({ mesh: out, parent: group });
   }
+  return { originals, merged };
 }
 
 /** Tread blocks of a `stairs` piece in its own frame, matching the treads the furniture builder draws. */
@@ -778,7 +793,15 @@ export async function buildHouse(
 
   const editable = opts.editable ?? false;
   for (const g of [...caps.children, openings, ceilings, dressing]) mergeStatic(g);
-  if (!editable) for (const g of [floors, walls, ...optionGroups.values(), fixtures, loose, roofs]) mergeStatic(g);
+  // What editing takes apart. An editable house keeps the meshes it merged, to take them apart again.
+  const editableGroups = () => [floors, walls, ...optionGroups.values(), fixtures, loose, roofs];
+  let merges: Merge[] | null = editableGroups().map(mergeStatic);
+  if (!editable) merges = null;
+  /** Taken apart for editing, and whether anything changed since. */
+  let apart = false, changedApart = false;
+  const disposeMerged = () => {
+    for (const { merged } of merges ?? []) for (const { mesh } of merged) mesh.geometry.dispose();
+  };
   for (const o of pieces) o.userData.piece = plan.furniture?.find((f) => f.id === o.userData.id);
 
   // The walker's world for one option: shared colliders plus that option's pieces.
@@ -824,11 +847,14 @@ export async function buildHouse(
       (obj.userData.roof ? roofs : inOptions(obj, obj.userData.loose ? loose : fixtures)).add(obj);
       for (const o of [obj, ...optionGroups.values()]) if (o.userData.optionGroup) o.visible = shownInOption(o.userData, designOption);
       pieceMap.set(piece.id, obj);
+      changedApart = true;
       return obj;
     },
     remove(id) {
-      pieceMap.get(id)?.removeFromParent();
+      if (!pieceMap.has(id)) return;
+      pieceMap.get(id)!.removeFromParent();
       pieceMap.delete(id);
+      changedApart = true;
     },
     repaint(edited) {
       // Hand edits only ever add finishes, under new keys; a key reused after an undo is made again.
@@ -838,15 +864,42 @@ export async function buildHouse(
         const mesh = o as THREE.Mesh;
         if (!mesh.isMesh) return;
         if (Array.isArray(mesh.material) && mesh.userData.surfaces) {
-          mesh.material = mesh.material.map((m, i) => {
+          const before = mesh.material;
+          mesh.material = before.map((m, i) => {
             const key = mesh.userData.surfaces[i] && surfaceFinish(edited, mesh.userData.surfaces[i]);
             return key ? clipLib(key) : m;
           });
+          if (mesh.material.some((m, i) => m !== before[i])) changedApart = true;
         } else if (mesh.userData.surface) {
           const key = surfaceFinish(edited, mesh.userData.surface);
-          if (key) mesh.material = lib.get(key);
+          if (key && mesh.material !== lib.get(key)) {
+            mesh.material = lib.get(key);
+            changedApart = true;
+          }
         }
       });
+    },
+    unmerge() {
+      if (apart) return;
+      for (const { originals, merged } of merges!) {
+        for (const { mesh } of merged) mesh.removeFromParent();
+        for (const { mesh, parent } of originals) parent.add(mesh);
+      }
+      apart = true;
+      changedApart = false;
+    },
+    merge() {
+      if (!apart) return;
+      if (changedApart) {
+        disposeMerged();
+        merges = editableGroups().map(mergeStatic);
+      } else {
+        for (const { originals, merged } of merges!) {
+          for (const { mesh } of originals) mesh.removeFromParent();
+          for (const { mesh, parent } of merged) parent.add(mesh);
+        }
+      }
+      apart = false;
     },
   } : null;
 
@@ -879,6 +932,9 @@ export async function buildHouse(
         const m = o as THREE.Mesh;
         if (m.isMesh) m.geometry.dispose();
       });
+      // Whichever side of an editable merge is not in the scene now.
+      disposeMerged();
+      for (const { originals } of merges ?? []) for (const { mesh } of originals) mesh.geometry.dispose();
       for (const m of clipCache.values()) m.dispose();
     },
   };
