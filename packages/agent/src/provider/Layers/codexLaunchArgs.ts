@@ -35,6 +35,19 @@ export const codexExecLaunchArgs = (launchArgs?: string) => {
   return execArgs;
 };
 
+/**
+ * `-c` overrides that give the app server streamable HTTP MCP servers for this session. Codex
+ * parses each value as TOML, and a JSON string is a valid TOML string. Tools may download and
+ * convert assets, so a call gets ten minutes instead of Codex's default minute.
+ */
+export const codexMcpServerArgs = (servers: Readonly<Record<string, { url: string }>>): Array<string> =>
+  Object.entries(servers).flatMap(([name, server]) => [
+    "-c",
+    `mcp_servers.${name}.url=${JSON.stringify(server.url)}`,
+    "-c",
+    `mcp_servers.${name}.tool_timeout_sec=600`,
+  ]);
+
 export const codexSessionAppServerArgs = (
   appServerArgs: ReadonlyArray<string> | undefined,
   launchArgs: string | undefined,

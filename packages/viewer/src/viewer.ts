@@ -1193,7 +1193,8 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
           stage.requestRender();
         },
         report: (patch) => setState(patch),
-        catalog: catalog(),
+        catalog,
+        reloadCatalog: () => library.reloadCatalog(signal),
         signal,
       })
     : null;

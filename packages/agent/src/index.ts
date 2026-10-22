@@ -2,6 +2,7 @@ export type {
   AgentProvider,
   AgentPermission,
   AgentAttachment,
+  AgentMcpServer,
   AgentAccount,
   AgentProviderIssue,
   AgentProviderStatus,

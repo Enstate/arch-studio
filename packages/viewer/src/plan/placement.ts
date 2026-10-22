@@ -70,6 +70,24 @@ export function snapPlacement(storey: Plan, position: Vec2, rotation: number, si
   return [Math.round(p[0] * 1000) / 1000, Math.round(p[1] * 1000) / 1000];
 }
 
+/**
+ * The nearest spot to `near` where a piece is `free` to stand, after `snap`: rings of candidates
+ * 10 cm apart, out to a metre and a half. Null when there is none.
+ */
+export function nearestFreeSpot(near: Vec2, snap: (position: Vec2) => Vec2, free: (position: Vec2) => boolean): Vec2 | null {
+  for (let r = 0; r <= 15; r++) {
+    const ring = r === 0 ? [[0, 0]] : Array.from({ length: 8 * r }, (_, i) => {
+      const a = (i / (8 * r)) * Math.PI * 2;
+      return [Math.cos(a) * r * 0.1, Math.sin(a) * r * 0.1];
+    });
+    for (const [dx, dy] of ring) {
+      const at = snap([near[0] + dx!, near[1] + dy!]);
+      if (free(at)) return at;
+    }
+  }
+  return null;
+}
+
 export type PlacementProblem =
   | { kind: 'furniture'; id: string }
   | { kind: 'wall' | 'door' | 'window'; id: string };

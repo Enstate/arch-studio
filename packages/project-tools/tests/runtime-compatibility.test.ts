@@ -4,7 +4,7 @@ import { viewerRuntimeHash } from "../src/index.ts";
 
 test("the installed sharpness runtime explicitly supports its reviewed predecessor", async () => {
   const current = await viewerRuntimeHash();
-  const previous = "9347181d703461bfd63873589a89afda5a89e3a8ede79d6cba4ff13e46e22199";
+  const previous = "965f4dc2b58b7fae7bfcca230854b8731ffcdd03f109c8b3dbccd8abc12cd6c5";
   expect(viewerSupportsRuntime(current, current)).toBe(true);
   expect(viewerSupportsRuntime(current, previous)).toBe(true);
   expect(viewerSupportsRuntime(previous, current)).toBe(false);

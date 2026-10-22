@@ -61,6 +61,14 @@ export class Library {
     return this.index;
   }
 
+  /** Reads the shared library's index again, so assets that joined it since loading can be placed. */
+  async reloadCatalog(signal?: AbortSignal): Promise<void> {
+    if (!this.catalog) return;
+    const res = await fetch(new URL('index.json', this.catalog.base), { cache: 'no-store', signal });
+    if (!res.ok) throw new Error(`Viewer library index not found at ${this.catalog.base}index.json (${res.status}).`);
+    this.catalog.index = (await res.json()) as LibraryIndex;
+  }
+
   resolve = (rel: string): string | undefined => {
     if (rel.startsWith('@lib/models/') && this.catalog && !this.index.models[rel.slice(12).replace(/\.glb$/, '')]) return this.catalog.resolve(rel);
     if (rel.startsWith('@lib/')) return this.base + rel.slice(5);

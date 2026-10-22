@@ -5,7 +5,7 @@ import { applyEdits, type PlanEdits } from '../plan/edits.ts';
 import { FURNITURE_DEFAULT_SIZE } from '../plan/furnitureSizes.ts';
 import { roomAt } from '../plan/geom.ts';
 import { levelOf, levelPlan } from '../plan/levels.ts';
-import { placementProblem, snapPlacement, TURN_STEP, type PlacementProblem } from '../plan/placement.ts';
+import { nearestFreeSpot, placementProblem, snapPlacement, TURN_STEP, type PlacementProblem } from '../plan/placement.ts';
 import type { Furniture, Plan, Vec2 } from '../plan/schema.ts';
 import { surfaceFinish, surfaceId } from '../plan/surfaces.ts';
 import { Carry, PlacementMarker } from './handling.ts';
@@ -40,6 +40,8 @@ export interface ViewerEditor {
   surfacesWith(finish: string): string[];
   /** Library models and texture sets someone can place and paint with. */
   catalog(): EditorCatalog;
+  /** Reads the shared library again after its host added assets, so `catalog` and placing include them. */
+  reloadCatalog(): Promise<void>;
 }
 
 export interface EditorCatalog {
@@ -73,7 +75,8 @@ export interface EditorHost {
   holdCamera(held: boolean): void;
   changed(): void;
   report(patch: { selected?: string | null; blocked?: PlacementProblem | null }): void;
-  catalog: EditorCatalog;
+  catalog(): EditorCatalog;
+  reloadCatalog(): Promise<void>;
   signal: AbortSignal;
 }
 
@@ -396,18 +399,7 @@ export function createEditor(host: EditorHost): ViewerEditor {
       const storey = storeyOf(piece);
       const size = piece.size ?? FURNITURE_DEFAULT_SIZE[piece.type];
       const rotation = piece.rotation ?? 0;
-      // Rings of candidate spots 10 cm apart, nearest first.
-      for (let r = 0; r <= 15; r++) {
-        const ring = r === 0 ? [[0, 0]] : Array.from({ length: 8 * r }, (_, i) => {
-          const a = (i / (8 * r)) * Math.PI * 2;
-          return [Math.cos(a) * r * 0.1, Math.sin(a) * r * 0.1];
-        });
-        for (const [dx, dy] of ring) {
-          const at = snapPlacement(storey, [near[0] + dx, near[1] + dy], rotation, size);
-          if (!problemAt(piece, at, rotation, size, piece.elevation ?? 0)) return at;
-        }
-      }
-      return null;
+      return nearestFreeSpot(near, (p) => snapPlacement(storey, p, rotation, size), (at) => !problemAt(piece, at, rotation, size, piece.elevation ?? 0));
     },
     surfaceAt(clientX, clientY) {
       const hit = host.aim(clientX, clientY, [house.walls, house.floors, house.furniture]);
@@ -430,7 +422,8 @@ export function createEditor(host: EditorHost): ViewerEditor {
       const surface = surfaces ? surfaces[hit.face?.materialIndex ?? -1] : (hit.object.userData.surface as string | undefined);
       return surface ? { surface, finish: surfaceFinish(edited, surface) } : null;
     },
-    catalog: () => host.catalog,
+    catalog: () => host.catalog(),
+    reloadCatalog: () => host.reloadCatalog(),
     surfacesWith(finish) {
       const out = new Set<string>();
       for (const g of [house.walls, house.floors]) g.traverse((o) => {

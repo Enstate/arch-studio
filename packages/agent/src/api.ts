@@ -2,6 +2,8 @@ export type AgentProvider = "claude" | "codex";
 /** full: no prompts and no sandbox. edit: sandboxed, edits in the folder. read-only: no writes. */
 export type AgentPermission = "full" | "edit" | "read-only";
 export type AgentAttachment = { path: string; mimeType: string; name: string };
+/** An MCP server the agent reaches over streamable HTTP for the turn, such as Studio's own on loopback. */
+export type AgentMcpServer = { url: string };
 export type AgentModelOption = { id: string; label: string; isDefault?: boolean; description?: string };
 /** A setting a model accepts per turn, such as reasoning effort or fast mode. */
 export type AgentModelSetting =
@@ -45,6 +47,8 @@ export type AgentTurnInput = {
   permission: AgentPermission;
   /** Values for the model's settings, keyed by setting id. Omitted settings use defaults. */
   settings?: Record<string, string | boolean>;
+  /** MCP servers the agent may call, by name, such as `arch`. */
+  mcpServers?: Record<string, AgentMcpServer>;
 };
 export type AgentEvent =
   | { type: "session"; resumeCursor: string }

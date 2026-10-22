@@ -14,13 +14,13 @@ import { useHotkey } from "@arch/ui/hooks/use-hotkey";
 import { useIsMobile } from "@arch/ui/hooks/use-mobile";
 import { UiLabelsProvider } from "@arch/ui/lib/ui-labels";
 import { cn } from "@arch/ui/lib/utils";
-import { ASSET_BASE, ViewerSurface, ViewerLocaleProvider, type ViewerEditing, type ViewerInstance } from "@arch/viewer-ui";
+import { ViewerSurface, ViewerLocaleProvider, type ViewerEditing, type ViewerInstance } from "@arch/viewer-ui";
 import { hasEdits, type PlanEdits } from "@arch/viewer/plan/edits";
 import { useForm } from "@tanstack/react-form";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpRightIcon, CheckIcon, ChevronsUpDownIcon, HammerIcon, FolderOpenIcon, FolderPlusIcon, MoreHorizontalIcon, MenuIcon, PackageOpenIcon, PanelLeftIcon, PlusIcon, SearchIcon, SettingsIcon, SquarePenIcon } from "lucide-react";
 import { type ReactNode, useCallback, useRef, useState } from "react";
-import { revealInFolder, buildGrant, buildVersion, catalog, projectEdits, saveEdits, createClient, createThread, threadList, updateThread, grantBuilds, makePrimary, openProjectFolder, openVersion, projectDetails, revokeBuilds, saveNote } from "../lib/server";
+import { revealInFolder, buildGrant, buildVersion, catalog, assetLibrary, importAsset, searchAssets, projectEdits, saveEdits, createClient, createThread, threadList, updateThread, grantBuilds, makePrimary, openProjectFolder, openVersion, projectDetails, revokeBuilds, saveNote } from "../lib/server";
 import { VIEWER_MISMATCH, type StudioProjectSummary, type StudioThread, type StudioVersion } from "../lib/model";
 import { type Locale, studioText } from "../lib/messages";
 import { useStudioFormat, useStudioLocale } from "../lib/locale";
@@ -230,8 +230,8 @@ function Project({project, thread, threads, openThread, openHome, draft, startin
   const build = useMutation({mutationFn: () => buildVersion({data: {sourceId: source!.manifest.id, projectId: project.id, branch: branch!.name, authorizeSourceExecution: true}}), onSuccess: async () => {setVersionId(undefined); setSection("preview"); await queryClient.invalidateQueries();}});
   // Hand edits belong to the branch folder; the viewer edits its latest version only.
   const edits = useQuery({queryKey: ["studio-edits", project.id, branch?.name], queryFn: () => projectEdits({data: {projectId: project.id, branch: branch!.name}}), enabled: !!branch && !!source});
-  // The shared library comes from `bun run fetch-assets`. Without it, editing offers only the project's own pieces.
-  const catalog = useQuery({queryKey: ["viewer-catalog"], queryFn: () => fetch(`${ASSET_BASE}index.json`, {method: "HEAD"}).then(response => response.ok, () => false), staleTime: Infinity});
+  // The catalog joins the shared library from `bun run fetch-assets` and the SimReady assets this store imported.
+  const library = useQuery({queryKey: ["asset-library"], queryFn: () => assetLibrary(), staleTime: Infinity});
   const [drafted, setDrafted] = useState<string>();
   const storeHandEdits = async (next: PlanEdits) => {
     try {
@@ -249,7 +249,12 @@ function Project({project, thread, threads, openThread, openHome, draft, startin
     ensureGrant(() => void storeHandEdits(next));
     throw new Error(t.grantBeforeSaving);
   };
-  const editing: ViewerEditing | undefined = branch && source && edits.data && version?.id === latestVersion?.id ? {saved: edits.data, catalogBase: catalog.data ? ASSET_BASE : undefined, save: saveHandEdits} : undefined;
+  const addAsset = async (piece: {key: string}) => {
+    const added = await importAsset({data: {key: piece.key}});
+    await queryClient.invalidateQueries({queryKey: ["asset-library"]});
+    return added;
+  };
+  const editing: ViewerEditing | undefined = branch && source && edits.data && version?.id === latestVersion?.id ? {saved: edits.data, catalogBase: library.data?.base, pieces: library.data?.pieces, search: query => searchAssets({data: {query}}), add: addAsset, save: saveHandEdits} : undefined;
   const adopt = edits.data && hasEdits(edits.data) && thread ? () => {setDrafted(t.adoptHandEditsRequest); setSection("rounds");} : undefined;
   const grant = useMutation({mutationFn: () => grantBuilds({data: {projectId: project.id, branch: branch!.name}}), onSuccess: () => {const then = grantFor; setGrantFor(null); then?.();}});
   const revoke = useMutation({mutationFn: () => revokeBuilds({data: {projectId: project.id}})});
@@ -294,7 +299,7 @@ function Project({project, thread, threads, openThread, openHome, draft, startin
   </>;
   const tool = (content: ReactNode) => <ScrollPage><h2 className="text-lg font-medium">{t[view as typeof toolSections[number]]}</h2>{content}</ScrollPage>;
   const content = details.isError ? <div className="m-auto grid gap-3"><StudioFailure error={details.error} /><Button onClick={() => {void details.refetch();}}>{t.retry}</Button></div>
-    : view === "preview" && version ? <VersionPreview key={version.id} version={version} editing={editing} editsPending={edits.isLoading || catalog.isLoading} adopt={adopt} rebuild={source && branch ? () => ensureGrant(() => build.mutate()) : undefined} rebuilding={build.isPending} t={t} />
+    : view === "preview" && version ? <VersionPreview key={version.id} version={version} editing={editing} editsPending={edits.isLoading || library.isLoading} adopt={adopt} rebuild={source && branch ? () => ensureGrant(() => build.mutate()) : undefined} rebuilding={build.isPending} t={t} />
     : view === "rounds" && branch && thread ? <Rounds projectId={project.id} threadId={thread.id} branch={branch} versions={allVersions} versionLabel={versionLabel} openVersion={showVersion} compare={compare} forkFrom={checkpointId => newThread({fromCheckpoint: checkpointId})} ensureGrant={ensureGrant} initialRequest={draft ?? (edits.data && hasEdits(edits.data) ? drafted : undefined)} t={t} />
     : view === "compare" ? <Compare projectId={project.id} versions={versions} base={compared?.base} target={compared?.target} select={(base, target) => setCompared({base, target})} versionLabel={versionLabel} t={t} />
     : details.isPending ? <p role="status" className="m-auto text-ui text-muted-foreground">{t.loading}</p>

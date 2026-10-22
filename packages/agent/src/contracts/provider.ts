@@ -60,6 +60,8 @@ export const ProviderSessionStartInput = Schema.Struct({
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,
   instructions: Schema.optional(Schema.String),
+  /** Streamable HTTP MCP servers for the session, by name. */
+  mcpServers: Schema.optional(Schema.Record(Schema.String, Schema.Struct({ url: Schema.String }))),
 });
 export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 

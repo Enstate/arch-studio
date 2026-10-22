@@ -9,7 +9,9 @@ import { hasEdits, type PlanEdits } from "@arch/viewer/plan/edits";
 import type { Plan } from "@arch/viewer/plan/schema";
 import { validatePlan } from "@arch/viewer/plan/validate";
 import type { RoundAttachment } from "@arch/project";
+import { catalogFolders } from "@arch/project-tools/catalog";
 import { localCatalog, requireProject } from "./local-catalog";
+import { grantRoundMcp } from "./mcp.server";
 import { requireStudio } from "./local-session";
 import type { RoundActivity, RoundEvent, RoundSummary, StudioThread } from "./model";
 import { buildVersion } from "./studio.server";
@@ -26,20 +28,14 @@ Read AGENTS.md, BUILDERS.md, arch.context.json, the references under reference/ 
 Compare geometry and style against the references and the brief. Report concrete findings, most consequential first, each with the element ID and the fix you would ask a builder for.`;
 const buildRetries = 2;
 
-/**
- * The CC0 library Studio serves, filled by `bun run fetch-assets`: textures, models and skies a
- * round or a hand edit can use. The packaged app has it beside its client; development serves public/.
- */
-function sharedLibrary() {
-  const client = process.env.ARCH_CLIENT_ROOT;
-  const directory = client ? path.join(client, "viewer/library") : path.resolve("public/viewer/library");
-  return existsSync(path.join(directory, "index.json")) ? directory : null;
-}
-function libraryInstructions() {
-  const directory = sharedLibrary();
-  if (!directory) return "";
-  return `
-- Shared asset library: ${directory}. Its index.json lists CC0 textures, furniture models and skies with their files, and CREDITS.md their sources. Copy only what you use into assets/library/ at the same paths, add those entries to assets/library/index.json, and record the credits in the project.`;
+/** The libraries a round or a hand edit can use, the same folders the editor's catalog offers. */
+const libraries = () => catalogFolders().filter(directory => existsSync(path.join(directory, "index.json")));
+function libraryInstructions(tools: boolean) {
+  const lines = libraries().map(directory => `
+- Asset library: ${directory}. Its index.json lists textures, furniture models and skies with their files, and CREDITS.md their sources. Copy only what you use into assets/library/ at the same paths, add those entries to assets/library/index.json, and record the credits in the project.`);
+  if (tools) lines.push(`
+- The arch MCP tools search this catalog and NVIDIA SimReady (CC BY 4.0 props), import SimReady assets, add catalog assets to assets/library with their credits, list rooms and furniture of the last build, and find free spots or check placements against walls, doors, windows and furniture. Prefer them to copying library files by hand.`);
+  return lines.join("");
 }
 
 /**
@@ -317,7 +313,7 @@ export function threadTitle(request: string) {
 
 /** One request, one agent turn, then a build and checkpoint on the same branch. */
 export async function startRound({ data }: { data: { projectId: string; threadId: string; kind: "request" | "critique"; request: string; provider: AgentProvider; model: string; settings: Record<string, string | boolean>; attachments: File[] } }) {
-  requireStudio();
+  const origin = requireStudio();
   const sourceId = await sourceOf(data.projectId);
   const thread = requireThread(sourceId, data.threadId);
   const branch = thread.branch;
@@ -358,11 +354,13 @@ export async function startRound({ data }: { data: { projectId: string; threadId
     if (data.kind === "request")
       rounds().prepare("INSERT INTO thread_agents(thread_id,provider,model,settings) VALUES(?,?,?,?) ON CONFLICT(thread_id) DO UPDATE SET provider=excluded.provider, model=excluded.model, settings=excluded.settings").run(thread.id, data.provider, data.model, JSON.stringify(data.settings));
     active.set(id, { turn: null, events: [], interrupted: false });
-    void runRound({ ...data, branch, threadId: thread.id, prompt: request, id, sourceId, line, startedAt, attachments }).finally(() => { activeThreads.delete(key); active.delete(id); });
+    // Request rounds reach the asset catalog and furniture tools through Studio's MCP until they end.
+    const mcp = data.kind === "request" ? grantRoundMcp(origin, line.directory) : null;
+    void runRound({ ...data, branch, threadId: thread.id, prompt: request, id, sourceId, line, startedAt, attachments, mcpUrl: mcp?.url ?? null }).finally(() => { mcp?.revoke(); activeThreads.delete(key); active.delete(id); });
     return { roundId: id };
   } catch (error) { activeThreads.delete(key); throw error; }
 }
-async function runRound(round: { id: string; sourceId: string; threadId: string; line: Awaited<ReturnType<typeof branchLine>>; startedAt: string; attachments: (RoundAttachment & { path: string; image: boolean })[]; kind: "request" | "critique"; branch: string; request: string; prompt: string; provider: AgentProvider; model: string; settings: Record<string, string | boolean> }) {
+async function runRound(round: { id: string; sourceId: string; threadId: string; line: Awaited<ReturnType<typeof branchLine>>; startedAt: string; attachments: (RoundAttachment & { path: string; image: boolean })[]; kind: "request" | "critique"; branch: string; request: string; prompt: string; provider: AgentProvider; model: string; settings: Record<string, string | boolean>; mcpUrl: string | null }) {
   const state = active.get(round.id)!;
   const resume = round.kind === "request" ? rounds().prepare("SELECT resume_cursor FROM thread_sessions WHERE thread_id=? AND provider=?").get(round.threadId, round.provider) : undefined;
   const sidecar = (checkpointId: string, summary: string | null) => saveRound({ schemaVersion: 1, id: round.id, projectId: round.sourceId, branch: round.branch, kind: round.kind, checkpointId, parentCheckpointId: round.line.headId, request: round.request, attachments: round.attachments.map(({ path: _, image: _image, ...attachment }) => attachment), provider: round.provider, model: round.model, summary, startedAt: round.startedAt, completedAt: new Date().toISOString() });
@@ -385,7 +383,7 @@ async function runRound(round: { id: string; sourceId: string; threadId: string;
     // The refresh is saved with this round's version.
     if (round.kind === "request") await refreshProjectRules(round.line.directory);
     const handEditNote = round.kind === "request" ? await handEditInstructions(round.line.directory) : "";
-    let input = { provider: round.provider, model: round.model, settings: round.settings, cwd: round.line.directory, resumeCursor: resume ? String(resume.resume_cursor) : null, prompt: round.prompt, attachments: round.attachments.filter(item => item.image).map(item => ({ path: item.path, mimeType: item.mimeType, name: item.name })), instructions: round.kind === "critique" ? critiqueInstructions : roundInstructions + libraryInstructions() + handEditNote, permission: round.kind === "critique" ? "read-only" as const : "full" as const };
+    let input = { provider: round.provider, model: round.model, settings: round.settings, cwd: round.line.directory, resumeCursor: resume ? String(resume.resume_cursor) : null, prompt: round.prompt, attachments: round.attachments.filter(item => item.image).map(item => ({ path: item.path, mimeType: item.mimeType, name: item.name })), instructions: round.kind === "critique" ? critiqueInstructions : roundInstructions + libraryInstructions(!!round.mcpUrl) + handEditNote, permission: round.kind === "critique" ? "read-only" as const : "full" as const, ...(round.mcpUrl && { mcpServers: { arch: { url: round.mcpUrl } } }) };
     let warned = false;
     for (let attempt = 0; ; attempt++) {
       const turn = await agentTurn(round.id, input, round.threadId);
@@ -446,7 +444,7 @@ export async function saveEdits({ data }: { data: { projectId: string; branch: s
   const running = rounds().prepare("SELECT id FROM rounds WHERE source_id=? AND branch=? AND status='running'").all(sourceId, data.branch).some(row => active.has(String(row.id)));
   if (running) throw new Error("ARCH_EDITS_BUSY");
   return onBranch(sourceId, data.branch, async () => {
-    await saveHandEdits(line.directory, data.edits, sharedLibrary());
+    await saveHandEdits(line.directory, data.edits, libraries());
     return buildVersion({ data: { sourceId, projectId: data.projectId, branch: data.branch, authorizeSourceExecution: true } });
   });
 }

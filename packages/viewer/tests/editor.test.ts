@@ -59,7 +59,7 @@ async function editable() {
   const editor = createEditor({
     house, plan: p, canvas: new EventTarget() as HTMLCanvasElement, scene: new THREE.Scene(), camera: () => new THREE.PerspectiveCamera(),
     allowed: () => true, floorHeight: () => 0, designOption: () => null, aim: () => undefined, holdCamera: () => undefined,
-    changed: () => undefined, report: () => undefined, catalog: { models: [], textures: [] }, signal: abort.signal,
+    changed: () => undefined, report: () => undefined, catalog: () => ({ models: [], textures: [] }), reloadCatalog: async () => undefined, signal: abort.signal,
   });
   editor.listen({ onSelect: () => undefined, onPlace: (id, position, rotation) => placed.push([id, position, rotation]) });
   await editor.start();
