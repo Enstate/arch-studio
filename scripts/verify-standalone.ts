@@ -213,9 +213,16 @@ try {
   assert.equal(source, path.join(home, "projects", created.manifest.id, "branches/main"), "New project sources live in the managed store");
   assert.equal(created.manifest.client.id, "synthetic-verification");
   assert.equal(await readFile(path.join(source, "reference/dimensions.svg"), "utf8"), reference);
-  // The initialized source is the first saved version; rounds start from it.
-  await page.getByText("Saved version · Version 1", { exact: false }).waitFor();
-  await page.getByRole("textbox", { name: studioText.en.composerPlaceholder, exact: true }).waitFor();
+  // A new project opens on its home, with suggested first requests.
+  await page.getByText(studioText.en.getStarted, { exact: true }).waitFor();
+  await page.getByRole("button", { name: studioText.en.reviewDocuments, exact: false }).waitFor();
+  // Rounds opens its conversation. Creating the project is its first saved state, not a numbered version.
+  await page.locator('[data-studio-view="rounds"]:visible').click();
+  await page.getByText(`${studioText.en.projectCreated} · 3 ${studioText.en.filesShort}`, { exact: true }).waitFor();
+  assert.equal(await page.getByText(`${studioText.en.version} 1`, { exact: false }).count(), 0, "No version number before a model is built");
+  await page.getByRole("button", { name: studioText.en.reviewDocuments, exact: true }).click();
+  assert.equal(await page.getByRole("textbox", { name: studioText.en.composerPlaceholder, exact: true }).inputValue(), studioText.en.reviewDocumentsRequest);
+  await page.getByRole("textbox", { name: studioText.en.composerPlaceholder, exact: true }).fill("");
   await section(page, "Project overview");
   await page.locator("[data-studio-intake]").waitFor();
   assert.equal(await page.locator("[data-viewer] canvas").count(), 0);
@@ -236,7 +243,7 @@ try {
   // Variant and version live in the floating design-line panel.
   await page.locator("[data-studio-version]").click();
   await page.getByRole("button", { name: "Versions", exact: true }).click();
-  await page.getByRole("menuitemradio").filter({hasText: savedSource.checkpointId.slice(0, 7)}).click();
+  await page.locator(`[data-studio-version-option="${savedSource.checkpointId}"]`).click();
   await page.getByText(intake.brief, { exact: true }).waitFor();
   await page.locator("[data-studio-questions]").getByText("Confirm ceiling height before building.", { exact: true }).waitFor();
   await page.getByText("Ground floor", { exact: false }).waitFor();
@@ -425,10 +432,11 @@ try {
   const note = "Synthetic private note: preserve the 6 by 4 metre room.";
   await section(page, studioText.en.notes); await page.getByLabel(studioText.en.comment).fill(note);
   await page.getByRole("button", { name: "Save note", exact: true }).click(); await page.getByText(note, { exact: true }).waitFor();
-  // Export lives in the design-line panel and opens as a dialog.
+  // Sharing lives in the design-line panel and opens as a dialog. The hosted handoff is folded away.
   await page.locator("[data-studio-version]").click();
-  await page.getByRole("button", { name: "Export handoff", exact: true }).click();
+  await page.getByRole("button", { name: studioText.en.shareProject, exact: true }).click();
   const exportDialog = page.getByRole("dialog");
+  await exportDialog.getByRole("button", { name: studioText.en.hostedOptions, exact: true }).click();
   const bundle = path.join(temporary, "handoff");
   await exportDialog.getByRole("textbox", { name: "New destination folder", exact: true }).first().fill(bundle);
   await exportDialog.getByRole("button", { name: "Export handoff", exact: true }).click();
@@ -442,6 +450,60 @@ try {
   const manifest = JSON.parse(await readFile(path.join(restored, "arch.project.json"), "utf8"));
   assert.equal(manifest.name, "Standalone room");
   passed("UI export and independent CLI import, restore, source bytes and private note");
+  // The whole project leaves as one file and opens as a new project in another Studio.
+  await page.locator("[data-studio-version]").click();
+  await page.getByRole("button", { name: studioText.en.shareProject, exact: true }).click();
+  const shareDialog = page.getByRole("dialog");
+  const [download] = await Promise.all([page.waitForEvent("download"), shareDialog.getByRole("button", { name: studioText.en.saveProjectFile, exact: true }).click()]);
+  assert.equal(download.suggestedFilename(), "Standalone room.archproject");
+  const projectFile = path.join(temporary, download.suggestedFilename());
+  await download.saveAs(projectFile);
+  await page.keyboard.press("Escape");
+  const receiverHome = path.join(temporary, "receiver-store"); await mkdir(receiverHome, { recursive: true });
+  const receiver = await server(receiverHome);
+  const receiverSession = await context(receiver.origin); const receiverPage = await receiverSession.newPage();
+  await receiverPage.goto(receiver.bootstrapUrl);
+  await receiverPage.getByRole("button", { name: studioText.en.openProjectFile, exact: true }).click();
+  await receiverPage.getByRole("dialog").locator(`input[type="file"]`).setInputFiles(projectFile);
+  // Studio says what the file holds before adding anything.
+  await receiverPage.getByRole("dialog").getByText(studioText.en.openProjectTitle.replace("{name}", "Standalone room"), { exact: true }).waitFor();
+  await receiverPage.getByRole("dialog").getByRole("button", { name: studioText.en.openProjectAction, exact: true }).click();
+  await receiverPage.getByRole("dialog").waitFor({ state: "hidden" });
+  await receiverPage.getByText(studioText.en.getStarted, { exact: true }).waitFor();
+  await receiverPage.locator("main header").getByText("Standalone room", { exact: false }).first().waitFor();
+  assert.equal(await receiverPage.locator("li[data-studio-thread]").count(), 2, "Both conversations travel with the project");
+  await receiverPage.screenshot({ path: path.join(evidence, "opened-project.png"), fullPage: true });
+  await section(receiverPage, "View project"); await viewer(receiverPage);
+  assert.equal(await receiverPage.locator("[data-studio-version]").getAttribute("data-studio-version"), checkpoint, "The opened project shows the same saved version");
+  await section(receiverPage, studioText.en.notes); await receiverPage.getByText(note, { exact: true }).waitFor();
+  // The builder answers with a note and sends the project back.
+  const reply = "Synthetic builder note: the opening needs a lintel.";
+  await receiverPage.getByLabel(studioText.en.comment).fill(reply);
+  await receiverPage.getByRole("button", { name: "Save note", exact: true }).click(); await receiverPage.getByText(reply, { exact: true }).waitFor();
+  await receiverPage.locator("[data-studio-version]").click();
+  await receiverPage.getByRole("button", { name: studioText.en.shareProject, exact: true }).click();
+  const [returned] = await Promise.all([receiverPage.waitForEvent("download"), receiverPage.getByRole("dialog").getByRole("button", { name: studioText.en.saveProjectFile, exact: true }).click()]);
+  const returnedFile = path.join(temporary, "returned.archproject");
+  await returned.saveAs(returnedFile);
+  await receiverSession.close(); await stop(receiver.child);
+  // Opening it where the project already is adds only what is new.
+  await page.getByRole("button", { name: studioText.en.addProject, exact: true }).click();
+  await page.getByRole("menuitem", { name: studioText.en.openProjectFile, exact: true }).click();
+  await page.getByRole("dialog").locator(`input[type="file"]`).setInputFiles(returnedFile);
+  await page.getByRole("dialog").getByText(studioText.en.updateProjectTitle.replace("{name}", "Standalone room"), { exact: true }).waitFor();
+  await page.getByRole("dialog").getByText(studioText.en.nothingRemoved, { exact: true }).waitFor();
+  await page.screenshot({ path: path.join(evidence, "update-project.png") });
+  await page.getByRole("dialog").getByRole("button", { name: studioText.en.updateProjectAction, exact: true }).click();
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  await page.getByText(studioText.en.getStarted, { exact: true }).waitFor();
+  await section(page, studioText.en.notes); await page.getByText(reply, { exact: true }).waitFor(); await page.getByText(note, { exact: true }).waitFor();
+  // The same file again has nothing new.
+  await page.getByRole("button", { name: studioText.en.addProject, exact: true }).click();
+  await page.getByRole("menuitem", { name: studioText.en.openProjectFile, exact: true }).click();
+  await page.getByRole("dialog").locator(`input[type="file"]`).setInputFiles(returnedFile);
+  await page.getByRole("dialog").getByText(studioText.en.alreadyHaveEverything, { exact: true }).waitFor();
+  await page.keyboard.press("Escape");
+  passed("project file saves from the UI, opens in a fresh Studio with versions, model, conversations and notes, and comes back as an update that only adds");
   await session.close(); await stop(running.child); running = await server(home);
   session = await context(running.origin); page = await session.newPage();
   await page.goto(running.bootstrapUrl);
@@ -461,13 +523,14 @@ try {
   await writeFile(path.join(openedSource, "arch.project.json"), JSON.stringify(openedManifest));
   const executionMarker = path.join(openedSource, "outputs", "unexpected-execution.txt");
   await writeFile(path.join(openedSource, "source/generate.ts"), `await Bun.write(${JSON.stringify(executionMarker)}, "unexpected source execution"); throw new Error("Opening a folder must never run this.");`);
-  await page.getByRole("button", {name: "Open project folder", exact:true}).click();
+  await page.getByRole("button", {name: studioText.en.addProject, exact:true}).click();
+  await page.getByRole("menuitem", {name: "Open project folder", exact:true}).click();
   let folderDialog = page.getByRole("dialog");
   await folderDialog.getByLabel("Project folder", {exact:true}).fill(openedSource);
   await folderDialog.getByRole("button", {name:"Open",exact:true}).click();
   await folderDialog.waitFor({state:"hidden"});
-  await page.locator("main header").getByText("Opened folder", {exact:false}).waitFor();
-  await page.getByText("No rounds yet", {exact:true}).waitFor();
+  await page.locator("main header").getByText("Opened folder", {exact:false}).first().waitFor();
+  await page.getByText(studioText.en.getStarted, {exact:true}).waitFor();
   assert.equal(await access(executionMarker).then(()=>true,()=>false),false);
   // The project filter narrows the cross-project thread list to one project and back.
   await page.getByRole("button", {name:"Filter projects",exact:true}).click();
@@ -481,7 +544,8 @@ try {
   openedManifest.client = {id:"different-client",name:"Different client"};
   await writeFile(path.join(openedSource,"arch.project.json"),JSON.stringify(openedManifest));
   const beforeRejectedOpen = await cli(home,"list");
-  await page.getByRole("button", {name:"Open project folder",exact:true}).click();
+  await page.getByRole("button", {name: studioText.en.addProject, exact:true}).click();
+  await page.getByRole("menuitem", {name:"Open project folder",exact:true}).click();
   folderDialog=page.getByRole("dialog");
   await folderDialog.getByLabel("Project folder",{exact:true}).fill(openedSource);
   await folderDialog.getByRole("button", {name:"Open",exact:true}).click();
@@ -491,13 +555,14 @@ try {
   await page.getByRole("dialog").waitFor({state:"hidden"});
   assert.equal(await page.getByRole("alert").count(),0,"Closing the folder dialog must clear its error");
   passed("folder button submits, selects the source preview, never executes source, preserves client binding, and filters without wrapping");
-  await page.getByRole("button", { name: "New project", exact: true }).first().click();
+  await page.getByRole("button", { name: studioText.en.addProject, exact: true }).click();
+  await page.getByRole("menuitem", { name: "New project", exact: true }).click();
   dialog = page.getByRole("dialog");
   await dialog.getByLabel("Project name", { exact: true }).fill("Name only");
   assert.equal(await dialog.getByLabel(studioText.en.startIntake, { exact: false }).count(), 0, "No intake offer without references");
   await dialog.getByRole("button", { name: "Create project", exact: true }).click();
   await dialog.waitFor({ state: "hidden" });
-  await page.locator("main header").getByText("Name only", { exact: false }).waitFor();
+  await page.locator("main header").getByText("Name only", { exact: false }).first().waitFor();
   assert.equal(await page.locator('[data-studio-round="running"]').count(), 0, "Creating a project never starts a round");
   await section(page, "Files");
   await page.getByText("No references yet.", { exact: false }).waitFor();
@@ -515,9 +580,21 @@ try {
   await dialog.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Filter projects", exact: true }).getByText("Lindenhof Wohnbau", { exact: true }).waitFor();
   passed("clients are created from a name alone");
+  // A stopped round saves the folder as it is: changed sources next to the previous build's model.
+  // That version is unbuilt changes, and the project still opens on its last real model.
+  await writeFile(path.join(source, "assets/plan.json"), JSON.stringify({ ...plan, name: "Changed by a stopped round" }));
+  await cli(home, "continue", source);
+  await page.reload();
+  await page.locator(`li[data-studio-thread="${mainThread}"] [role="button"]`).click();
+  await page.locator('[data-studio-view="rounds"]:visible').click();
+  await page.getByText(studioText.en.unbuiltChanges, { exact: true }).first().waitFor();
+  assert.equal(await page.getByText("Artifact checkpoint integrity failure", { exact: false }).count(), 0, "A stale saved model must not break the project");
+  await section(page, "View project"); await viewer(page);
+  assert.equal(await page.locator("[data-studio-version]").getAttribute("data-studio-version"), checkpoint, "The project opens on its last real model");
+  passed("a version saved with a stale model counts as unbuilt changes and never blocks the project");
   assert.deepEqual([...offMachine], [], "App attempted off-machine network access");
   passed("zero off-machine app requests");
-  await writeFile(path.join(evidence, "checks.json"), JSON.stringify({ ok: true, checks, screenshots: ["desktop.png", "narrow.png", "intake-desktop.png", "intake-narrow.png", "intake-invalid.png", "file-preview-desktop.png", "file-preview-narrow.png", "compare.png"] }, null, 2));
+  await writeFile(path.join(evidence, "checks.json"), JSON.stringify({ ok: true, checks, screenshots: ["desktop.png", "opened-project.png", "update-project.png", "narrow.png", "intake-desktop.png", "intake-narrow.png", "intake-invalid.png", "file-preview-desktop.png", "file-preview-narrow.png", "compare.png"] }, null, 2));
   console.log(JSON.stringify({ ok: true, checks, evidence }));
 } catch (error) {
   await mkdir(evidence, { recursive: true });

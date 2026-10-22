@@ -10,12 +10,18 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiExportsExportIdTokenRouteImport } from './routes/api.exports.$exportId.$token'
 import { Route as ApiArtifactsCheckpointIdTokenSplatRouteImport } from './routes/api.artifacts.$checkpointId.$token.$'
 import { Route as ApiReferencesCheckpointIdTokenSplatRouteImport } from './routes/api.references.$checkpointId.$token.$'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiExportsExportIdTokenRoute = ApiExportsExportIdTokenRouteImport.update({
+  id: '/api/exports/$exportId/$token',
+  path: '/api/exports/$exportId/$token',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiArtifactsCheckpointIdTokenSplatRoute =
@@ -33,17 +39,20 @@ const ApiReferencesCheckpointIdTokenSplatRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api/exports/$exportId/$token': typeof ApiExportsExportIdTokenRoute
   '/api/artifacts/$checkpointId/$token/$': typeof ApiArtifactsCheckpointIdTokenSplatRoute
   '/api/references/$checkpointId/$token/$': typeof ApiReferencesCheckpointIdTokenSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api/exports/$exportId/$token': typeof ApiExportsExportIdTokenRoute
   '/api/artifacts/$checkpointId/$token/$': typeof ApiArtifactsCheckpointIdTokenSplatRoute
   '/api/references/$checkpointId/$token/$': typeof ApiReferencesCheckpointIdTokenSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api/exports/$exportId/$token': typeof ApiExportsExportIdTokenRoute
   '/api/artifacts/$checkpointId/$token/$': typeof ApiArtifactsCheckpointIdTokenSplatRoute
   '/api/references/$checkpointId/$token/$': typeof ApiReferencesCheckpointIdTokenSplatRoute
 }
@@ -51,22 +60,26 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/api/exports/$exportId/$token'
     | '/api/artifacts/$checkpointId/$token/$'
     | '/api/references/$checkpointId/$token/$'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/api/exports/$exportId/$token'
     | '/api/artifacts/$checkpointId/$token/$'
     | '/api/references/$checkpointId/$token/$'
   id:
     | '__root__'
     | '/'
+    | '/api/exports/$exportId/$token'
     | '/api/artifacts/$checkpointId/$token/$'
     | '/api/references/$checkpointId/$token/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ApiExportsExportIdTokenRoute: typeof ApiExportsExportIdTokenRoute
   ApiArtifactsCheckpointIdTokenSplatRoute: typeof ApiArtifactsCheckpointIdTokenSplatRoute
   ApiReferencesCheckpointIdTokenSplatRoute: typeof ApiReferencesCheckpointIdTokenSplatRoute
 }
@@ -78,6 +91,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/exports/$exportId/$token': {
+      id: '/api/exports/$exportId/$token'
+      path: '/api/exports/$exportId/$token'
+      fullPath: '/api/exports/$exportId/$token'
+      preLoaderRoute: typeof ApiExportsExportIdTokenRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/artifacts/$checkpointId/$token/$': {
@@ -99,6 +119,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ApiExportsExportIdTokenRoute: ApiExportsExportIdTokenRoute,
   ApiArtifactsCheckpointIdTokenSplatRoute:
     ApiArtifactsCheckpointIdTokenSplatRoute,
   ApiReferencesCheckpointIdTokenSplatRoute:

@@ -12,7 +12,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileIcon, XIcon } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "@arch/ui/components/sonner";
-import { createProject, grantBuilds, startRound } from "../lib/server";
+import { createProject, createThread, grantBuilds, startRound } from "../lib/server";
 import { agentProvidersQuery, agentRunnable, useDisabledAgents } from "../lib/settings";
 import type { StudioClient } from "../lib/model";
 import type { studioText } from "../lib/messages";
@@ -24,7 +24,7 @@ const addClient = "new";
 const intakeRequest = (brief: string) => `Review every reference in this new project and complete intake as AGENTS.md and BUILDERS.md describe: classify the documents, update source/intake.json, and record assumptions and open questions. Do not author geometry unless the references settle scale, structure and openings.${brief ? `\n\nBrief from the user:\n${brief}` : ""}`;
 
 /** Name, references and an optional brief become a ready project folder in one step. */
-export function NewProject({open, setOpen, clients, defaultClientId, created, t}: {open: boolean; setOpen: (open: boolean) => void; clients: StudioClient[]; defaultClientId?: string; created: (value: {clientId: string; projectId: string}) => void; t: typeof studioText.en}) {
+export function NewProject({open, setOpen, clients, defaultClientId, created, t}: {open: boolean; setOpen: (open: boolean) => void; clients: StudioClient[]; defaultClientId?: string; created: (value: {clientId: string; projectId: string; threadId?: string}) => void; t: typeof studioText.en}) {
   const format = useStudioFormat();
   const {locale} = useStudioLocale();
   const queryClient = useQueryClient();
@@ -42,16 +42,19 @@ export function NewProject({open, setOpen, clients, defaultClientId, created, t}
       if (values.client === addClient) data.set("clientName", values.clientName);
       else if (values.client !== noClient) data.set("clientId", values.client);
       for (const file of references) data.append("references", file);
-      const created = await createProject({data});
+      const created: {clientId: string; projectId: string; threadId?: string} = await createProject({data});
       // Starting now is the explicit execution confirmation for this project.
       if (values.startIntake && agent && references.length) {
         // The project exists either way. A failed start leaves it ready for a manual first round.
         try {
           await grantBuilds({data: {projectId: created.projectId, branch: "main"}});
+          // The review runs in the project's first conversation, which then opens.
+          const {threadId} = await createThread({data: {projectId: created.projectId}});
           const round = new FormData();
-          round.set("projectId", created.projectId); round.set("branch", "main"); round.set("kind", "request");
+          round.set("projectId", created.projectId); round.set("threadId", threadId); round.set("kind", "request"); round.set("settings", "{}");
           round.set("request", intakeRequest(values.brief.trim())); round.set("provider", agent.provider); round.set("model", agent.models[0]!.id);
           await startRound({data: round});
+          created.threadId = threadId;
         } catch (error) {toast.error(t.intakeFailed, {description: error instanceof Error ? studioFailure(error, locale).message : undefined});}
       }
       return created;

@@ -115,6 +115,8 @@ const config: Configuration = {
     category: 'public.app-category.graphics-design',
   },
   win: { icon: join(root, 'apps/desktop/icon.ico'), target: 'nsis' },
+  // Double-clicking a shared project file opens it in Studio.
+  fileAssociations: [{ ext: 'archproject', name: 'Arch Studio Project', description: 'Arch Studio project', mimeType: 'application/vnd.arch-studio.project+zip', role: 'Editor' }],
   // biome-ignore lint/suspicious/noTemplateCurlyInString: electron-builder expands these placeholders.
   nsis: { artifactName: 'Arch-Studio-Setup-${version}-windows-${arch}.${ext}', oneClick: true, perMachine: false },
 };

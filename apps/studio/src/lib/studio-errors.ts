@@ -23,6 +23,11 @@ const en = {
   ARCH_ROUND_STOPPED: "This round is no longer running. Refresh to see its latest status.",
   ARCH_NO_APPROVAL: "This round is no longer waiting for approval. Refresh to see its latest status.",
   ARCH_ITEM_MISSING: "This item is no longer available. Refresh and try again.",
+  ARCH_PROJECT_EXISTS: "This project is already in Studio. Open the existing project instead.",
+  ARCH_PACKAGE_INVALID: "This file is not a valid Arch Studio project, or it is damaged. Ask for a new export.",
+  ARCH_EXPORT_NEEDS_VERSION: "Create a version before exporting this project.",
+  ARCH_PACKAGE_EXPIRED: "This file was opened too long ago. Choose it again.",
+  ARCH_PROJECT_BUSY: "Studio is still saving or updating this project. Try again in a moment.",
 };
 const copy: Record<Locale, Record<keyof typeof en, string>> = {
   en,
@@ -49,6 +54,11 @@ const copy: Record<Locale, Record<keyof typeof en, string>> = {
     ARCH_ROUND_STOPPED: "Diese Runde läuft nicht mehr. Lade die Seite neu, um den aktuellen Stand zu sehen.",
     ARCH_NO_APPROVAL: "Diese Runde wartet nicht mehr auf eine Freigabe. Lade die Seite neu, um den aktuellen Stand zu sehen.",
     ARCH_ITEM_MISSING: "Dieser Eintrag ist nicht mehr verfügbar. Lade die Seite neu und versuch es noch einmal.",
+    ARCH_PROJECT_EXISTS: "Dieses Projekt ist bereits in Studio. Öffne stattdessen das vorhandene Projekt.",
+    ARCH_PACKAGE_INVALID: "Diese Datei ist kein gültiges Arch-Studio-Projekt oder sie ist beschädigt. Bitte um einen neuen Export.",
+    ARCH_EXPORT_NEEDS_VERSION: "Erstelle eine Version, bevor du dieses Projekt exportierst.",
+    ARCH_PACKAGE_EXPIRED: "Diese Datei wurde vor zu langer Zeit geöffnet. Wähle sie noch einmal aus.",
+    ARCH_PROJECT_BUSY: "Studio speichert oder aktualisiert dieses Projekt gerade. Versuch es gleich noch einmal.",
   },
   es: {
     generic: "No se pudo completar la acción. Inténtalo de nuevo.", details: "Detalles técnicos",
@@ -73,6 +83,11 @@ const copy: Record<Locale, Record<keyof typeof en, string>> = {
     ARCH_ROUND_STOPPED: "Esta ronda ya no está en curso. Actualiza la página para ver su estado.",
     ARCH_NO_APPROVAL: "Esta ronda ya no espera un permiso. Actualiza la página para ver su estado.",
     ARCH_ITEM_MISSING: "Este elemento ya no está disponible. Actualiza la página e inténtalo de nuevo.",
+    ARCH_PROJECT_EXISTS: "Este proyecto ya está en Studio. Abre el proyecto existente.",
+    ARCH_PACKAGE_INVALID: "Este archivo no es un proyecto válido de Arch Studio o está dañado. Pide una nueva exportación.",
+    ARCH_EXPORT_NEEDS_VERSION: "Crea una versión antes de exportar este proyecto.",
+    ARCH_PACKAGE_EXPIRED: "Este archivo se abrió hace demasiado tiempo. Vuelve a elegirlo.",
+    ARCH_PROJECT_BUSY: "Studio todavía está guardando o actualizando este proyecto. Inténtalo de nuevo en un momento.",
   },
   pt: {
     generic: "Não foi possível concluir a ação. Tente novamente.", details: "Detalhes técnicos",
@@ -97,6 +112,11 @@ const copy: Record<Locale, Record<keyof typeof en, string>> = {
     ARCH_ROUND_STOPPED: "Esta rodada não está mais em andamento. Atualize a página para ver o status.",
     ARCH_NO_APPROVAL: "Esta rodada não está mais esperando uma permissão. Atualize a página para ver o status.",
     ARCH_ITEM_MISSING: "Este item não está mais disponível. Atualize a página e tente novamente.",
+    ARCH_PROJECT_EXISTS: "Este projeto já está no Studio. Abra o projeto existente.",
+    ARCH_PACKAGE_INVALID: "Este arquivo não é um projeto válido do Arch Studio ou está danificado. Peça uma nova exportação.",
+    ARCH_EXPORT_NEEDS_VERSION: "Crie uma versão antes de exportar este projeto.",
+    ARCH_PACKAGE_EXPIRED: "Este arquivo foi aberto há muito tempo. Escolha-o novamente.",
+    ARCH_PROJECT_BUSY: "O Studio ainda está salvando ou atualizando este projeto. Tente novamente em instantes.",
   },
 };
 

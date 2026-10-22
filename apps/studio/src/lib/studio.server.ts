@@ -81,11 +81,16 @@ export async function projectDetails({ data }: { data: { projectId: string } }):
   requireSourceIdentity(project, current);
   const versions: StudioVersion[] = [];
   for (const checkpoint of inspection.checkpoints) {
-    const hasArtifact = checkpoint.project.schemaVersion === 2 && checkpoint.files.some(file => file.path === "outputs/artifact.json");
+    let hasArtifact = false;
     let artifactHash: string | null = null;
     let outputs: StudioVersion["outputs"] = [];
-    if (hasArtifact) {
-      const verified = await artifactDetails({ checkpointId: checkpoint.id });
+    // A version saved when a round stopped keeps the previous build's model next to sources the
+    // agent had already changed. That model no longer belongs to the version, so it counts as
+    // saved changes, not built yet, and never blocks the rest of the project.
+    const verified = checkpoint.project.schemaVersion === 2 && checkpoint.files.some(file => file.path === "outputs/artifact.json")
+      ? await artifactDetails({ checkpointId: checkpoint.id }).catch(() => null) : null;
+    if (verified) {
+      hasArtifact = true;
       artifactHash = verified.artifactHash;
       const urls = await location(checkpoint.id, origin);
       outputs = verified.artifact.outputs.map((output, index) => ({ id: `${output.kind}-${index}`, kind: output.kind === "video" ? "film" : "still", label: path.basename(output.path), url: `${urls.base}${output.path.replace(/^outputs\/artifact\//, "").split("/").map(encodeURIComponent).join("/")}` }));

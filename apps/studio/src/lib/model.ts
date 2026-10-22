@@ -87,3 +87,18 @@ export type StudioThread = {
   snoozedAt: string | null;
   lastVisitedAt: string | null;
 };
+/** What one branch in a project file becomes in the project already here. */
+export type ProjectFileVariant = { name: string; outcome: "added" | "updated" | "unchanged" | "kept-separately"; as?: string };
+export type ProjectFilePreview = {
+  uploadId: string;
+  name: string;
+  clientName: string;
+  /** Versions in the file that have a built model, conversations and notes in the file. */
+  versions: number;
+  conversations: number;
+  notes: number;
+  /** The local Studio project with the same identity, when there is one. */
+  existing: { projectId: string; name: string } | null;
+  /** What applying adds to the existing project. Null for a new project. */
+  changes: { versions: number; conversations: number; notes: number; variants: ProjectFileVariant[] } | null;
+};

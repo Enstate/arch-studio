@@ -78,8 +78,8 @@ function GeneralSettings({locale, changeLocale, restore, t}: {locale: Locale; ch
     <SettingsGroup title={t.general}>
       <SettingsRow title={t.language} description={t.languageHint} control={<Select value={locale} onValueChange={value => changeLocale(value as Locale)}><SelectTrigger size="sm" aria-label={t.language} className="w-full @min-[32rem]/settings-row:w-48"><SelectValue>{(value: Locale) => languageNames[value]}</SelectValue></SelectTrigger><SelectContent align="end">{(Object.keys(languageNames) as Locale[]).map(value => <SelectItem key={value} value={value} lang={value}>{languageNames[value]}</SelectItem>)}</SelectContent></Select>} />
     </SettingsGroup>
-    <SettingsGroup title={t.handoffs}>
-      <SettingsRow title={t.restore} description={t.restoreHint} control={<Button size="sm" variant="outline" onClick={restore}>{t.restoreAction}</Button>} />
+    <SettingsGroup title={t.sharing}>
+      <SettingsRow title={t.openProjectFile} description={t.openProjectFileHint} control={<Button size="sm" variant="outline" onClick={restore}>{t.chooseProjectFile}</Button>} />
     </SettingsGroup>
   </>;
 }
