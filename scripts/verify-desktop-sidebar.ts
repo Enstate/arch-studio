@@ -48,7 +48,8 @@ async function verifyLanguages(page:Page){
    assert.equal(await page.locator('html').getAttribute('lang'),locale);
    const updateLabel=await electron.evaluate(({Menu})=>Menu.getApplicationMenu()!.items[0]!.submenu!.items[1]!.label);
    assert.equal(updateLabel,`${studioText[locale].checkUpdates}…`);
-   await page.getByRole('button',{name:studioText[locale].newProject,exact:true}).first().click();
+   await page.getByRole('button',{name:studioText[locale].addProject,exact:true}).click();
+   await page.getByRole('menuitem',{name:studioText[locale].newProject,exact:true}).click();
    const dialog=page.getByRole('dialog');
    await dialog.getByText(studioText[locale].newProjectHint,{exact:true}).waitFor();
    await dialog.getByRole('button',{name:studioText[locale].close,exact:true}).waitFor();
@@ -235,6 +236,18 @@ try{
  await mkdir(evidence,{recursive:true});
  await page.screenshot({path:join(evidence,'after.png'),scale:'device',animations:'disabled'});
  console.log('PASS native inset/titlebar/scale, sidebar collapse, one-line filters, versions/handoff, preview update panel, untrusted picker denial, fullscreen, and portaled narrow sidebar');
+ // A project file opened from Finder arrives through open-file and lands in Studio's open dialog.
+ const types=spawnSync('/usr/libexec/PlistBuddy',['-c','Print :CFBundleDocumentTypes:0:CFBundleTypeExtensions:0',join(application,'Contents/Info.plist')],{encoding:'utf8'});
+ assert.equal(types.stdout.trim(),'archproject','Packaged app must declare the project file type');
+ const shared=join(temporary,'Sample house.archproject');
+ const exported=spawnSync(process.execPath,['-e',`const tools=await import(${JSON.stringify(join(root,'packages/project-tools/src/index.ts'))});const project=(await tools.listProjects()).find(item=>item.manifest.name==='Sample house');await tools.exportProjectPackage(project.manifest.id,${JSON.stringify(shared)},{name:project.manifest.name});`],{cwd:root,env,encoding:'utf8'});
+ assert.equal(exported.status,0,exported.stderr);
+ await electron.evaluate(({app},file)=>{app.emit('open-file',{preventDefault(){}},file);},shared);
+ const openedFile=page.getByRole('dialog');
+ await openedFile.getByText(studioText.en.projectUpToDate.replace('{name}','Sample house'),{exact:true}).waitFor({timeout:30000});
+ await page.screenshot({path:join(evidence,'open-file.png'),scale:'device',animations:'disabled'});
+ await page.keyboard.press('Escape');await openedFile.waitFor({state:'hidden'});
+ console.log('PASS packaged file association and a Finder-opened project file reach the open dialog');
  if(process.env.ARCH_CAPTURE_NATIVE==='1'){
    const ready=join(root,'.arch/sidebar-native-ready');const captured=join(root,'.arch/sidebar-native-captured');
    await rm(captured,{force:true});await writeFile(ready,JSON.stringify({application,pid:electron.process().pid,temporary}));

@@ -78,7 +78,7 @@ async function storeyWarnings(directory: string) {
 
 // Running rounds live on the process, not the module. Development reloads re-evaluate this
 // module and must not orphan an agent that is still working.
-type RoundsState = { database?: DatabaseSync; schema?: number; active: Map<string, ActiveRound>; activeBranches: Set<string>; shutdownBound: boolean; builds?: Map<string, Promise<unknown>> };
+type RoundsState = { database?: DatabaseSync; schema?: number; active: Map<string, ActiveRound>; activeBranches: Set<string>; shutdownBound: boolean; builds?: Map<string, Promise<unknown>>; held?: Set<string> };
 const processState = globalThis as typeof globalThis & { archStudioRounds?: RoundsState };
 processState.archStudioRounds ??= { active: new Map(), activeBranches: new Set(), shutdownBound: false };
 const state: RoundsState = processState.archStudioRounds;
@@ -131,6 +131,36 @@ function onBranch<T>(sourceId: string, branch: string, work: () => Promise<T>): 
   const next = (builds.get(key) ?? Promise.resolve()).catch(() => undefined).then(work);
   builds.set(key, next.catch(() => undefined));
   return next;
+}
+state.held ??= new Set();
+// Projects a whole-project operation holds. No round starts in them until it ends.
+const held = state.held;
+/** Branches of a project that a round is working in right now, including one still starting. */
+export function runningBranches(sourceId: string): Set<string> {
+  const result = new Set<string>();
+  for (const row of rounds().prepare("SELECT id, branch FROM rounds WHERE source_id=? AND status='running'").all(sourceId))
+    if (active.has(String(row.id))) result.add(String(row.branch));
+  const thread = rounds().prepare("SELECT branch FROM threads WHERE id=? AND source_id=?");
+  for (const threadId of activeThreads) {
+    const row = thread.get(threadId, sourceId);
+    if (row) result.add(String(row.branch));
+  }
+  return result;
+}
+/**
+ * Run work on a whole project while no round can start in it and no save or build runs in
+ * these branch folders. `running` names the branches a round started earlier still works in;
+ * their folders belong to that round. A second hold on the same project fails with ARCH_PROJECT_BUSY.
+ */
+export async function holdProject<T>(sourceId: string, branches: string[], work: (running: ReadonlySet<string>) => Promise<T>): Promise<T> {
+  if (held.has(sourceId)) throw new Error("ARCH_PROJECT_BUSY");
+  held.add(sourceId);
+  try {
+    // One fixed order, so two holds can never wait on each other's branches.
+    const names = [...new Set(branches)].sort();
+    const next = (index: number): Promise<T> => index === names.length ? work(runningBranches(sourceId)) : onBranch(sourceId, names[index]!, () => next(index + 1));
+    return await next(0);
+  } finally { held.delete(sourceId); }
 }
 type ThreadRow = { id: string; source_id: string; branch: string; title: string };
 function requireThread(sourceId: string, threadId: string): ThreadRow {
@@ -295,6 +325,8 @@ export async function startRound({ data }: { data: { projectId: string; threadId
   if (data.kind === "request" && !(await buildGrant({ data: { projectId: data.projectId, branch } })).granted) throw new Error("ARCH_BUILDS_REQUIRED");
   if (data.kind === "critique" && !line.headId) throw new Error("ARCH_VERSION_REQUIRED");
   const key = thread.id;
+  // Checked and claimed without an await in between, so a hold never misses a starting round.
+  if (held.has(sourceId)) throw new Error("ARCH_PROJECT_BUSY");
   if (activeThreads.has(key)) throw new Error("ARCH_ROUND_RUNNING");
   const owner = rounds().prepare("SELECT provider FROM thread_agents WHERE thread_id=?").get(thread.id);
   if (data.kind === "request" && owner && owner.provider !== data.provider) throw new Error("ARCH_AGENT_LOCKED");

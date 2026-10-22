@@ -61,10 +61,12 @@ export function ProjectPanel(props: {
   const planChanges = changes.data?.plan ? Object.values(changes.data.plan).reduce((total, part) => total + part.added.length + part.removed.length + part.modified.length, 0) : 0;
   const siblings = props.threads.filter(thread => thread.branch === branch.name && thread.id !== props.threadId);
   const variants = props.branches.filter(item => !item.archived);
-  const label = `${variantName(branch.name, t)}${version ? ` · ${props.versionLabel(version).split(" · ")[0]}` : ""}`;
+  // Following latest without any built model says so, instead of naming a saved folder state.
+  const versionName = version && (version.hasArtifact || !props.following) ? props.versionLabel(version) : t.noModelYet;
+  const label = `${variantName(branch.name, t)} · ${versionName}`;
   return <Popover open={open} onOpenChange={setOpen}>
     <PopoverTrigger render={<button type="button" aria-label={`${t.designLine}: ${label}`} data-studio-branch={branch.name} data-studio-version={version?.id} className="flex h-7 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground outline-none hover:bg-foreground/7 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/50 max-md:h-11" />}>
-      <LayersIcon className="size-3.5 shrink-0" /><span className="max-w-56 truncate">{props.following && version && <>{t.followLatest} · </>}{label}</span><ChevronDownIcon className="size-3.5 shrink-0" />
+      <LayersIcon className="size-3.5 shrink-0" /><span className="max-w-56 truncate">{props.following && version?.hasArtifact && <>{t.followLatest} · </>}{label}</span><ChevronDownIcon className="size-3.5 shrink-0" />
     </PopoverTrigger>
     <PopoverContent align="end" className="w-80 gap-0 rounded-2xl p-0">
       <Section>
@@ -83,18 +85,18 @@ export function ProjectPanel(props: {
             <DropdownMenuItem disabled={!version} onClick={() => {setOpen(false); if (version) props.newVariant(version.id);}}><PlusIcon />{t.newVariant}</DropdownMenuItem>
             {!branch.primary && <DropdownMenuItem onClick={props.makePrimary}><StarIcon />{t.makePrimary}</DropdownMenuItem>}
           </DropdownMenuContent></DropdownMenu>} />
-        <Row icon={<LayersIcon />} label={version ? props.versionLabel(version).split(" · ")[0] : t.noVersions} detail={version && (props.following ? t.latest : ago(version.createdAt, format))}
+        <Row icon={<LayersIcon />} label={version ? versionName : t.noVersions} detail={version && (props.following ? t.latest : ago(version.createdAt, format))}
           menu={<DropdownMenu><DropdownMenuTrigger className={chevronButton} aria-label={t.versions}><ChevronDownIcon className="size-4" /></DropdownMenuTrigger><DropdownMenuContent align="end" className="max-h-80 w-64 overflow-y-auto">
             <DropdownMenuRadioGroup value={props.following ? "latest" : version?.id ?? "latest"} onValueChange={value => props.selectVersion(value === "latest" ? undefined : String(value))}>
               <DropdownMenuRadioItem closeOnClick value="latest" className="studio-choice py-2">{t.followLatest}</DropdownMenuRadioItem>
               <DropdownMenuSeparator />
-              {props.versions.map(item => <DropdownMenuRadioItem closeOnClick key={item.id} value={item.id} className="studio-choice py-2"><span className="grid min-w-0 gap-0.5"><span>{props.versionLabel(item)}<span className="ml-2 text-xs font-normal text-muted-foreground">{item.hasArtifact ? t.ready : t.draft}</span></span><span className="text-xs font-normal text-muted-foreground">{format.date(item.createdAt, {dateStyle: "medium", timeStyle: "short"})}</span></span></DropdownMenuRadioItem>)}
+              {props.versions.map(item => <DropdownMenuRadioItem closeOnClick key={item.id} value={item.id} data-studio-version-option={item.id} className="studio-choice py-2"><span className="grid min-w-0 gap-0.5"><span className={item.hasArtifact ? undefined : "text-muted-foreground"}>{props.versionLabel(item)}</span><span className="text-xs font-normal text-muted-foreground">{format.date(item.createdAt, {dateStyle: "medium", timeStyle: "short"})}</span></span></DropdownMenuRadioItem>)}
             </DropdownMenuRadioGroup>
           </DropdownMenuContent></DropdownMenu>} />
         <Row icon={props.building ? <Spinner /> : props.buildError ? <CircleAlertIcon className="text-destructive" /> : <HammerIcon />} label={props.building ? t.building : t.buildNow} detail={props.buildError ? t.buildFailed : undefined} onClick={props.build} disabled={props.building} />
         <Row icon={<DiffIcon />} label={t.changesSincePrevious} onClick={version?.parentId ? () => {setOpen(false); props.compare(version.parentId!, version.id);} : undefined}
           detail={!version?.parentId ? t.firstVersion : changes.isPending ? <Spinner className="size-3" /> : <span className="flex items-center gap-1.5">{!!changedFiles && <span className="text-emerald-600 dark:text-emerald-400">{changedFiles} {changedFiles === 1 ? t.fileShort : t.filesShort}</span>}{!!planChanges && <span className="text-sky-600 dark:text-sky-400">{planChanges} {t.planShort}</span>}{!changedFiles && !planChanges && t.noChanges}</span>} />
-        <Row icon={<PackageIcon />} label={t.export} onClick={() => {setOpen(false); props.openHandoff();}} />
+        <Row icon={<PackageIcon />} label={t.shareProject} onClick={() => {setOpen(false); props.openHandoff();}} />
       </Section>
       <Section title={<button type="button" aria-expanded={threadsOpen} onClick={() => setThreadsOpen(value => !value)} className="flex h-8 w-full items-center gap-2 px-2.5 text-left">
         <span className="text-xs font-medium text-muted-foreground">{t.threadsOnVariant} ({siblings.length})</span><span className="h-px flex-1 bg-border/60" /><ChevronDownIcon className={cn("size-3 text-muted-foreground/60 transition-transform", threadsOpen && "rotate-180")} />

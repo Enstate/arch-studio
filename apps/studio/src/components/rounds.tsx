@@ -4,7 +4,7 @@ import { Button } from "@arch/ui/components/button";
 import { Spinner } from "@arch/ui/components/spinner";
 import { cn } from "@arch/ui/lib/utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BotIcon, CheckIcon, PlayIcon, ChevronDownIcon, CircleAlertIcon, EyeIcon, FileTextIcon, GitBranchIcon, GlobeIcon, HammerIcon, ImageIcon, MessageCircleIcon, PaperclipIcon, ScanSearchIcon, SquarePenIcon, TerminalIcon, WrenchIcon, XIcon } from "lucide-react";
+import { BotIcon, BoxIcon, CheckIcon, PlayIcon, ChevronDownIcon, CircleAlertIcon, EyeIcon, FileTextIcon, GitBranchIcon, GlobeIcon, HammerIcon, ImageIcon, MessageCircleIcon, PaperclipIcon, ScanSearchIcon, SquarePenIcon, TerminalIcon, WrenchIcon, XIcon } from "lucide-react";
 import { type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
@@ -35,6 +35,20 @@ export function branchVersions(versions: StudioVersion[], headId: string | null)
   return lineage;
 }
 
+/**
+ * What a saved version records. Only a version with a built model counts as a design version;
+ * the others are the project folder saved when it was created, when files arrived or before a build.
+ */
+export type VersionChange = {kind: "model"} | {kind: "created"; files: number} | {kind: "files"; added: string[]} | {kind: "unbuilt"};
+export function versionChange(version: StudioVersion, versions: StudioVersion[]): VersionChange {
+  if (version.hasArtifact) return {kind: "model"};
+  if (!version.parentId) return {kind: "created", files: version.references.length};
+  const parent = versions.find(item => item.id === version.parentId);
+  const before = new Set(parent?.references.map(reference => reference.path));
+  const added = parent ? version.references.filter(reference => !before.has(reference.path)).map(reference => reference.label) : [];
+  return added.length ? {kind: "files", added} : {kind: "unbuilt"};
+}
+
 /** One cache entry per round. The server rewrites the newest text event while it streams. */
 function useRoundActivity(roundId: string | undefined, live: boolean) {
   const queryClient = useQueryClient();
@@ -61,10 +75,12 @@ export function Rounds({projectId, threadId, branch, versions, versionLabel, ope
   const lineage = branchVersions(versions, branch.headId);
   const rounds = (timeline.data ?? []).filter(round => round.threadId === threadId);
   const roundCheckpoints = new Set((timeline.data ?? []).map(round => round.checkpointId));
+  const attachedTo = new Set(rounds.filter(round => round.attachments.length).map(round => round.parentCheckpointId));
   // Saved versions without a round came from a manual build, the CLI or an import.
   const entries: Entry[] = [
     ...rounds.map(round => ({kind: "round" as const, round, at: round.startedAt})),
-    ...lineage.filter(version => !roundCheckpoints.has(version.id)).map(version => ({kind: "version" as const, version, at: version.createdAt})),
+    // Documents attached to a request are saved just before it. The request already lists them.
+    ...lineage.filter(version => !roundCheckpoints.has(version.id) && !(attachedTo.has(version.id) && versionChange(version, versions).kind === "files")).map(version => ({kind: "version" as const, version, at: version.createdAt})),
   ].sort((a, b) => a.at.localeCompare(b.at));
   const running = rounds.find(round => round.status === "running");
   const forkPoint = branch.forkedFrom ? versions.find(version => version.id === branch.forkedFrom) : undefined;
@@ -73,19 +89,37 @@ export function Rounds({projectId, threadId, branch, versions, versionLabel, ope
   const [draft, setDraft] = useState<{threadId: string; text: string}>({threadId, text: initialRequest});
   const request = draft.threadId === threadId ? draft.text : "";
   const setRequest = (text: string) => setDraft({threadId, text});
+  const changeText = (item: StudioVersion) => {
+    const change = versionChange(item, versions);
+    return change.kind === "model" ? `${t.modelBuilt} · ${versionLabel(item)}`
+      : change.kind === "created" ? `${t.projectCreated}${change.files ? ` · ${change.files} ${change.files === 1 ? t.fileShort : t.filesShort}` : ""}`
+      : change.kind === "files" ? `${t.filesAdded} · ${change.added.join(", ")}`
+      : t.unbuiltChanges;
+  };
   return <div className="flex min-h-0 flex-1 flex-col">
     {/* Reversed flow keeps the newest activity in view while it streams, without scroll effects. */}
     <div className="flex min-h-0 flex-1 flex-col-reverse overflow-y-auto"><div className="mx-auto w-full max-w-3xl px-3 pt-6 pb-4 sm:px-5">
       {forkPoint && <FoldRow><GitBranchIcon className="size-3" />{t.forkedFrom} {versionLabel(forkPoint)}</FoldRow>}
-      {!entries.length && !timeline.isPending && <div className="grid gap-1 py-16 text-center text-sm"><p className="text-foreground">{t.roundsEmpty}</p><p className="text-xs text-muted-foreground">{t.roundsEmptyHint}</p></div>}
       {entries.map(entry => entry.kind === "version"
-        ? <FoldRow key={entry.version.id}><span className="flex-1">{t.savedVersion} · {versionLabel(entry.version)}</span>{entry.version.hasArtifact && <button type="button" className="hover:text-foreground" onClick={() => openVersion(entry.version.id)}>{t.openModel}</button>}</FoldRow>
+        ? <FoldRow key={entry.version.id}><span className="min-w-0 flex-1 truncate" title={entry.version.checkpointId.slice(0, 7)}>{changeText(entry.version)}</span>{entry.version.hasArtifact && <button type="button" className="hover:text-foreground" onClick={() => openVersion(entry.version.id)}>{t.openModel}</button>}</FoldRow>
         : <RoundTurn key={entry.round.id} projectId={projectId} round={entry.round} resumable={entry.round.id === rounds.at(-1)?.id && !running} ensureGrant={ensureGrant} version={version(entry.round.checkpointId)} branch={branch} label={versionLabel} openVersion={openVersion} compare={compare} forkFrom={forkFrom} revise={text => setRequest(`${t.reviseRequest}\n\n${text}`)} t={t} />)}
+      {!rounds.length && !timeline.isPending && <div className="grid justify-items-center gap-1 py-16 text-center text-sm">
+        <p className="text-foreground">{t.roundsEmpty}</p><p className="max-w-md text-xs text-muted-foreground">{t.roundsEmptyHint}</p>
+        <div className="mt-4 flex flex-wrap justify-center gap-2">{starters(t).map(starter => <Button key={starter.title} type="button" size="sm" variant="outline" onClick={() => setRequest(starter.request)}><starter.icon />{starter.title}</Button>)}</div>
+      </div>}
     </div></div>
     <div className="shrink-0 px-3 pb-3 sm:px-5 sm:pb-4">
       <Composer key={threadId} projectId={projectId} threadId={threadId} branch={branch} running={running} request={request} setRequest={setRequest} canCritique={!!lineage.find(item => item.hasArtifact)} ensureGrant={ensureGrant} t={t} />
     </div>
   </div>;
+}
+
+/** Ready-made first requests. They fill the composer so the person can read and adjust them before sending. */
+export function starters(t: Copy) {
+  return [
+    {icon: FileTextIcon, title: t.reviewDocuments, hint: t.reviewDocumentsHint, request: t.reviewDocumentsRequest},
+    {icon: BoxIcon, title: t.firstModel, hint: t.firstModelHint, request: t.firstModelRequest},
+  ];
 }
 
 function FoldRow({children}: {children: ReactNode}) {

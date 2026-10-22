@@ -6,7 +6,7 @@ import type { Plan } from "@arch/viewer/plan/schema";
 import { spawn, spawnSync } from "node:child_process";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { z } from "zod";
-import { promises as fs } from "node:fs";
+import { createReadStream, promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { planEditsSchema } from "./hand-edits.ts";
+import { openArchive, writeArchive, type ArchiveEntry, type ArchiveReader } from "./project-archive.ts";
 import {
   artifactManifestSchema,
   type ArtifactManifest,
@@ -1734,4 +1735,700 @@ export async function referenceFile({ checkpointId, path: relative }: { checkpoi
   const file = saved.files.find(file => file.path === relative);
   if (!file) throw new Error("Reference missing from checkpoint");
   return { body: await verifiedBlob(path.join(archiveDirectory(), "blobs/sha256"), file), contentType: "application/octet-stream" };
+}
+
+const packageSha = z.string().regex(/^[a-f0-9]{64}$/);
+const projectPackageSchema = z
+  .object({
+    format: z.literal("arch-project"),
+    schemaVersion: z.literal(1),
+    exportedAt: z.string().datetime(),
+    projectId: projectIdSchema,
+    name: z.string().trim().min(1).max(160),
+    client: z.object({ id: projectIdSchema, name: z.string().min(1).max(160) }).strict(),
+    branches: z
+      .array(
+        z
+          .object({
+            name: branchName,
+            headId: packageSha,
+            forkedFrom: packageSha.nullable(),
+            createdAt: z.string().datetime(),
+            archived: z.boolean(),
+            primary: z.boolean(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(100),
+    checkpoints: z.array(packageSha).min(1).max(100_000),
+    blobs: z.array(z.object({ sha256: packageSha, size: z.number().int().nonnegative() }).strict()).max(200_000),
+    notes: z.array(reviewNoteSchema).max(100_000),
+    rounds: z.array(roundSchema).max(100_000),
+    /** Studio's own conversation data. Studio validates it; project tools only carry it. */
+    studio: z.unknown(),
+  })
+  .strict();
+/** The `arch-project.json` header of a whole-project package. It holds no machine paths. */
+export type ProjectPackage = z.infer<typeof projectPackageSchema>;
+const packageLimits = { entries: 250_000, entryBytes: 2 * 1024 ** 3, totalBytes: 8 * 1024 ** 3 };
+const packageHeaderBytes = 256 * 1024 * 1024;
+const packageCheckpointBytes = 32 * 1024 * 1024;
+const packageMetadataBytes = 16 * 1024 * 1024;
+const packageEntry = /^(?:arch-project\.json|checkpoints\/[a-f0-9]{64}\.json|blobs\/[a-f0-9]{64})$/;
+
+/**
+ * Replaces this machine's folders in text that travels with a project: a branch folder of
+ * the project becomes relative, the store becomes `<store>` and the home folder `~`. Works on
+ * plain text and on serialized JSON, where Windows backslashes appear escaped.
+ */
+export async function machinePathRedactor(projectId: string): Promise<(text: string) => string> {
+  const lines = await projectBranches(projectId);
+  const usable = (folder: string) => folder.length > 1 && path.parse(folder).root !== folder;
+  const pairs: (readonly [string, string])[] = [];
+  for (const folder of lines.branches.map((line) => line.directory).filter(usable).sort((a, b) => b.length - a.length))
+    pairs.push([`${folder}${path.sep}`, ""], [folder, "."]);
+  for (const [folder, name] of [[archiveDirectory(), "<store>"], [homedir(), "~"]] as const) if (usable(folder)) pairs.push([folder, name]);
+  const escaped = pairs.map(([from, to]) => [JSON.stringify(from).slice(1, -1), to] as const).filter(([from], index) => from !== pairs[index]![0]);
+  const replacements = [...escaped, ...pairs];
+  return (text) => replacements.reduce((result, [from, to]) => result.split(from).join(to), text);
+}
+
+/**
+ * Write every checkpoint, branch head, review note, round and blob of one project into a
+ * `.archproject` ZIP. Each blob is stored once. Working folders, catalog paths, build
+ * grants and agent sessions never travel, and rounds lose this machine's folder paths.
+ * `blobs` adds further store blobs, such as images a conversation shows. A branch without
+ * a saved version is left out and listed in `skipped`.
+ */
+export async function exportProjectPackage(
+  projectId: string,
+  file: string,
+  options: { name?: string; studio?: unknown; blobs?: string[] } = {},
+): Promise<{ bytes: number; skipped: string[] }> {
+  const inspection = await inspectProject(projectId);
+  const lines = await projectBranches(projectId);
+  const checkpoints = new Map(inspection.checkpoints.map((saved) => [saved.id, saved]));
+  const included = lines.branches.filter((line) => line.headId);
+  const skipped = lines.branches.filter((line) => !line.headId).map((line) => line.name);
+  // A primary branch without a version hands the role to the first active branch that has one.
+  const primaryName = included.some((line) => line.name === lines.primary) ? lines.primary : included.find((line) => !line.archived)?.name;
+  if (!primaryName) throw new Error("ARCH_EXPORT_NEEDS_VERSION");
+  for (const line of included)
+    for (const id of [line.headId, line.forkedFrom])
+      if (id && !checkpoints.has(id)) throw new Error("Branch checkpoint is missing");
+  const redact = await machinePathRedactor(projectId);
+  const rounds = (await projectRounds(projectId)).map((round) => roundSchema.parse(JSON.parse(redact(JSON.stringify(round)))));
+  const store = path.join(archiveDirectory(), "blobs", "sha256");
+  const blobs = new Map<string, number>();
+  for (const saved of checkpoints.values()) for (const entry of saved.files) blobs.set(entry.sha256, entry.size);
+  for (const round of rounds) for (const attachment of round.attachments) blobs.set(attachment.sha256, attachment.size);
+  for (const sha256 of options.blobs ?? [])
+    if (!blobs.has(packageSha.parse(sha256))) blobs.set(sha256, (await fs.stat(await safeFile(store, sha256))).size);
+  const primary = checkpoints.get(requireBranch(lines, primaryName).headId!)!;
+  const contents = projectPackageSchema.parse({
+    format: "arch-project",
+    schemaVersion: 1,
+    exportedAt: new Date().toISOString(),
+    projectId,
+    name: options.name ?? primary.project.name,
+    client: primary.project.client,
+    branches: included.map((line) => ({ name: line.name, headId: line.headId!, forkedFrom: line.forkedFrom, createdAt: line.createdAt, archived: line.archived, primary: line.name === primaryName })),
+    checkpoints: [...checkpoints.keys()],
+    blobs: [...blobs].map(([sha256, size]) => ({ sha256, size })),
+    notes: inspection.notes,
+    rounds,
+    studio: options.studio ?? null,
+  } satisfies ProjectPackage);
+  function* entries(): Generator<ArchiveEntry> {
+    yield { name: "arch-project.json", json: contents };
+    for (const saved of checkpoints.values()) yield { name: `checkpoints/${saved.id}.json`, json: saved };
+    for (const [sha256, size] of blobs) yield { name: `blobs/${sha256}`, file: path.join(store, sha256), sha256, size };
+  }
+  await fs.mkdir(path.dirname(path.resolve(file)), { recursive: true, mode: 0o700 });
+  return { bytes: await writeArchive(path.resolve(file), entries(), new Date(contents.exportedAt)), skipped };
+}
+
+/** What an incoming branch becomes in a project that is already here. */
+export type ProjectPackageVariant = { name: string; outcome: "added" | "updated" | "unchanged" | "kept-separately"; as?: string };
+/** What opening a package adds to a project that is already here. It only adds; nothing local is replaced or lost. */
+export type ProjectPackageMerge = {
+  variants: ProjectPackageVariant[];
+  /** New checkpoints, and how many of them have a built model. */
+  checkpoints: number;
+  builtCheckpoints: number;
+  notes: number;
+  rounds: number;
+  /** New conversations, as Studio counts them. */
+  conversations: number;
+};
+
+/** Studio's part of an import: validate its data before anything is published, then store it. */
+export type ProjectPackageStudio<T> = {
+  accept(value: unknown, contents: ProjectPackage): T | Promise<T>;
+  /** How many conversations in accepted data are new on this machine. */
+  added?(value: T): number;
+  /** Store accepted data. For a project that was already here, `merge` names the branches kept separately. */
+  publish(value: T, merge: ProjectPackageMerge | null): void | Promise<void>;
+  /**
+   * Run `work` on a project that is already here while no round can start in it and nothing
+   * else saves or builds in these branch folders. `busy` names branches a round still works in.
+   */
+  hold?<R>(projectId: string, branches: string[], work: (busy: ReadonlySet<string>) => Promise<R>): Promise<R>;
+};
+function guarded<T, R>(studio: ProjectPackageStudio<T> | undefined, projectId: string, branches: string[], work: (busy: ReadonlySet<string>) => Promise<R>): Promise<R> {
+  return studio?.hold ? studio.hold(projectId, branches, work) : work(new Set());
+}
+
+async function archiveEntry(archive: ArchiveReader, name: string, limit: number): Promise<Buffer> {
+  if (archive.size(name) > limit) throw new Error(`Package entry is too large: ${name}`);
+  const chunks: Uint8Array[] = [];
+  await archive.read(name, (chunk) => { chunks.push(chunk); });
+  return Buffer.concat(chunks);
+}
+async function fileDigest(file: string): Promise<{ sha256: string; size: number }> {
+  const hash = createHash("sha256");
+  let size = 0;
+  for await (const chunk of createReadStream(file)) {
+    hash.update(chunk as Buffer);
+    size += (chunk as Buffer).length;
+  }
+  return { sha256: hash.digest("hex"), size };
+}
+/** The checks importCheckpoint applies to a portable checkpoint's dependency and metadata files. */
+async function requirePortableCheckpoint(saved: CheckpointManifest, blobs: string) {
+  const metadata = new Map<string, unknown>();
+  const dependencies = new Map<string, string>();
+  for (const file of saved.files) {
+    const dependency = ["package.json", "bun.lock", "package-lock.json"].includes(file.path);
+    const described = file.path === "arch.project.json" || file.path === "arch.context.json";
+    if (!dependency && !described && file.path !== intakePath) continue;
+    if (file.path === intakePath && file.size > maximumIntakeBytes) throw new Error("Project intake exceeds the 2 MiB limit.");
+    if (file.size > packageMetadataBytes) throw new Error(`Checkpoint metadata file is too large: ${file.path}`);
+    const contents = await verifiedBlob(blobs, file);
+    if (file.path === intakePath) projectIntakePlan(contents, saved.project);
+    if (dependency) dependencies.set(file.path, contents.toString());
+    if (described) metadata.set(file.path, JSON.parse(contents.toString()));
+  }
+  requireDependencies(saved.project, dependencies);
+  if (
+    canonical(projectManifestSchema.parse(metadata.get("arch.project.json"))) !== canonical(saved.project) ||
+    canonical(continuationBriefSchema.parse(metadata.get("arch.context.json"))) !== canonical(saved.brief)
+  )
+    throw new Error("Checkpoint metadata differs from source");
+}
+async function exists(file: string) {
+  return fs.lstat(file).then(() => true, (error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  });
+}
+const projectExists = () => new Error("ARCH_PROJECT_EXISTS");
+const packageInvalid = (cause: unknown) => new Error("ARCH_PACKAGE_INVALID", { cause });
+/** A version with a built model, as Studio lists it. */
+const hasArtifact = (saved: CheckpointManifest) => saved.project.schemaVersion === 2 && saved.files.some((file) => file.path === "outputs/artifact.json");
+
+/** Read and verify a whole package into `staging`. */
+async function stagedPackage<T>(archive: ArchiveReader, staging: string, studio?: ProjectPackageStudio<T>) {
+  for (const name of archive.names) if (!packageEntry.test(name)) throw new Error(`Unexpected package entry: ${name}`);
+  if (!archive.names.includes("arch-project.json")) throw new Error("Package header is missing");
+  const contents = projectPackageSchema.parse(JSON.parse((await archiveEntry(archive, "arch-project.json", packageHeaderBytes)).toString("utf8")));
+  const sizes = new Map(contents.blobs.map((blob) => [blob.sha256, blob.size]));
+  const checkpointIds = new Set(contents.checkpoints);
+  if (sizes.size !== contents.blobs.length || checkpointIds.size !== contents.checkpoints.length) throw new Error("Package lists an entry twice");
+  const named = (pattern: RegExp) => new Set(archive.names.flatMap((name) => pattern.exec(name)?.slice(1) ?? []));
+  const blobEntries = named(/^blobs\/([a-f0-9]{64})$/);
+  const checkpointEntries = named(/^checkpoints\/([a-f0-9]{64})\.json$/);
+  if (blobEntries.size !== sizes.size || [...sizes.keys()].some((sha256) => !blobEntries.has(sha256))) throw new Error("Package blobs differ from its header");
+  if (checkpointEntries.size !== checkpointIds.size || [...checkpointIds].some((id) => !checkpointEntries.has(id))) throw new Error("Package checkpoints differ from its header");
+  const accepted = studio ? await studio.accept(contents.studio, contents) : null;
+
+  const checkpoints = new Map<string, CheckpointManifest>();
+  for (const id of checkpointIds) {
+    const saved = verifiedCheckpoint(JSON.parse((await archiveEntry(archive, `checkpoints/${id}.json`, packageCheckpointBytes)).toString("utf8")), id);
+    if (saved.projectId !== contents.projectId) throw new Error("Checkpoint belongs to another project");
+    for (const file of saved.files) if (sizes.get(file.sha256) !== file.size) throw new Error(`Checkpoint blob is missing: ${file.path}`);
+    checkpoints.set(id, saved);
+  }
+  const blobs = path.join(staging, "blobs");
+  await fs.mkdir(blobs, { recursive: true, mode: 0o700 });
+  for (const [sha256, size] of sizes) {
+    if (archive.size(`blobs/${sha256}`) !== size) throw new Error(`Blob size differs from its header: ${sha256}`);
+    const hash = createHash("sha256");
+    let written = 0;
+    const handle = await fs.open(path.join(blobs, sha256), "wx", 0o600);
+    try {
+      await archive.read(`blobs/${sha256}`, async (chunk) => {
+        hash.update(chunk);
+        written += chunk.length;
+        await handle.write(chunk);
+      });
+    } finally {
+      await handle.close();
+    }
+    if (written !== size || hash.digest("hex") !== sha256) throw new Error(`Blob integrity failure: ${sha256}`);
+  }
+  for (const saved of checkpoints.values()) await requirePortableCheckpoint(saved, blobs);
+
+  const names = new Set(contents.branches.map((line) => line.name));
+  if (names.size !== contents.branches.length) throw new Error("Package lists a branch twice");
+  const primaries = contents.branches.filter((line) => line.primary);
+  if (primaries.length !== 1 || primaries[0]!.archived) throw new Error("Package needs exactly one active primary branch");
+  for (const line of contents.branches)
+    if (!checkpointIds.has(line.headId) || (line.forkedFrom && !checkpointIds.has(line.forkedFrom))) throw new Error(`Branch checkpoint is missing: ${line.name}`);
+  if (canonical(checkpoints.get(primaries[0]!.headId)!.project.client) !== canonical(contents.client)) throw new Error("Package client differs from its project");
+  const noteIds = new Set<string>();
+  for (const note of contents.notes) {
+    if (noteIds.has(note.id)) throw new Error("Review note ID collision");
+    noteIds.add(note.id);
+    const saved = checkpoints.get(note.checkpointId);
+    if (note.projectId !== contents.projectId || !saved || (note.viewId && !saved.project.views.some((view) => view.id === note.viewId)))
+      throw new Error("Imported review target mismatch");
+  }
+  const roundIds = new Set<string>();
+  for (const round of contents.rounds) {
+    if (roundIds.has(round.id)) throw new Error("Round ID collision");
+    roundIds.add(round.id);
+    if (round.projectId !== contents.projectId || !checkpointIds.has(round.checkpointId)) throw new Error("Imported round target mismatch");
+    for (const attachment of round.attachments) if (sizes.get(attachment.sha256) !== attachment.size) throw new Error("Round attachment is missing");
+  }
+  return { contents, checkpoints, accepted, blobs };
+}
+type StagedPackage<T> = Awaited<ReturnType<typeof stagedPackage<T>>> & { existing: boolean };
+
+/** What a package may not change in a project that is already here: its client and its notes. */
+function requireMergeable(value: Catalog, contents: ProjectPackage, checkpoints: Map<string, CheckpointManifest>) {
+  const entry = value.projects.find((p) => p.manifest.id === contents.projectId);
+  if (!entry) throw new Error("Unknown project");
+  for (const line of contents.branches)
+    if (checkpoints.get(line.headId)!.project.client.id !== entry.manifest.client.id) throw new Error("Package client differs from the local project");
+  for (const note of contents.notes) {
+    const local = value.notes.find((candidate) => candidate.id === note.id);
+    if (local && canonical(local) !== canonical(note)) throw new Error("Review note ID collision");
+  }
+}
+
+/**
+ * Open and verify a package into `staging`. Every fault in the package becomes
+ * ARCH_PACKAGE_INVALID with the reason as `cause`.
+ */
+async function verifiedPackage<T>(file: string, staging: string, studio?: ProjectPackageStudio<T>): Promise<StagedPackage<T>> {
+  let staged: Awaited<ReturnType<typeof stagedPackage<T>>>;
+  let archive: ArchiveReader | undefined;
+  try {
+    archive = await openArchive(path.resolve(file), packageLimits);
+    staged = await stagedPackage(archive, staging, studio);
+  } catch (error) {
+    throw packageInvalid(error);
+  } finally {
+    await archive?.close();
+  }
+  const value = await catalog();
+  const existing = value.projects.some((p) => p.manifest.id === staged.contents.projectId);
+  if (existing)
+    try { requireMergeable(value, staged.contents, staged.checkpoints); } catch (error) { throw packageInvalid(error); }
+  return { ...staged, existing };
+}
+
+/** A folder whose files equal a checkpoint's, compared by hash. Reads only; never saves. */
+async function folderMatchesCheckpoint(directory: string, checkpointId: string): Promise<boolean> {
+  try {
+    const saved = await checkpoint(checkpointId);
+    const files = await projectFiles(directory);
+    if (files.length !== saved.files.length) return false;
+    const expected = new Map(saved.files.map((file) => [file.path, file]));
+    for (const relative of files) {
+      const entry = expected.get(relative);
+      if (!entry) return false;
+      const data = await fs.readFile(await safeFile(directory, relative));
+      if (data.length !== entry.size || digest(data) !== entry.sha256) return false;
+    }
+    return true;
+  } catch {
+    // A folder that cannot be read as a checkpoint holds something its head does not.
+    return false;
+  }
+}
+/** Whether a branch folder holds work its head does not, or has no head yet. Reads only. */
+export async function hasUnsavedChanges(projectId: string, branch: string): Promise<boolean> {
+  const line = requireBranch(await projectBranches(projectId), branch);
+  return !line.headId || !(await folderMatchesCheckpoint(line.directory, line.headId));
+}
+
+type MergeStep = ProjectPackageVariant & { line: ProjectPackage["branches"][number]; forkedFrom: string | null };
+/**
+ * Decide what each incoming branch becomes against the current local state, and what else is
+ * new. Only folders of `replaceable` branches may move forward. Reads only.
+ */
+async function mergePlan<T>(value: Catalog, staged: StagedPackage<T>, replaceable: ReadonlySet<string>, studio?: ProjectPackageStudio<T>) {
+  const { contents, checkpoints } = staged;
+  const projectId = contents.projectId;
+  try { requireMergeable(value, contents, checkpoints); } catch (error) { throw packageInvalid(error); }
+  const stored = await branchesIn(value, projectId);
+  const parents = new Map([...checkpoints.values()].map((saved) => [saved.id, saved.parentId]));
+  /** A checkpoint and its ancestors, newest first, across local and incoming checkpoints. */
+  const lineage = async (id: string | null) => {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (let current = id; current && !seen.has(current); ) {
+      seen.add(current);
+      result.push(current);
+      if (!parents.has(current)) parents.set(current, (await exists(checkpointPath(current))) ? (await checkpoint(current)).parentId : null);
+      current = parents.get(current) ?? null;
+    }
+    return result;
+  };
+  const localLineages = await Promise.all(stored.branches.map((line) => lineage(line.headId)));
+  const covered = (id: string) => localLineages.some((ids) => ids.includes(id));
+  const parent = path.join(archiveDirectory(), "projects", projectId, "branches");
+  const folders = new Set(await fs.readdir(parent).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [] as string[];
+    throw error;
+  }));
+  const claimed = new Set<string>();
+  const taken = (name: string) => stored.branches.some((line) => line.name === name) || folders.has(name) || claimed.has(name);
+  const separateName = (name: string) => {
+    for (let number = 1; ; number++) {
+      const suffix = number === 1 ? "-received" : `-received-${number}`;
+      const candidate = `${name.slice(0, 40 - suffix.length).replace(/-+$/, "")}${suffix}`;
+      if (!taken(candidate)) return candidate;
+    }
+  };
+  const steps: MergeStep[] = [];
+  for (const line of contents.branches) {
+    const local = stored.branches.find((candidate) => candidate.name === line.name);
+    if (local && covered(line.headId)) {
+      steps.push({ name: line.name, outcome: "unchanged", line, forkedFrom: null });
+      continue;
+    }
+    if (!local && !taken(line.name)) {
+      claimed.add(line.name);
+      steps.push({ name: line.name, outcome: "added", line, forkedFrom: line.forkedFrom });
+      continue;
+    }
+    const incoming = await lineage(line.headId);
+    if (
+      local?.headId &&
+      replaceable.has(local.name) &&
+      incoming.includes(local.headId) &&
+      (await folderMatchesCheckpoint(local.directory, local.headId))
+    ) {
+      steps.push({ name: line.name, outcome: "updated", line, forkedFrom: null });
+      continue;
+    }
+    const ours = new Set(local ? await lineage(local.headId) : []);
+    const as = separateName(line.name);
+    claimed.add(as);
+    steps.push({ name: line.name, outcome: "kept-separately", as, line, forkedFrom: incoming.find((id) => ours.has(id)) ?? line.headId });
+  }
+  const renamed = new Map(steps.flatMap((step) => (step.as ? [[step.name, step.as] as const] : [])));
+  const newCheckpoints: CheckpointManifest[] = [];
+  for (const saved of checkpoints.values()) if (!(await exists(checkpointPath(saved.id)))) newCheckpoints.push(saved);
+  const notes = contents.notes.filter((note) => !value.notes.some((candidate) => candidate.id === note.id));
+  const rounds: Round[] = [];
+  for (const round of contents.rounds)
+    if (!(await exists(path.join(roundsDirectory(projectId), `${round.id}.json`)))) rounds.push({ ...round, branch: renamed.get(round.branch) ?? round.branch });
+  const merge: ProjectPackageMerge = {
+    variants: steps.map(({ name, outcome, as }) => (as ? { name, outcome, as } : { name, outcome })),
+    checkpoints: newCheckpoints.length,
+    builtCheckpoints: newCheckpoints.filter(hasArtifact).length,
+    notes: notes.length,
+    rounds: rounds.length,
+    conversations: studio?.added && staged.accepted !== null ? studio.added(staged.accepted as T) : 0,
+  };
+  return { stored, steps, checkpoints: newCheckpoints, notes, rounds, merge };
+}
+const mergeChanges = (merge: ProjectPackageMerge) =>
+  merge.checkpoints + merge.notes + merge.rounds + merge.conversations > 0 || merge.variants.some((variant) => variant.outcome !== "unchanged");
+
+/** Blobs are content-addressed, so publishing them early is harmless to every other project. */
+async function publishBlobs(contents: ProjectPackage, staged: string) {
+  const blobDirectory = path.join(archiveDirectory(), "blobs", "sha256");
+  await fs.mkdir(blobDirectory, { recursive: true });
+  for (const blob of contents.blobs) {
+    const target = path.join(blobDirectory, blob.sha256);
+    if (await exists(target)) {
+      const current = await fileDigest(await safeFile(blobDirectory, blob.sha256));
+      if (current.sha256 !== blob.sha256 || current.size !== blob.size) throw new Error("Existing blob integrity failure");
+    } else await fs.rename(path.join(staged, blob.sha256), target);
+  }
+}
+
+/**
+ * Check a package without changing anything: what it holds and, for a project that is already
+ * here, what opening it would add. Throws ARCH_PACKAGE_INVALID for a bad package.
+ */
+export async function inspectProjectPackage<T = null>(
+  file: string,
+  studio?: ProjectPackageStudio<T>,
+): Promise<{ contents: ProjectPackage; builtVersions: number; merge: ProjectPackageMerge | null; studio: T | null }> {
+  const staging = path.join(archiveDirectory(), "staging", randomUUID());
+  await fs.mkdir(staging, { recursive: true, mode: 0o700 });
+  try {
+    const staged = await verifiedPackage(file, staging, studio);
+    const builtVersions = [...staged.checkpoints.values()].filter(hasArtifact).length;
+    if (!staged.existing) return { contents: staged.contents, builtVersions, merge: null, studio: staged.accepted as T | null };
+    const projectId = staged.contents.projectId;
+    const names = (await projectBranches(projectId)).branches.map((line) => line.name);
+    const plan = await guarded(studio, projectId, names, async (busy) => {
+      const replaceable = new Set(names.filter((name) => !busy.has(name) && !artifactBuilds.has(`${projectId}:${name}`)));
+      return mergePlan(await catalog(), staged, replaceable, studio);
+    });
+    return { contents: staged.contents, builtVersions, merge: plan.merge, studio: staged.accepted as T | null };
+  } finally {
+    await fs.rm(staging, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Open a whole-project package. A new project arrives with its blobs, checkpoints, one folder
+ * per branch at its head, notes and rounds. A project that is already here gains what it lacks:
+ * a branch moves forward only when its folder has no unsaved work and no round runs in it, and
+ * otherwise the incoming line arrives as a separate `-received` branch. Nothing is published
+ * until every entry verifies, and a failed publish removes what it created. Throws
+ * ARCH_PACKAGE_INVALID, with the reason as `cause`, for a bad package.
+ */
+export async function importProjectPackage<T = null>(
+  file: string,
+  studio?: ProjectPackageStudio<T>,
+): Promise<{ project: StudioProject; contents: ProjectPackage; studio: T | null; merge: ProjectPackageMerge | null; outcome: "added" | "updated" | "unchanged" }> {
+  const staging = path.join(archiveDirectory(), "staging", randomUUID());
+  await fs.mkdir(staging, { recursive: true, mode: 0o700 });
+  try {
+    const staged = await verifiedPackage(file, staging, studio);
+    if (staged.existing) return await mergePackage(staged, studio);
+    return { ...(await addPackage(staged, studio)), merge: null, outcome: "added" as const };
+  } finally {
+    await fs.rm(staging, { recursive: true, force: true });
+  }
+}
+
+async function addPackage<T>(staged: StagedPackage<T>, studio?: ProjectPackageStudio<T>) {
+  const store = archiveDirectory();
+  const created: string[] = [];
+  let temporary: string | null = null;
+  let registered = false;
+  const addedNotes = new Set<string>();
+  const { contents, checkpoints } = staged;
+  const projectId = contents.projectId;
+  try {
+    if ((await exists(path.join(store, "projects", projectId))) || (await exists(branchesPath(projectId)))) throw projectExists();
+    await publishBlobs(contents, staged.blobs);
+    const projects = path.join(store, "projects");
+    await fs.mkdir(projects, { recursive: true, mode: 0o700 });
+    if ((await fs.realpath(projects)) !== projects) throw new Error("Projects directory contains symlinks");
+    temporary = await fs.mkdtemp(path.join(projects, ".arch-import-"));
+    const target = path.join(projects, projectId);
+    let primary: StudioProject | null = null;
+    for (const line of contents.branches) {
+      const saved = checkpoints.get(line.headId)!;
+      const directory = path.join(temporary, "branches", line.name);
+      await fs.mkdir(directory, { recursive: true });
+      const restored = await materializeCheckpoint(saved, directory);
+      await writeCheckpointBrief(directory, saved, contents.notes);
+      if (line.primary) primary = restored;
+    }
+    const stored: ProjectBranches = {
+      schemaVersion: 1,
+      projectId,
+      primary: contents.branches.find((line) => line.primary)!.name,
+      branches: contents.branches.map(({ primary: _, ...line }) => ({ ...line, directory: path.join(target, "branches", line.name) })),
+    };
+    const project: StudioProject = {
+      ...primary!,
+      directory: path.join(target, "branches", stored.primary),
+      updatedAt: new Date().toISOString(),
+      checkpointId: requireBranch(stored, stored.primary).headId,
+      stage: "draft",
+    };
+    await locked(async (value) => {
+      if (value.projects.some((p) => p.manifest.id === projectId) || (await exists(target)) || (await exists(branchesPath(projectId)))) throw projectExists();
+      for (const saved of checkpoints.values()) {
+        const file = checkpointPath(saved.id);
+        await fs.mkdir(path.dirname(file), { recursive: true });
+        try {
+          await fs.writeFile(file, JSON.stringify(saved, null, 2), { flag: "wx" });
+          created.push(file);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          await checkpoint(saved.id);
+        }
+      }
+      for (const round of contents.rounds) {
+        const file = path.join(roundsDirectory(projectId), `${round.id}.json`);
+        try {
+          if (canonical(roundSchema.parse(await fileContents(file))) !== canonical(round)) throw new Error("Round ID collision");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          await atomic(file, round);
+          created.push(file);
+        }
+      }
+      for (const note of contents.notes) {
+        const existing = value.notes.find((candidate) => candidate.id === note.id);
+        if (existing && canonical(existing) !== canonical(note)) throw new Error("Review note ID collision");
+      }
+      await fs.rename(temporary!, target);
+      temporary = null;
+      created.push(target);
+      await atomic(branchesPath(projectId), stored);
+      created.push(branchesPath(projectId));
+      for (const note of contents.notes)
+        if (!value.notes.some((candidate) => candidate.id === note.id)) {
+          value.notes.push(note);
+          addedNotes.add(note.id);
+        }
+      value.projects.push(project);
+    });
+    registered = true;
+    if (studio) await studio.publish(staged.accepted as T, null);
+    return { project, contents, studio: staged.accepted as T | null };
+  } catch (error) {
+    if (registered)
+      await locked(async (value) => {
+        value.projects = value.projects.filter((p) => p.manifest.id !== projectId);
+        value.notes = value.notes.filter((note) => !addedNotes.has(note.id));
+      }).catch(() => {});
+    for (const entry of created.reverse()) await fs.rm(entry, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  } finally {
+    if (temporary) await fs.rm(temporary, { recursive: true, force: true });
+  }
+}
+
+/** Add what a package holds to a project that is already here. See importProjectPackage. */
+async function mergePackage<T>(staged: StagedPackage<T>, studio?: ProjectPackageStudio<T>) {
+  const { contents, checkpoints } = staged;
+  const projectId = contents.projectId;
+  const names = (await projectBranches(projectId)).branches.map((line) => line.name);
+  return guarded(studio, projectId, names, async (busy) => {
+    const parent = path.join(archiveDirectory(), "projects", projectId, "branches");
+    const temporaries = new Map<string, string>();
+    const restored = new Map<string, StudioProject>();
+    const reserved: string[] = [];
+    const created: string[] = [];
+    const replaced: { directory: string; previous: string; temporary: string; kept: string[]; moved: boolean; swapped: boolean }[] = [];
+    /** Folders a failed rollback could not put back. They hold local work, so they stay. */
+    const preserved = new Set<string>();
+    let branchesBefore: string | null | undefined;
+    try {
+      // Only held folders move forward, and never under a round or a running build.
+      // Reserving their build slots keeps new builds out until the merge ends.
+      const replaceable = new Set(names.filter((name) => !busy.has(name) && !artifactBuilds.has(`${projectId}:${name}`)));
+      for (const name of replaceable) {
+        artifactBuilds.add(`${projectId}:${name}`);
+        reserved.push(`${projectId}:${name}`);
+      }
+      const preliminary = await mergePlan(await catalog(), staged, replaceable, studio);
+      const current = () => catalog().then((value) => value.projects.find((p) => p.manifest.id === projectId)!);
+      if (!mergeChanges(preliminary.merge)) return { project: await current(), contents, studio: staged.accepted as T | null, merge: preliminary.merge, outcome: "unchanged" as const };
+      await publishBlobs(contents, staged.blobs);
+      await fs.mkdir(parent, { recursive: true, mode: 0o700 });
+      if ((await fs.realpath(parent)) !== parent) throw new Error("Branch parent contains symlinks");
+      /** The incoming head, written beside the folder it becomes, so the final renames stay on one volume. */
+      const prepared = async (step: MergeStep, stored: ProjectBranches) => {
+        const where = step.outcome === "updated" ? path.dirname(requireBranch(stored, step.name).directory) : parent;
+        const ready = temporaries.get(step.name);
+        if (ready && path.dirname(ready) === where) return ready;
+        if (ready) await fs.rm(ready, { recursive: true, force: true });
+        const temporary = await fs.mkdtemp(path.join(where, ".arch-merge-"));
+        temporaries.set(step.name, temporary);
+        restored.set(step.name, await materializeCheckpoint(checkpoints.get(step.line.headId)!, temporary));
+        return temporary;
+      };
+      for (const step of preliminary.steps) if (step.outcome !== "unchanged") await prepared(step, preliminary.stored);
+
+      const merge = await locked(async (value) => {
+        // Recompute against the state under the lock. Heads only move forward, so this plan never needs more than the first.
+        const plan = await mergePlan(value, staged, replaceable, studio);
+        const { stored } = plan;
+        const notes = [...value.notes, ...plan.notes];
+        const now = new Date().toISOString();
+        for (const step of plan.steps) {
+          if (step.outcome === "unchanged") continue;
+          const temporary = await prepared(step, stored);
+          const saved = checkpoints.get(step.line.headId)!;
+          await writeCheckpointBrief(temporary, saved, notes);
+          if (step.outcome === "updated") {
+            const line = requireBranch(stored, step.name);
+            const swap = { directory: line.directory, previous: `${temporary}-replaced`, temporary, kept: [] as string[], moved: false, swapped: false };
+            replaced.push(swap);
+            for (const kept of [".git", "node_modules", ".claude", ".codex"]) {
+              try {
+                await fs.rename(path.join(line.directory, kept), path.join(temporary, kept));
+                swap.kept.push(kept);
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+              }
+            }
+            await fs.rename(line.directory, swap.previous);
+            swap.moved = true;
+            await fs.rename(temporary, line.directory);
+            swap.swapped = true;
+            temporaries.delete(step.name);
+            line.headId = saved.id;
+            if (stored.primary === step.name) {
+              const entry = value.projects.find((p) => p.manifest.id === projectId)!;
+              Object.assign(entry, restored.get(step.name)!, { directory: line.directory, updatedAt: now, checkpointId: saved.id, stage: "draft" });
+            }
+          } else {
+            const name = step.as ?? step.name;
+            const target = path.join(parent, name);
+            // mkdir is exclusive, unlike rename, which could replace a racing empty directory.
+            await fs.mkdir(target);
+            created.push(target);
+            for (const entry of await fs.readdir(temporary)) await fs.rename(path.join(temporary, entry), path.join(target, entry));
+            stored.branches.push({ name, directory: target, headId: saved.id, forkedFrom: step.forkedFrom, createdAt: step.outcome === "added" ? step.line.createdAt : now, archived: step.line.archived });
+          }
+        }
+        for (const saved of plan.checkpoints) {
+          const file = checkpointPath(saved.id);
+          await fs.mkdir(path.dirname(file), { recursive: true });
+          try {
+            await fs.writeFile(file, JSON.stringify(saved, null, 2), { flag: "wx" });
+            created.push(file);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+            await checkpoint(saved.id);
+          }
+        }
+        for (const round of plan.rounds) {
+          const file = path.join(roundsDirectory(projectId), `${round.id}.json`);
+          if (await exists(file)) continue;
+          await atomic(file, round);
+          created.push(file);
+        }
+        value.notes.push(...plan.notes);
+        branchesBefore = await fs.readFile(branchesPath(projectId), "utf8").catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return null;
+          throw error;
+        });
+        await atomic(branchesPath(projectId), stored);
+        // The catalog is written after this returns; a failure here leaves it as it was.
+        if (studio) await studio.publish(staged.accepted as T, plan.merge);
+        return plan.merge;
+      });
+      for (const swap of replaced) await fs.rm(swap.previous, { recursive: true, force: true }).catch(() => {});
+      return { project: await current(), contents, studio: staged.accepted as T | null, merge, outcome: mergeChanges(merge) ? ("updated" as const) : ("unchanged" as const) };
+    } catch (error) {
+      if (branchesBefore !== undefined)
+        await (branchesBefore === null ? fs.rm(branchesPath(projectId), { force: true }) : fs.writeFile(branchesPath(projectId), branchesBefore)).catch(() => {});
+      for (const entry of created.reverse()) await fs.rm(entry, { recursive: true, force: true }).catch(() => {});
+      for (const swap of replaced.reverse()) {
+        try {
+          if (swap.swapped) await fs.rename(swap.directory, swap.temporary);
+          if (swap.moved) await fs.rename(swap.previous, swap.directory);
+          for (const kept of swap.kept) await fs.rename(path.join(swap.temporary, kept), path.join(swap.directory, kept));
+          await fs.rm(swap.temporary, { recursive: true, force: true });
+        } catch {
+          // Leave both folders in place rather than lose either.
+          preserved.add(swap.temporary);
+        }
+      }
+      throw error;
+    } finally {
+      for (const key of reserved) artifactBuilds.delete(key);
+      for (const temporary of temporaries.values()) if (!preserved.has(temporary)) await fs.rm(temporary, { recursive: true, force: true }).catch(() => {});
+    }
+  });
 }

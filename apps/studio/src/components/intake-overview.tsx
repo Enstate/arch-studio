@@ -21,7 +21,7 @@ function statusLabel(status: Status, t: Copy) {
   return status === "blocked" ? t.intakeBlocked : status === "ready" ? t.intakeReady : t.intakePlanned;
 }
 
-function SectionHeader({ title, count, action }: { title: string; count?: number; action?: ReactNode }) {
+export function SectionHeader({ title, count, action }: { title: string; count?: number; action?: ReactNode }) {
   return <div className="flex min-h-7 items-center gap-2">
     <h3 className="text-ui font-medium">{title}</h3>
     {count !== undefined && <span className="text-ui tabular-nums text-muted-foreground">{count}</span>}

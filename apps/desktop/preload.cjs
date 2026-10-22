@@ -21,6 +21,17 @@ void ipcRenderer.invoke('desktop:window-state').then(state => {
   // A fullscreen transition can arrive before this initial read resolves.
   if (!receivedWindowState) receiveWindowState(state);
 }).catch(() => {});
+// Project files opened from Finder or Explorer. Files that arrive before the page listens wait here,
+// and files that arrived before this page loaded wait in the main process.
+const projectFileListeners = new Set();
+const projectFileBacklog = [];
+const receiveProjectFile = file => {
+  if (typeof file !== 'string') return;
+  if (projectFileListeners.size) for (const listener of projectFileListeners) listener(file);
+  else projectFileBacklog.push(file);
+};
+ipcRenderer.on('desktop:project-file', (_event, file) => receiveProjectFile(file));
+void ipcRenderer.invoke('desktop:take-project-files').then(files => { for (const file of files) receiveProjectFile(file); }).catch(() => {});
 contextBridge.exposeInMainWorld('archDesktop', {
   chooseProjectDirectory: () => ipcRenderer.invoke('desktop:choose-project-directory'),
   getUpdateState: () => ipcRenderer.invoke('desktop:update-state'),
@@ -31,6 +42,11 @@ contextBridge.exposeInMainWorld('archDesktop', {
     const receive = () => listener();
     ipcRenderer.on('desktop:open-settings', receive);
     return () => ipcRenderer.removeListener('desktop:open-settings', receive);
+  },
+  onProjectFile: listener => {
+    projectFileListeners.add(listener);
+    for (const file of projectFileBacklog.splice(0)) listener(file);
+    return () => projectFileListeners.delete(listener);
   },
   onUpdateState: listener => {
     const receive = (_event, state) => listener(state);

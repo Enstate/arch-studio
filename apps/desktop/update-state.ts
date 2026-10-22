@@ -16,6 +16,8 @@ export interface DesktopBridge {
   onUpdateState(listener: (state: DesktopUpdate) => void): () => void;
   /** The app menu's Settings item. Optional for builds that predate it. */
   onOpenSettings?(listener: () => void): () => void;
+  /** Project files opened from Finder or Explorer, including the one that launched the app. Optional for older builds. */
+  onProjectFile?(listener: (path: string) => void): () => void;
 }
 
 declare global {

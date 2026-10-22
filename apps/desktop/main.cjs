@@ -97,6 +97,21 @@ async function startServer() {
     });
   });
 }
+// Project files opened from Finder, Explorer or the command line wait here until Studio's page takes them.
+const projectFiles = [];
+let deliverProjectFile;
+function receiveProjectFile(file) {
+  if (typeof file !== 'string' || !path.isAbsolute(file) || !/\.archproject$/i.test(file)) return;
+  if (deliverProjectFile) deliverProjectFile(file); else projectFiles.push(file);
+}
+// macOS reports opened documents through open-file, also before the app is ready.
+app.on('open-file', (event, file) => { event.preventDefault(); receiveProjectFile(file); });
+// Windows and Linux start a second process with the file. It hands the file to the first and quits.
+if (process.platform !== 'darwin') {
+  if (!app.requestSingleInstanceLock()) app.quit();
+  app.on('second-instance', (_event, argv) => { for (const file of argv.slice(1)) receiveProjectFile(file); });
+  for (const file of process.argv.slice(1)) receiveProjectFile(file);
+}
 app.on('before-quit', () => { quitting = true; updates?.dispose(); stopServer(); });
 app.on('window-all-closed', () => app.quit());
 app.whenReady().then(async () => {
@@ -132,6 +147,19 @@ app.whenReady().then(async () => {
     if (!trustedFrame(event)) throw new Error('Directory selection requires the local Studio main frame');
     return selection.canceled ? null : selection.filePaths[0] ?? null;
   });
+  ipcMain.handle('desktop:take-project-files', event => {
+    if (!trustedFrame(event)) throw new Error('Project files require the local Studio main frame');
+    return projectFiles.splice(0);
+  });
+  deliverProjectFile = file => {
+    if (window.isDestroyed()) { projectFiles.push(file); return; }
+    if (window.isMinimized()) window.restore();
+    window.focus();
+    try {
+      if (new URL(window.webContents.mainFrame.url).origin === origin) { window.webContents.send('desktop:project-file', file); return; }
+    } catch {}
+    projectFiles.push(file);
+  };
   const publishWindowState = () => {
     if (window.isDestroyed()) return;
     try {
@@ -214,7 +242,7 @@ app.whenReady().then(async () => {
   window.webContents.setWindowOpenHandler(({url}) => {
     try {
       const target = new URL(url);
-      if (target.origin === origin && /^\/api\/(references|artifacts)\//.test(target.pathname)) window.webContents.downloadURL(target.href);
+      if (target.origin === origin && /^\/api\/(references|artifacts|exports)\//.test(target.pathname)) window.webContents.downloadURL(target.href);
     } catch {}
     return { action: 'deny' };
   });

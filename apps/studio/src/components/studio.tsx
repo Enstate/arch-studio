@@ -18,9 +18,9 @@ import { ASSET_BASE, ViewerSurface, ViewerLocaleProvider, type ViewerEditing, ty
 import { hasEdits, type PlanEdits } from "@arch/viewer/plan/edits";
 import { useForm } from "@tanstack/react-form";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpRightIcon, CheckIcon, ChevronsUpDownIcon, HammerIcon, FolderOpenIcon, FolderPlusIcon, MoreHorizontalIcon, MenuIcon, PanelLeftIcon, PlusIcon, SearchIcon, SettingsIcon, SquarePenIcon } from "lucide-react";
-import { type ReactNode, useCallback, useId, useRef, useState } from "react";
-import { revealInFolder, brief, buildGrant, buildVersion, catalog, projectEdits, saveEdits, createClient, createThread, threadList, updateThread, grantBuilds, handoff, makePrimary, openProjectFolder, openVersion, projectDetails, restoreSource, revokeBuilds, saveNote } from "../lib/server";
+import { ArrowUpRightIcon, CheckIcon, ChevronsUpDownIcon, HammerIcon, FolderOpenIcon, FolderPlusIcon, MoreHorizontalIcon, MenuIcon, PackageOpenIcon, PanelLeftIcon, PlusIcon, SearchIcon, SettingsIcon, SquarePenIcon } from "lucide-react";
+import { type ReactNode, useCallback, useRef, useState } from "react";
+import { revealInFolder, buildGrant, buildVersion, catalog, projectEdits, saveEdits, createClient, createThread, threadList, updateThread, grantBuilds, makePrimary, openProjectFolder, openVersion, projectDetails, revokeBuilds, saveNote } from "../lib/server";
 import { VIEWER_MISMATCH, type StudioProjectSummary, type StudioThread, type StudioVersion } from "../lib/model";
 import { type Locale, studioText } from "../lib/messages";
 import { useStudioFormat, useStudioLocale } from "../lib/locale";
@@ -30,8 +30,11 @@ import { AddFiles, ProjectFiles, projectFiles } from "./project-files";
 import { DesktopUpdates } from "./desktop-updates";
 import { SettingsNav, SettingsPage } from "./settings";
 import { closeSettings, openSettings, useSettingsSection } from "../lib/settings";
+import { dismissOpenedProjectFile, useOpenedProjectFile } from "../lib/opened-project-file";
 import { NewProject } from "./new-project";
-import { Rounds, branchVersions } from "./rounds";
+import { Rounds, branchVersions, versionChange } from "./rounds";
+import { ProjectHome } from "./project-home";
+import { OpenProject, ShareProject } from "./share-project";
 import { Compare } from "./compare";
 import { ProjectBadge, type ThreadActionHandler, ThreadList } from "./thread-sidebar";
 import { ProjectPanel } from "./project-panel";
@@ -49,7 +52,10 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
   const queryClient = useQueryClient();
   const studio = useQuery({queryKey: ["studio-catalog"], queryFn: () => catalog(), refetchInterval: 5000});
   const threads = useQuery({queryKey: ["studio-threads"], queryFn: () => threadList(), refetchInterval: 2000});
-  const [selection, setSelection] = useState<{threadId?: string; projectId?: string}>({});
+  // `home` opens the project itself rather than one of its conversations.
+  const [selection, setSelection] = useState<{threadId?: string; projectId?: string; home?: boolean}>({});
+  // A conversation started from a suggestion opens with that request in its composer.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sections, setSections] = useState<Record<string, Section>>({});
   const [filter, setFilter] = useState<Filter>({kind: "all"});
   const [search, setSearch] = useState("");
@@ -70,7 +76,7 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
   // A selected project without a thread id opens its oldest thread once the list has it.
   // With nothing chosen yet, open the most recently active thread, as T3 Code opens recent work.
   const recent = (item: StudioThread) => [item.latestCompletedAt, item.latestRequestAt, item.createdAt].filter(Boolean).sort().at(-1) ?? "";
-  const thread = all.find(item => item.id === selection.threadId)
+  const thread = selection.home ? undefined : all.find(item => item.id === selection.threadId)
     ?? (selection.projectId ? all.filter(item => item.projectId === selection.projectId).sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0]
     : selection.threadId ? undefined : [...all].sort((a, b) => recent(b).localeCompare(recent(a)))[0]);
   const project = data?.projects.find(item => item.id === (thread?.projectId ?? selection.projectId));
@@ -79,13 +85,15 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
   const setSection = (value: Section) => setSections(current => ({...current, [sectionKey]: value}));
   const visit = (target: StudioThread | undefined) => {if (target) void updateThread({data: {projectId: target.projectId, threadId: target.id, action: {kind: "visit"}}});};
   // Leaving a thread marks what you saw there as read, as does opening one.
-  const select = (next: StudioThread) => {if (thread?.id !== next.id) visit(thread); visit(next); setSelection({threadId: next.id}); setMobileOpen(false);};
+  const select = (next: StudioThread) => {if (thread?.id !== next.id) {visit(thread); forgetDraft(thread);} visit(next); setSelection({threadId: next.id}); setMobileOpen(false);};
+  const forgetDraft = (left?: StudioThread) => {if (left && left.id in drafts) setDrafts(current => Object.fromEntries(Object.entries(current).filter(([id]) => id !== left.id)));};
+  const openHome = (projectId: string) => {visit(thread); forgetDraft(thread); setSelection({projectId, home: true}); setSections(current => ({...current, [projectId]: "intake"})); setMobileOpen(false);};
   const act = useMutation({mutationFn: ({target, action}: {target: StudioThread; action: Exclude<Parameters<ThreadActionHandler>[1], {kind: "newThread"}>}) => updateThread({data: {projectId: target.projectId, threadId: target.id, action}}), onSuccess: () => queryClient.invalidateQueries({queryKey: ["studio-threads"]})});
-  const create = useMutation({mutationFn: (input: {projectId: string; branch?: string; fromCheckpoint?: string}) => createThread({data: input}), onSuccess: async (value, input) => {await queryClient.invalidateQueries({queryKey: ["studio-threads"]}); visit(thread); setSelection({threadId: value.threadId, projectId: input.projectId}); setSections(current => ({...current, [value.threadId]: "rounds"}));}});
+  const create = useMutation({mutationFn: ({draft: _draft, ...input}: {projectId: string; branch?: string; fromCheckpoint?: string; draft?: string}) => createThread({data: input}), onSuccess: async (value, input) => {await queryClient.invalidateQueries({queryKey: ["studio-threads"]}); visit(thread); forgetDraft(thread); if (input.draft) setDrafts(current => ({...current, [value.threadId]: input.draft!})); setSelection({threadId: value.threadId, projectId: input.projectId}); setSections(current => ({...current, [value.threadId]: "rounds"}));}});
   const handle: ThreadActionHandler = (target, action) => action.kind === "newThread" ? create.mutate({projectId: target.projectId, branch: target.branch}) : act.mutate({target, action});
   const openFolder = useMutation({mutationFn: (directory: string) => openProjectFolder({data: {directory}}), onSuccess: async value => {
     await queryClient.invalidateQueries();
-    setSelection({projectId: value.projectId}); setFolderOpen(false);
+    setSelection({projectId: value.projectId, home: true}); setFolderOpen(false);
   }});
   async function chooseFolder() {
     if (choosingFolder || openFolder.isPending) return;
@@ -107,6 +115,8 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
   const toggleSidebar = () => isMobile ? setMobileOpen(open => !open) : setSidebarOpen(open => !open);
   useHotkey("mod+b", toggleSidebar);
   const settingsSection = useSettingsSection();
+  // A project file double-clicked in Finder or Explorer opens straight into its dialog.
+  const openedFile = useOpenedProjectFile();
   useHotkey("mod+,", () => settingsSection ? closeSettings() : openSettings());
   useHotkey("mod+k", () => {if (isMobile) setMobileOpen(true); else setSidebarOpen(true); requestAnimationFrame(() => searchInput.current?.focus());});
   // A plain letter would fire while moving around the 3D view with the keyboard, creating stray threads.
@@ -137,12 +147,16 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
         {(data?.clients ?? []).filter(client => data?.projects.some(item => item.clientId === client.id)).map(client => <div key={client.id}>
           <DropdownMenuSeparator />
           <DropdownMenuItem onClick={() => setFilter({kind: "client", id: client.id})} className="text-xs font-medium text-muted-foreground"><span className="flex-1 truncate">{client.name}</span>{filter.kind === "client" && filter.id === client.id && <CheckIcon />}</DropdownMenuItem>
-          {data!.projects.filter(item => item.clientId === client.id).map(item => <DropdownMenuItem key={item.id} onClick={() => setFilter({kind: "project", id: item.id})}><ProjectBadge name={item.name} /><span className="flex-1 truncate">{item.name}</span>{filter.kind === "project" && filter.id === item.id && <CheckIcon />}</DropdownMenuItem>)}
+          {data!.projects.filter(item => item.clientId === client.id).map(item => <DropdownMenuItem key={item.id} onClick={() => {setFilter({kind: "project", id: item.id}); openHome(item.id);}}><ProjectBadge name={item.name} /><span className="flex-1 truncate">{item.name}</span>{filter.kind === "project" && filter.id === item.id && <CheckIcon />}</DropdownMenuItem>)}
         </div>)}
         <DropdownMenuSeparator /><DropdownMenuItem onClick={openNewClient}><PlusIcon />{t.newClient}</DropdownMenuItem>
       </DropdownMenuContent></DropdownMenu>
-      <button type="button" className={projectIconButton} aria-label={t.openProjectFolder} title={t.openProjectFolder} disabled={choosingFolder || openFolder.isPending} onClick={() => {setMobileOpen(false); void chooseFolder();}}><FolderOpenIcon /></button>
-      <button type="button" className={projectIconButton} aria-label={t.newProject} title={t.newProject} onClick={openNewProject}><FolderPlusIcon /></button>
+      <DropdownMenu><DropdownMenuTrigger className={projectIconButton} aria-label={t.addProject} title={t.addProject}><FolderPlusIcon /></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-60">
+        <DropdownMenuItem onClick={openNewProject}><PlusIcon />{t.newProject}</DropdownMenuItem>
+        <DropdownMenuItem onClick={() => {setMobileOpen(false); setImportOpen(true);}}><PackageOpenIcon />{t.openProjectFile}</DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem disabled={choosingFolder || openFolder.isPending} onClick={() => {setMobileOpen(false); void chooseFolder();}}><FolderOpenIcon />{t.openProjectFolder}</DropdownMenuItem>
+      </DropdownMenuContent></DropdownMenu>
     </div>
     {!folderOpen && (openFolder.error ? <StudioFailure className="px-2 py-1 text-xs text-destructive" error={openFolder.error} /> : folderError && <p role="alert" className="px-2 py-1 text-xs text-destructive">{t.error}</p>)}
     {create.error && <StudioFailure className="px-2 py-1 text-xs text-destructive" error={create.error} />}
@@ -161,11 +175,11 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
   return <><div className="studio-shell"><ProjectLayout sidebar={sidebar} sidebarOpen={sidebarOpen} isMobile={isMobile} mobileOpen={mobileOpen} onMobileOpenChange={setMobileOpen} labels={{skipToContent: t.skipToContent, sidebar: t.sidebar, mobileTitle: t.mobileTitle, mobileDescription: t.mobileDescription}}>
     {settingsSection ? <SettingsPage section={settingsSection} navigation={navigation} locale={locale} changeLocale={changeLocale} restore={() => {setMobileOpen(false); setImportOpen(true);}} t={t} />
       : error ? <ProjectPage title={t.studio} navigation={navigation}><div className="m-auto grid gap-3"><p role="alert">{t.error}</p><Button onClick={() => {void studio.refetch(); void threads.refetch();}}>{t.retry}</Button></div></ProjectPage>
-      : project ? <Project key={`${project.id}:${thread?.id ?? ""}`} project={project} thread={thread} threads={all.filter(item => item.projectId === project.id)} openThread={select} openVariant={branch => {const existing = all.filter(item => item.projectId === project.id && item.branch === branch).sort((a, b) => recent(b).localeCompare(recent(a)))[0]; if (existing) select(existing); else create.mutate({projectId: project.id, branch});}} t={t} navigation={navigation} section={section} setSection={setSection} newThread={input => create.mutate({projectId: project.id, ...input})} />
-      : <ProjectPage title={t.studio} navigation={navigation}><div className="m-auto grid max-w-sm gap-4 p-6 text-center text-ui"><p>{studio.isPending || threads.isPending ? t.loading : all.length ? t.selectThread : t.noProjects}</p><Button disabled={studio.isPending} onClick={openNewProject}>{t.newProject}</Button><Button variant="outline" onClick={() => setImportOpen(true)}>{t.restore}</Button></div></ProjectPage>}
+      : project ? <Project key={`${project.id}:${thread?.id ?? ""}`} project={project} thread={thread} threads={all.filter(item => item.projectId === project.id)} openThread={select} openHome={() => openHome(project.id)} draft={thread && drafts[thread.id]} starting={create.isPending} openVariant={branch => {const existing = all.filter(item => item.projectId === project.id && item.branch === branch).sort((a, b) => recent(b).localeCompare(recent(a)))[0]; if (existing) select(existing); else create.mutate({projectId: project.id, branch});}} t={t} navigation={navigation} section={section} setSection={setSection} newThread={input => create.mutate({projectId: project.id, ...input})} />
+      : <ProjectPage title={t.studio} navigation={navigation}><div className="m-auto grid max-w-sm gap-4 p-6 text-center text-ui"><p>{studio.isPending || threads.isPending ? t.loading : all.length ? t.selectThread : t.noProjects}</p><Button disabled={studio.isPending} onClick={openNewProject}>{t.newProject}</Button><Button variant="outline" onClick={() => setImportOpen(true)}>{t.openProjectFile}</Button></div></ProjectPage>}
   </ProjectLayout></div>
-    <NewProject open={newProjectOpen} setOpen={setNewProjectOpen} clients={data?.clients ?? []} defaultClientId={filter.kind === "client" ? filter.id : project?.clientId} created={value => {void queryClient.invalidateQueries({queryKey: ["studio-threads"]}); setSelection({projectId: value.projectId});}} t={t} />
-    <Dialog open={importOpen} onOpenChange={setImportOpen}><DialogContent><DialogHeader><DialogTitle>{t.restore}</DialogTitle></DialogHeader><Handoff t={t} /></DialogContent></Dialog>
+    <NewProject open={newProjectOpen} setOpen={setNewProjectOpen} clients={data?.clients ?? []} defaultClientId={filter.kind === "client" ? filter.id : project?.clientId} created={value => {void queryClient.invalidateQueries({queryKey: ["studio-threads"]}); setSelection(value.threadId ? {threadId: value.threadId, projectId: value.projectId} : {projectId: value.projectId, home: true});}} t={t} />
+    <Dialog open={importOpen || !!openedFile} onOpenChange={open => {setImportOpen(open); if (!open) dismissOpenedProjectFile();}}><DialogContent><OpenProject key={openedFile ?? "chosen"} path={openedFile ?? undefined} opened={projectId => {setImportOpen(false); dismissOpenedProjectFile(); setFilter({kind: "all"}); setSelection({projectId, home: true}); setSections(current => ({...current, [projectId]: "intake"}));}} t={t} /></DialogContent></Dialog>
     <Dialog open={folderOpen} onOpenChange={open => {setFolderOpen(open); if (!open) openFolder.reset();}}><DialogContent><DialogHeader><DialogTitle>{t.openProjectFolder}</DialogTitle><DialogDescription>{t.inspectSource}</DialogDescription></DialogHeader><form autoComplete="off" className="grid gap-4" onSubmit={event => {event.preventDefault(); if (!openFolder.isPending) openFolder.mutate(directory);}}><Field><FieldLabel htmlFor="studio-open-folder">{t.folder}</FieldLabel><Input id="studio-open-folder" value={directory} onChange={event => setDirectory(event.target.value)} required maxLength={4096} disabled={openFolder.isPending} autoComplete="off" /></Field>{openFolder.error && <StudioFailure className="text-destructive" error={openFolder.error} />}<Button type="submit" disabled={openFolder.isPending}>{openFolder.isPending ? t.loading : t.register}</Button></form></DialogContent></Dialog>
     <Dialog open={creatingClient} onOpenChange={setCreatingClient}><DialogContent><DialogHeader><DialogTitle>{t.newClient}</DialogTitle></DialogHeader><form autoComplete="off" onSubmit={event => {event.preventDefault(); void clientForm.handleSubmit();}} className="grid gap-4 text-ui">
       <clientForm.Field name="name">{field => <Field className="gap-2"><FieldLabel htmlFor="studio-client-name" className="text-ui font-normal">{t.clientName}</FieldLabel><Input id="studio-client-name" name={field.name} value={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.value)} autoComplete="off" required maxLength={160} disabled={createClientMutation.isPending} /></Field>}</clientForm.Field>
@@ -191,7 +205,7 @@ function ProjectViews({view, setSection, hasModel, counts, t, className}: {view:
 function ScrollPage({children}: {children: ReactNode}) {
   return <div className="min-h-0 flex-1 overflow-y-auto"><div className="mx-auto grid w-full max-w-3xl content-start gap-8 px-6 py-8 text-ui max-md:px-4 max-md:py-6">{children}</div></div>;
 }
-function Project({project, thread, threads, openThread, openVariant, t, navigation, section, setSection, newThread}: {project: StudioProjectSummary; thread?: StudioThread; threads: StudioThread[]; openThread: (thread: StudioThread) => void; openVariant: (branch: string) => void; t: Copy; navigation: ReactNode; section: Section; setSection: (section: Section) => void; newThread: (input: {branch?: string; fromCheckpoint?: string}) => void}) {
+function Project({project, thread, threads, openThread, openHome, draft, starting, openVariant, t, navigation, section, setSection, newThread}: {project: StudioProjectSummary; thread?: StudioThread; threads: StudioThread[]; openThread: (thread: StudioThread) => void; openHome: () => void; draft?: string; starting: boolean; openVariant: (branch: string) => void; t: Copy; navigation: ReactNode; section: Section; setSection: (section: Section) => void; newThread: (input: {branch?: string; fromCheckpoint?: string; draft?: string}) => void}) {
   const queryClient = useQueryClient();
   const {locale} = useStudioLocale();
   const details = useQuery({queryKey: ["studio-project", project.id], queryFn: () => projectDetails({data: {projectId: project.id}}), refetchInterval: 5000});
@@ -204,6 +218,7 @@ function Project({project, thread, threads, openThread, openVariant, t, navigati
   // Every tab shows the branch folder the open thread works in.
   const branch = branches.find(item => item.name === thread?.branch) ?? branches.find(item => item.primary);
   const allVersions = details.data?.versions ?? [];
+  const client = details.data?.source?.manifest.client.name;
   // A branch shows its own history. Projects from older stores have one primary branch.
   const versions = branch ? branchVersions(allVersions, branch.headId) : allVersions;
   const latestVersion = versions.find(item => item.hasArtifact) ?? versions[0];
@@ -249,17 +264,28 @@ function Project({project, thread, threads, openThread, openVariant, t, navigati
   const reveal = (file?: string) => {if (branch) void revealInFolder({data: {projectId: project.id, branch: branch.name, ...(file ? {path: file} : {})}});};
   const compare = (base: string, target: string) => {setCompared({base, target}); setSection("compare");};
   const ordered = [...allVersions].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
-  const versionLabel = (item: StudioVersion) => `${t.version} ${ordered.findIndex(version => version.id === item.id) + 1} · ${item.checkpointId.slice(0,7)}`;
-  // Rounds are the working surface. Without a source folder, show the saved model or the overview.
-  const view: Section = section === "preview" && !version?.hasArtifact ? source ? "rounds" : "intake" : section === "rounds" && !source ? version?.hasArtifact ? "preview" : "intake" : section;
+  // Only versions with a built model are numbered. Saved folder states say what happened instead.
+  const models = ordered.filter(item => item.hasArtifact);
+  const versionLabel = (item: StudioVersion) => {
+    if (item.hasArtifact) return `${t.version} ${models.findIndex(model => model.id === item.id) + 1}`;
+    const change = versionChange(item, allVersions).kind;
+    return change === "created" ? t.projectCreated : change === "files" ? t.filesAdded : t.unbuiltChanges;
+  };
+  // Rounds are the working surface. Without a conversation the project opens on its overview;
+  // without a source folder it shows the saved model or the overview.
+  const view: Section = section === "preview" && !version?.hasArtifact ? source && thread ? "rounds" : "intake" : section === "rounds" && (!source || !thread) ? version?.hasArtifact && !source ? "preview" : "intake" : section;
+  const latestThread = [...threads].sort((a, b) => (b.latestRequestAt ?? b.createdAt).localeCompare(a.latestRequestAt ?? a.createdAt))[0];
+  // Rounds belongs to a conversation. From the overview it opens the latest one, or starts one.
+  const chooseSection = (value: Section) => value === "rounds" && !thread && source ? latestThread ? openThread(latestThread) : newThread({}) : setSection(value);
   // File labels come from the plan saved with the selected version, never the live plan.
   // Files follow the newest saved version, which may be a source-only version newer than the last build.
   const filesVersion = versionId ? version : versions[0] ?? version;
   const files = projectFiles(filesVersion?.intake ?? null, filesVersion?.references ?? [], t);
   const allFiles = [...files.documents, ...files.others];
-  const filesSource = {versionLabel: filesVersion && versionLabel(filesVersion), filesError: filesVersion?.intakeError ?? null};
+  // Name the version only when it is not the latest, which is what people expect to see.
+  const filesSource = {versionLabel: versionId && filesVersion ? versionLabel(filesVersion) : undefined, filesError: filesVersion?.intakeError ?? null};
   const openFile = (key: string) => {setFileKey(key); setSection("files");};
-  const views = (className: string) => <ProjectViews view={view} setSection={setSection} hasModel={!!version?.hasArtifact} counts={{work: intake?.pieces.length ?? 0, files: allFiles.length}} t={t} className={className} />;
+  const views = (className: string) => <ProjectViews view={view} setSection={chooseSection} hasModel={!!version?.hasArtifact} counts={{work: intake?.pieces.length ?? 0, files: allFiles.length}} t={t} className={className} />;
   const actions = <>
     {views("mr-1 max-lg:hidden")}
     {branch && <ProjectPanel projectId={project.id} projectName={project.name} clientName={details.data?.source?.manifest.client.name} branch={branch} branches={branches} versions={versions} version={version} following={!versionId} selectVersion={setVersionId} versionLabel={versionLabel} threads={threads} threadId={thread?.id} openThread={openThread} openVariant={openVariant} newVariant={checkpointId => newThread({fromCheckpoint: checkpointId})} makePrimary={() => primary.mutate()} reveal={() => reveal()} build={() => ensureGrant(() => build.mutate())} building={build.isPending} buildError={build.error?.message} compare={compare} openHandoff={() => setExportOpen(true)} revoke={() => revoke.mutate()} t={t} />}
@@ -269,11 +295,11 @@ function Project({project, thread, threads, openThread, openVariant, t, navigati
   const tool = (content: ReactNode) => <ScrollPage><h2 className="text-lg font-medium">{t[view as typeof toolSections[number]]}</h2>{content}</ScrollPage>;
   const content = details.isError ? <div className="m-auto grid gap-3"><StudioFailure error={details.error} /><Button onClick={() => {void details.refetch();}}>{t.retry}</Button></div>
     : view === "preview" && version ? <VersionPreview key={version.id} version={version} editing={editing} editsPending={edits.isLoading || catalog.isLoading} adopt={adopt} rebuild={source && branch ? () => ensureGrant(() => build.mutate()) : undefined} rebuilding={build.isPending} t={t} />
-    : view === "rounds" && branch && thread ? <Rounds projectId={project.id} threadId={thread.id} branch={branch} versions={allVersions} versionLabel={versionLabel} openVersion={showVersion} compare={compare} forkFrom={checkpointId => newThread({fromCheckpoint: checkpointId})} ensureGrant={ensureGrant} initialRequest={edits.data && hasEdits(edits.data) ? drafted : undefined} t={t} />
+    : view === "rounds" && branch && thread ? <Rounds projectId={project.id} threadId={thread.id} branch={branch} versions={allVersions} versionLabel={versionLabel} openVersion={showVersion} compare={compare} forkFrom={checkpointId => newThread({fromCheckpoint: checkpointId})} ensureGrant={ensureGrant} initialRequest={draft ?? (edits.data && hasEdits(edits.data) ? drafted : undefined)} t={t} />
     : view === "compare" ? <Compare projectId={project.id} versions={versions} base={compared?.base} target={compared?.target} select={(base, target) => setCompared({base, target})} versionLabel={versionLabel} t={t} />
     : details.isPending ? <p role="status" className="m-auto text-ui text-muted-foreground">{t.loading}</p>
     : view === "intake" ? <ScrollPage>
-      <h2 className="sr-only">{t.intake}</h2>
+      {source ? <ProjectHome projectName={project.name} clientName={client} threads={threads} openThread={openThread} startConversation={request => newThread(request ? {draft: request} : {})} starting={starting} share={() => setExportOpen(true)} t={t} /> : <h2 className="sr-only">{t.intake}</h2>}
       {!source && <header className="grid gap-1"><h3 className="text-lg font-medium">{t.connectSource}</h3><p className="text-muted-foreground">{t.noSources}</p></header>}
       <SourceSetup projectId={project.id} attached={!!source} confirmationOnly={!!source} t={t} />
       {source && <IntakeOverview intake={intake} error={intakeError} assumptions={assumptions} files={allFiles} {...filesSource} openFile={openFile} openFiles={() => setSection("files")} openWork={() => setSection("work")} t={t} />}
@@ -283,8 +309,7 @@ function Project({project, thread, threads, openThread, openVariant, t, navigati
     : view === "source" ? tool(<div className="grid min-w-0 gap-6">{source ? <p className="break-all rounded-lg bg-foreground/4 px-3 py-2 font-mono text-xs text-muted-foreground">{source.directory}</p> : <p className="text-muted-foreground">{t.noSources}</p>}<SourceSetup projectId={project.id} attached={!!source} t={t} /></div>)
     : view === "outputs" ? tool(version ? <VersionMedia version={version} t={t} /> : <p className="text-muted-foreground">{t.noVersions}</p>)
     : tool(version ? <Notes key={version.id} projectId={project.id} version={version} notes={details.data?.notes ?? []} t={t} /> : <p className="text-muted-foreground">{t.noVersions}</p>);
-  const client = details.data?.source?.manifest.client.name;
-  return <><ProjectPage title={thread ? threadTitle(thread.title, t) : project.name} meta={thread ? `${project.name}${client ? ` · ${client}` : ""}` : undefined} navigation={navigation} actions={actions}>{views("shrink-0 border-b px-2 py-1.5 lg:hidden")}{content}</ProjectPage><Dialog open={exportOpen} onOpenChange={setExportOpen}><DialogContent><DialogHeader><DialogTitle>{t.export}</DialogTitle></DialogHeader><Handoff key={version?.id} checkpointId={version?.checkpointId} t={t} /></DialogContent></Dialog><Dialog open={!!grantFor} onOpenChange={value => {if (!value && !grant.isPending) setGrantFor(null);}}><DialogContent><DialogHeader><DialogTitle>{t.grantTitle}</DialogTitle><DialogDescription>{t.executionConfirmation} {t.grantHint}</DialogDescription></DialogHeader><p className="break-all font-mono text-xs">{branch?.directory}</p>{grant.error && <StudioFailure className="text-destructive" error={grant.error} />}<div className="flex justify-end gap-2"><Button variant="ghost" disabled={grant.isPending} onClick={() => setGrantFor(null)}>{t.cancel}</Button><Button disabled={!branch || grant.isPending} onClick={() => grant.mutate()}>{grant.isPending ? t.loading : t.authorizeBuild}</Button></div></DialogContent></Dialog></>;
+  return <><ProjectPage title={thread ? threadTitle(thread.title, t) : project.name} meta={thread ? <button type="button" title={t.openProjectHome} onClick={openHome} className="truncate hover:text-foreground hover:underline">{project.name}{client ? ` · ${client}` : ""}</button> : undefined} navigation={navigation} actions={actions}>{views("shrink-0 border-b px-2 py-1.5 lg:hidden")}{content}</ProjectPage><Dialog open={exportOpen} onOpenChange={setExportOpen}><DialogContent><DialogHeader><DialogTitle>{t.shareProject}</DialogTitle></DialogHeader><ShareProject key={version?.id} projectId={project.id} checkpointId={version?.checkpointId} t={t} /></DialogContent></Dialog><Dialog open={!!grantFor} onOpenChange={value => {if (!value && !grant.isPending) setGrantFor(null);}}><DialogContent><DialogHeader><DialogTitle>{t.grantTitle}</DialogTitle><DialogDescription>{t.executionConfirmation} {t.grantHint}</DialogDescription></DialogHeader><p className="break-all font-mono text-xs">{branch?.directory}</p>{grant.error && <StudioFailure className="text-destructive" error={grant.error} />}<div className="flex justify-end gap-2"><Button variant="ghost" disabled={grant.isPending} onClick={() => setGrantFor(null)}>{t.cancel}</Button><Button disabled={!branch || grant.isPending} onClick={() => grant.mutate()}>{grant.isPending ? t.loading : t.authorizeBuild}</Button></div></DialogContent></Dialog></>;
 }
 /** `editsPending` holds the viewer back until it is known whether it opens editable; it reads that once. */
 function VersionPreview({version, editing, editsPending, adopt, rebuild, rebuilding, t}: {version: StudioVersion; editing?: ViewerEditing; editsPending: boolean; adopt?: () => void; rebuild?: () => void; rebuilding: boolean; t: Copy}) {
@@ -324,29 +349,4 @@ function Notes({projectId, version, notes, t}: {projectId: string; version: Stud
   });
   const selected = notes.filter(note => note.checkpointId === version.checkpointId);
   return <div className="grid gap-5"><p className="text-xs text-muted-foreground">{t.notesHint}</p><form autoComplete="off" className="grid gap-2" onSubmit={event => {event.preventDefault(); void form.handleSubmit();}}><form.Field name="body">{field => <Field className="gap-2"><FieldLabel htmlFor="studio-comment" className="sr-only">{t.comment}</FieldLabel><Textarea id="studio-comment" name={field.name} value={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.value)} autoComplete="off" required maxLength={8000} disabled={save.isPending} /></Field>}</form.Field><Button type="submit" disabled={save.isPending}>{save.isPending ? t.loading : t.save}</Button></form>{save.error && <StudioFailure className="text-destructive" error={save.error} />}{!selected.length && <p>{t.noComments}</p>}{selected.map(note => <article key={note.id} className="space-y-2 border-b pb-4"><p className="text-xs text-muted-foreground">{note.author} · {format.date(note.createdAt, {dateStyle: "medium", timeStyle: "short"})}</p><p className="whitespace-pre-wrap">{note.body}</p></article>)}</div>;
-}
-function Handoff({checkpointId, t}: {checkpointId?: string; t: Copy}) {
-  const formId = useId();
-  const queryClient = useQueryClient();
-  const [text, setText] = useState("");
-  const action = useMutation({mutationFn: async (request: {kind: "brief"} | {kind: "export"; directory: string} | {kind: "restore"; bundle: string; directory: string; activate: boolean}) => {
-    if (request.kind === "brief") return brief({data: {checkpointId: checkpointId!}});
-    if (request.kind === "export") return handoff({data: {checkpointId: checkpointId!, directory: request.directory}});
-    await restoreSource({data: {bundle: request.bundle, directory: request.directory, activate: request.activate}}); await queryClient.invalidateQueries(); return t.done;
-  }, onSuccess: setText});
-  const exportForm = useForm({
-    defaultValues: {directory: ""},
-    onSubmit: ({value}) => {if (checkpointId && !action.isPending) action.mutate({kind: "export", ...value});},
-  });
-  const restoreForm = useForm({
-    defaultValues: {bundle: "", directory: "", activate: false},
-    onSubmit: ({value}) => {if (!action.isPending) action.mutate({kind: "restore", ...value});},
-  });
-  return <div className="grid gap-4"><p className="text-xs text-muted-foreground">{t.hostedHint}</p>{checkpointId && <><Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({kind: "brief"})}>{t.brief}</Button><form autoComplete="off" className="grid gap-2" onSubmit={event => {event.preventDefault(); void exportForm.handleSubmit();}}>
-    <exportForm.Field name="directory">{field => <Field className="gap-2"><FieldLabel htmlFor={`${formId}-export-directory`} className="sr-only">{t.destination}</FieldLabel><Input id={`${formId}-export-directory`} name={field.name} value={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.value)} autoComplete="off" required placeholder={t.destination} disabled={action.isPending} /></Field>}</exportForm.Field><Button type="submit" disabled={action.isPending}>{t.export}</Button></form></>}
-    <form autoComplete="off" className="grid gap-2" onSubmit={event => {event.preventDefault(); void restoreForm.handleSubmit();}}>
-      <restoreForm.Field name="bundle">{field => <Field className="gap-2"><FieldLabel htmlFor={`${formId}-restore-bundle`} className="sr-only">{t.bundle}</FieldLabel><Input id={`${formId}-restore-bundle`} name={field.name} value={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.value)} autoComplete="off" required placeholder={t.bundle} disabled={action.isPending} /></Field>}</restoreForm.Field>
-      <restoreForm.Field name="directory">{field => <Field className="gap-2"><FieldLabel htmlFor={`${formId}-restore-directory`} className="sr-only">{t.destination}</FieldLabel><Input id={`${formId}-restore-directory`} name={field.name} value={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.value)} autoComplete="off" required placeholder={t.destination} disabled={action.isPending} /></Field>}</restoreForm.Field>
-      <restoreForm.Field name="activate">{field => <Field orientation="horizontal" className="items-start gap-2 text-xs"><input id={`${formId}-restore-activate`} type="checkbox" name={field.name} checked={field.state.value} onBlur={field.handleBlur} onChange={event => field.handleChange(event.target.checked)} autoComplete="off" className="mt-0.5" disabled={action.isPending} /><FieldLabel htmlFor={`${formId}-restore-activate`} className="text-xs font-normal">{t.activateRestoredSource}</FieldLabel></Field>}</restoreForm.Field>
-      <Button type="submit" variant="outline" disabled={action.isPending}>{t.restore}</Button></form>{action.error && <StudioFailure className="text-destructive" error={action.error} />}<pre className="overflow-auto whitespace-pre-wrap text-xs">{text}</pre></div>;
 }
