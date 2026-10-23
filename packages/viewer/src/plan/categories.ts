@@ -40,3 +40,29 @@ export function pieceCategory(...names: (string | null | undefined)[]): PieceCat
     .join(' ');
   return WORDS.find(([, words]) => words.test(text))?.[0] ?? 'other';
 }
+
+/** Kinds of finish a person looks for when painting a surface by hand. */
+export const MATERIAL_CATEGORIES = ['paint', 'wood', 'tiles', 'stone', 'plaster', 'brick', 'fabric', 'metal', 'outdoor', 'other'] as const;
+export type MaterialCategory = (typeof MATERIAL_CATEGORIES)[number];
+
+/** Words in a finish's name, pattern or source categories that place it, checked in this order. */
+const MATERIAL_WORDS: [MaterialCategory, RegExp][] = [
+  ['paint', /\b(paint|painted)\b/],
+  ['tiles', /\b(tiles?|tiled|mosaic|ceramic|terrazzo|parquet tile)\b/],
+  ['wood', /\b(wood|wooden|oak|walnut|pine|laminate|parquet|planks?|herringbone|veneer|bark)\b/],
+  ['brick', /\b(brick|bricks)\b/],
+  ['plaster', /\b(plaster|stucco|concrete|cement|render|plaster concrete)\b/],
+  ['stone', /\b(stone|marble|granite|rock|slate|sandstone|limestone|travertine|cobblestone)\b/],
+  ['fabric', /\b(fabric|linen|wool|velvet|velour|carpet|rug|leather|teddy|textile)\b/],
+  ['metal', /\b(metal|steel|iron|aluminium|aluminum|copper|brass|rust)\b/],
+  ['outdoor', /\b(grass|ground|gravel|asphalt|road|dirt|sand|snow|soil|terrain|roofing|moss|mud|leaves)\b/],
+];
+
+/** The category words in a finish's names suggest, such as "laminate_floor_02" or "plaster-concrete". */
+export function materialCategory(...names: (string | null | undefined)[]): MaterialCategory {
+  const text = names
+    .filter((name): name is string => !!name)
+    .map((name) => name.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_\-./]+/g, ' ').toLowerCase())
+    .join(' ');
+  return MATERIAL_WORDS.find(([, words]) => words.test(text))?.[0] ?? 'other';
+}

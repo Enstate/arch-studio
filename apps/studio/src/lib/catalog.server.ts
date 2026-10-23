@@ -23,13 +23,12 @@ const SIMREADY = "NVIDIA SimReady";
 /** A found SimReady asset: dataset commit, asset folder and root layer. */
 export const simReadyKey = /^[0-9a-f]{40}\/[A-Za-z0-9][A-Za-z0-9_-]{0,119}\/[A-Za-z0-9_.-]+\.usd[ac]?$/;
 
-const piece = (origin: string, model: Awaited<ReturnType<typeof assetCatalog>>["models"][number]): CatalogPiece => ({
+const piece = (model: Awaited<ReturnType<typeof assetCatalog>>["models"][number]): CatalogPiece => ({
   id: model.id,
   name: model.name,
   category: model.category,
   size: model.size,
   source: model.source === "simready" ? "SimReady" : undefined,
-  ...(model.thumbnail && { thumbnail: `${base(origin)}${model.thumbnail}` }),
   ...(model.credit && { credit: model.credit.replace(/^- /, "") }),
 });
 
@@ -37,7 +36,7 @@ const piece = (origin: string, model: Awaited<ReturnType<typeof assetCatalog>>["
 export async function assetLibrary() {
   const origin = requireStudio();
   const { models } = await assetCatalog();
-  return { base: base(origin), pieces: models.map(model => piece(origin, model)) };
+  return { base: base(origin), pieces: models.map(piece) };
 }
 
 /** SimReady assets matching a description, with previews served through this Studio. */
@@ -58,10 +57,8 @@ export async function searchAssets({ data }: { data: { query: string } }): Promi
 
 /** Imports a SimReady asset a search found into this store's catalog. */
 export async function importAsset({ data }: { data: { key: string } }): Promise<CatalogPiece> {
-  const origin = requireStudio();
-  const [revision, id, root] = data.key.split("/");
-  const model = await importSimReady(id!, { preview: { revision: revision!, root: root! } });
-  return piece(origin, model);
+  requireStudio();
+  return piece(await importSimReady(data.key.split("/")[1]!));
 }
 
 const types: Record<string, string> = { ".json": "application/json", ".glb": "model/gltf-binary", ".webp": "image/webp", ".png": "image/png", ".jpg": "image/jpeg", ".hdr": "image/vnd.radiance" };

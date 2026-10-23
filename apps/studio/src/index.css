@@ -1,7 +1,7 @@
 @import "@arch/ui/globals.css";
 @import "@arch/viewer-ui/styles.css";
-@source "../node_modules/@arch/ui/src";
-@source "../node_modules/@arch/viewer-ui/src";
+@source "../../../packages/ui/src";
+@source "../../../packages/viewer-ui/src";
 
 :root {
   --studio-header-height: 2.75rem;

@@ -159,8 +159,11 @@ export type PreviewSession = { url: string; projectId: string };
 
 /** Older artifact runtimes each reviewed viewer renders. Plan, geometry, asset and runtime contracts are unchanged. */
 const rendersOlder: Record<string, string[]> = {
-  // An editable viewer reads its shared library again when assets join it, so a piece imported while editing can be placed at once; the editor and agent tools share one free-spot search, and plan pieces gain catalog categories. Saved artifact contracts are unchanged.
-  "ae5b2da9f022bd8d3f2e3bbe43a5760eb53d6ecb6dc3fee4f9c7b3dfb86f04c5": [
+  // An editable viewer reads its shared library again when assets join it, takes pictures of pieces for its trays, and carries a new piece under the pointer while it is dragged in; the editor and agent tools share one free-spot search, and plan pieces gain catalog categories and finishes material categories; library textures may be JPEG. Saved artifact contracts are unchanged.
+  "9dd05dcfcdf28f7fbecd9c31501285e442f5d907a8bd6f0b4957c7781a65b04f": [
+    "3d2f4eab1837b91a0fb4aec7ca88c1d172d956962c12bed02cd67a85847de469",
+    "ae5b2da9f022bd8d3f2e3bbe43a5760eb53d6ecb6dc3fee4f9c7b3dfb86f04c5",
+    "f510060e49cbf9ad0dd8bd3731f2bac390fadb0d67c306805399951f2e33771f",
     "965f4dc2b58b7fae7bfcca230854b8731ffcdd03f109c8b3dbccd8abc12cd6c5",
     "0b4d696417db45abd588ea0c6806a9041e210363c47cdf50ef880433646bd7f2",
     "1d0838bcb131e259ce7cbdbb67d4d3b075e76d9cd8c18384af697598f3c951ab",

@@ -4,6 +4,7 @@ import path from "node:path";
 import { pieceCategory, type PieceCategory } from "@arch/viewer/plan/categories";
 import { z } from "zod";
 import { shrinkPng } from "./png.ts";
+import { fetchCapped, MB } from "./remote.ts";
 import { convertUsdAsset } from "./usd.ts";
 
 /**
@@ -23,7 +24,6 @@ const revision = z.string().regex(/^[0-9a-f]{40}$/);
 const rootLayer = z.string().regex(/^[A-Za-z0-9_.-]+\.usd[ac]?$/);
 /** What an asset folder may hold at most; layers and the textures used, before conversion. */
 const MAX_DOWNLOAD = 200 * 1024 * 1024;
-const TIMEOUT = 60_000;
 
 /** A SimReady asset a search found. */
 export interface SimReadyAsset {
@@ -49,42 +49,9 @@ export function simReadyName(id: string) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** Hugging Face and its file CDNs, the only hosts a request or its redirects may reach. */
-const trusted = (url: URL) => url.protocol === "https:" && /(^|\.)(huggingface\.co|hf\.co|hf\.space|xethub\.hf\.co)$/.test(url.hostname);
-
-/**
- * The body of a request to Hugging Face, at most `maxBytes` long. Redirects are followed only to
- * Hugging Face hosts over HTTPS, so a response can never point Studio at a local service.
- */
-async function fetchBytes(url: string, maxBytes: number, { signal, ...init }: RequestInit & { signal?: AbortSignal } = {}): Promise<{ bytes: Uint8Array; type: string }> {
-  const timeout = AbortSignal.timeout(TIMEOUT);
-  let target = new URL(url);
-  let response: Response | undefined;
-  for (let hop = 0; hop < 6; hop++) {
-    if (!trusted(target)) throw new Error(`Refusing to fetch ${target.host}: only Hugging Face is reached.`);
-    response = await fetch(target, { ...init, redirect: "manual", signal: signal ? AbortSignal.any([signal, timeout]) : timeout, headers: { "User-Agent": "Arch Studio", ...init.headers } });
-    const location = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
-    if (!location) break;
-    target = new URL(location, target);
-    if (init.method && init.method !== "GET") throw new Error(`Unexpected redirect from ${new URL(url).host}.`);
-  }
-  if (!response?.ok) throw new Error(`${response?.status ?? "No"} ${response?.statusText ?? "response"} from ${target.host}`);
-  if (Number(response.headers.get("content-length") ?? 0) > maxBytes) throw new Error(`${target.host} sent more than ${maxBytes} bytes.`);
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  for await (const chunk of response.body ?? []) {
-    length += chunk.length;
-    if (length > maxBytes) throw new Error(`${target.host} sent more than ${maxBytes} bytes.`);
-    chunks.push(chunk);
-  }
-  const bytes = new Uint8Array(length);
-  chunks.reduce((at, chunk) => {
-    bytes.set(chunk, at);
-    return at + chunk.length;
-  }, 0);
-  return { bytes, type: response.headers.get("content-type") ?? "" };
-}
-const MB = 1024 * 1024;
+/** Hugging Face and its file CDNs, the only hosts a SimReady request or its redirects may reach. */
+const huggingFace = (url: URL) => /(^|\.)(huggingface\.co|hf\.co|hf\.space)$/.test(url.hostname);
+const fetchBytes = (url: string, maxBytes: number, init?: RequestInit & { signal?: AbortSignal }) => fetchCapped(url, maxBytes, huggingFace, init);
 const fetchJson = async (url: string, init?: RequestInit & { signal?: AbortSignal }): Promise<unknown> => JSON.parse(new TextDecoder().decode((await fetchBytes(url, 8 * MB, init)).bytes));
 
 const hit = z.object({
@@ -194,8 +161,6 @@ export interface SimReadyModel {
   glb: Uint8Array;
   size: [number, number, number];
   triangles: number;
-  /** Picture of the asset for pickers, a JPEG or PNG. */
-  thumbnail: Uint8Array | null;
   /** One CREDITS.md line naming the asset, its author, licence and source. */
   credit: string;
   source: string;
@@ -206,7 +171,7 @@ export interface SimReadyModel {
  * glTF at real size with its front turned to +z, materials with 256 px textures (the package's own
  * previews, or its maps shrunk), and geometry simplified to about 40,000 triangles. Physics layers are left out.
  */
-export async function convertSimReadyAsset(id: string, { preview, signal }: { preview?: { revision: string; root: string }; signal?: AbortSignal } = {}): Promise<SimReadyModel> {
+export async function convertSimReadyAsset(id: string, signal?: AbortSignal): Promise<SimReadyModel> {
   const folder = await assetFolder(id, signal);
   const base = "simready_usd/payloads/base.usda";
   if (!folder.has(base)) throw new Error(`SimReady asset ${id} has no ${base}; only packaged SimReady props can be imported.`);
@@ -236,13 +201,10 @@ export async function convertSimReadyAsset(id: string, { preview, signal }: { pr
       return shrinkPng(await folder.read(source), 256) ?? undefined;
     },
   }, { turn: 90 });
-  // Central's preview is a tenth the size of the package's own picture; either will do.
-  const picture = folder.files().find((file) => /^simready_usd\/\.thumbs\/[^/]+_thumbnail\.png$/.test(file));
-  const thumbnail = (preview && await simReadyPreview({ id, ...preview }, signal).catch(() => null)) ?? (picture ? await folder.read(picture) : null);
   const label = /semantics:labels:wikidata_class = \["([^"]+)"\]/.exec(new TextDecoder().decode(layers.get(base)!))?.[1] ?? null;
   const source = `${HUB}/datasets/${DATASET}/tree/${folder.commit}/${id}`;
   const name = simReadyName(id);
-  return { id, name, label, category: pieceCategory(label, id), ...model, thumbnail, source, credit: `- ${name} (model), NVIDIA SimReady, CC BY 4.0, ${source}` };
+  return { id, name, label, category: pieceCategory(label, id), ...model, source, credit: `- ${name} (model), NVIDIA SimReady, CC BY 4.0, ${source}` };
 }
 
 /** Writes bytes beside their final name and renames them into place. */

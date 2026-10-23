@@ -1,3 +1,4 @@
+import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "@arch/ui/components/dropdown-menu";
 import { Kbd } from "@arch/ui/components/kbd";
 import { Popover, PopoverContent, PopoverTrigger } from "@arch/ui/components/popover";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@arch/ui/components/sheet";
@@ -20,8 +21,10 @@ import {
   MaximizeIcon,
   MinimizeIcon,
   MoonIcon,
+  MouseIcon,
   MoveIcon,
   PauseIcon,
+  PencilIcon,
   PlayIcon,
   Rotate3dIcon,
   ScissorsIcon,
@@ -155,6 +158,7 @@ export function ControlBar({
           <TourWord current={playing ? "pause" : status === "paused" ? "resume" : "tour"} />
         </button>
       </Hint>
+      <NavigationButton state={state} />
       {onCollapse && (
         <Hint label={t.viewer.hideControls}>
           <button
@@ -174,57 +178,60 @@ export function ControlBar({
 }
 
 /**
- * Storeys stacked as they stand, top floor first. Plan cuts the chosen floor, the dollhouse shows it
- * and everything below, and walk mode moves there. Hidden for a single-storey plan.
+ * The storeys as a slim switcher, like a map's floor buttons: numbered from the lowest, the one on
+ * show highlighted, each name in its tooltip. Hidden for a single storey.
  */
 export function LevelPicker({ viewer, state, actions }: { viewer: ViewerInstance; state: ViewerState; actions: ViewerActions }) {
   const t = useT();
-  const levels = useMemo(() => viewer.levels().reverse(), [viewer]);
+  const levels = useMemo(() => viewer.levels(), [viewer]);
   if (levels.length < 2) return null;
   return (
     <fieldset
       data-viewer-levels=""
-      className="pointer-events-auto flex min-w-0 flex-col gap-0.5 rounded-2xl border-0 bg-popover p-1 text-popover-foreground shadow-popover motion-safe:animate-in motion-safe:fade-in-0"
+      className="pointer-events-auto flex flex-col-reverse gap-0.5 rounded-[18px] border-0 bg-popover p-1 text-popover-foreground shadow-popover motion-safe:animate-in motion-safe:fade-in-0"
     >
       <legend className="sr-only">{t.viewer.floors}</legend>
-      {levels.map((level) => (
-        <button
-          key={level.id}
-          type="button"
-          aria-pressed={state.level === level.id}
-          className={cn(pillItem, "max-w-40 justify-start")}
-          onClick={() => actions.setLevel(level.id)}
-        >
-          <span className="truncate">{level.name}</span>
-        </button>
+      {levels.map((level, i) => (
+        <Hint key={level.id} label={level.name}>
+          <button
+            type="button"
+            aria-label={level.name}
+            aria-pressed={state.level === level.id}
+            className={cn(pillIcon, "rounded-[14px] text-xs tabular-nums aria-pressed:bg-foreground aria-pressed:text-background aria-pressed:hover:bg-foreground")}
+            onClick={() => actions.setLevel(level.id)}
+          >
+            {i + 1}
+          </button>
+        </Hint>
       ))}
     </fieldset>
   );
 }
 
-/** The plan's design options, one look each; switching keeps the view. Hidden for a plan without options. */
+/** The plan's design options as one compact menu; switching keeps the view. Hidden for a plan without options. */
 export function DesignOptionPicker({ viewer, state, actions }: { viewer: ViewerInstance; state: ViewerState; actions: ViewerActions }) {
   const t = useT();
   const options = useMemo(() => viewer.designOptions(), [viewer]);
   if (options.length < 2) return null;
+  const current = options.find((option) => option.id === state.designOption) ?? options[0]!;
   return (
-    <fieldset
-      data-viewer-design-options=""
-      className="pointer-events-auto flex min-w-0 flex-col gap-0.5 rounded-2xl border-0 bg-popover p-1 text-popover-foreground shadow-popover motion-safe:animate-in motion-safe:fade-in-0"
-    >
-      <legend className="float-left px-2.5 pt-1 pb-0.5 text-2xs font-medium text-muted-foreground">{t.viewer.designOption}</legend>
-      {options.map((option) => (
-        <button
-          key={option.id}
-          type="button"
-          aria-pressed={state.designOption === option.id}
-          className={cn(pillItem, "max-w-40 justify-start")}
-          onClick={() => actions.setDesignOption(option.id)}
-        >
-          <span className="truncate">{option.name}</span>
-        </button>
-      ))}
-    </fieldset>
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        data-viewer-design-options=""
+        className={cn(pillItem, "pointer-events-auto h-9 max-w-64 gap-1 rounded-2xl bg-popover px-3 text-popover-foreground shadow-popover hover:bg-popover hover:text-popover-foreground motion-safe:animate-in motion-safe:fade-in-0")}
+      >
+        <span className="text-muted-foreground">{t.viewer.designOption}</span>
+        <span className="truncate">{current.name}</span>
+        <ChevronDownIcon aria-hidden="true" className="text-muted-foreground" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-56">
+        <DropdownMenuRadioGroup value={current.id} onValueChange={(id) => actions.setDesignOption(String(id))}>
+          {options.map((option) => (
+            <DropdownMenuRadioItem closeOnClick key={option.id} value={option.id}>{option.name}</DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -263,6 +270,7 @@ export function ToolsCard({
   actions,
   labelsHidden,
   onToggleLabels,
+  onEdit,
   hidden = false,
 }: {
   viewer: ViewerInstance;
@@ -270,6 +278,8 @@ export function ToolsCard({
   actions: ViewerActions;
   labelsHidden: boolean;
   onToggleLabels: () => void;
+  /** Opens hand editing, which grows out of this button at the card's corner. Absent when the host offers none. */
+  onEdit?: () => void;
   /** Out of the way while a side panel covers the right edge; the collapsed state stays as it was. */
   hidden?: boolean;
 }) {
@@ -358,6 +368,15 @@ export function ToolsCard({
           </Hint>
           <FullscreenButton />
           <MoreMenu viewer={viewer} state={state} actions={actions} />
+          {onEdit && (
+            <>
+              <span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-border" />
+              <button type="button" data-viewer-edit="" className={cn(pillItem, "bg-foreground px-3 text-background hover:bg-foreground/90 hover:text-background")} onClick={onEdit}>
+                <PencilIcon aria-hidden="true" />
+                {t.viewer.edit.start}
+              </button>
+            </>
+          )}
         </div>
         <button
           type="button"
@@ -650,40 +669,80 @@ function MouseButtonIcon({ button }: { button: "left" | "right" }) {
 }
 
 /** Mouse bindings stay visible; the canvas cursor uses the same rotate and pan symbols. */
-export function NavigationHint({ state }: { state: ViewerState }) {
-  const {navigation: hint, keys} = useT().viewer;
-  if (state.mode === "walk" || state.tour.status === "playing" || state.tour.status === "paused") return null;
-  const plan = state.mode === "plan";
+/** The mouse controls of a mode: as a strip along the bottom, or as a list in the controls popover. */
+function NavigationGuide({ plan, list = false }: { plan: boolean; list?: boolean }) {
+  const { navigation: hint, keys } = useT().viewer;
+  const item = cn("inline-flex items-center gap-1.5", list && "py-0.5");
   return (
-    <fieldset data-viewer-navigation aria-label={hint.heading} className="pointer-events-auto flex min-w-0 items-center gap-3 rounded-xl border-0 bg-popover px-3 py-2 text-xs text-muted-foreground shadow-popover pointer-coarse:hidden">
-      <span className="inline-flex items-center gap-1.5" title={plan ? hint.leftPan : hint.leftRotate}>
+    <>
+      <span className={item} title={plan ? hint.leftPan : hint.leftRotate}>
         <MouseButtonIcon button="left" />
         {plan ? <MoveIcon aria-hidden="true" className="size-3.5" /> : <Rotate3dIcon aria-hidden="true" className="size-3.5" />}
         <span>{plan ? hint.pan : hint.rotate}</span>
         <span className="sr-only">{plan ? hint.leftPan : hint.leftRotate}</span>
       </span>
       {plan ? (
-        <span className="inline-flex items-center gap-1.5" title={hint.rightPan}>
+        <span className={item} title={hint.rightPan}>
           <MouseButtonIcon button="right" /><MoveIcon aria-hidden="true" className="size-3.5" />
           <span>{hint.pan}</span>
           <span className="sr-only">{hint.rightPan}</span>
         </span>
       ) : (
         <>
-          <span className="inline-flex items-center gap-1.5 @max-lg:hidden" title={hint.panAlternative}>
+          <span className={cn(item, !list && "@max-lg:hidden")} title={hint.panAlternative}>
             <Kbd>{keys.shift}</Kbd> + <MouseButtonIcon button="left" /><MoveIcon aria-hidden="true" className="size-3.5" />
             <span>{hint.pan}</span>
             <span className="sr-only">{hint.panAlternative}</span>
           </span>
-          <span className="inline-flex items-center gap-1.5" title={hint.rightFly}>
+          <span className={item} title={hint.rightFly}>
             <MouseButtonIcon button="right" /><Kbd>W A S D</Kbd>
             <span>{hint.fly}</span>
             <span className="sr-only">{hint.rightFly}</span>
           </span>
         </>
       )}
-      <span className="inline-flex items-center gap-1.5 @max-md:hidden"><ZoomInIcon aria-hidden="true" className="size-3.5" />{hint.zoom}</span>
+      <span className={cn(item, !list && "@max-md:hidden")}><ZoomInIcon aria-hidden="true" className="size-3.5" />{hint.zoom}</span>
+    </>
+  );
+}
+
+const navigatedKey = (mode: ViewerMode) => `arch-navigated-${mode}`;
+/** Whether someone has steered the camera in a mode before, on this device. */
+export const hasNavigated = (mode: ViewerMode) => readFlag(navigatedKey(mode));
+export const rememberNavigated = (mode: ViewerMode) => writeFlag(navigatedKey(mode));
+
+/**
+ * The mouse controls along the bottom, until someone first drags or scrolls in this mode; the
+ * controls popover in the bottom bar keeps them at hand after that.
+ */
+export function NavigationHint({ state, navigated }: { state: ViewerState; navigated: boolean }) {
+  const { navigation: hint } = useT().viewer;
+  if (navigated || state.mode === "walk" || state.tour.status === "playing" || state.tour.status === "paused") return null;
+  return (
+    <fieldset data-viewer-navigation aria-label={hint.heading} className="pointer-events-auto flex min-w-0 items-center gap-3 rounded-xl border-0 bg-popover px-3 py-2 text-xs text-muted-foreground shadow-popover pointer-coarse:hidden motion-safe:animate-in motion-safe:fade-in-0">
+      <NavigationGuide plan={state.mode === "plan"} />
     </fieldset>
+  );
+}
+
+/** A button in the bottom bar that shows the mouse controls of the mode on show. */
+function NavigationButton({ state }: { state: ViewerState }) {
+  const { navigation: hint } = useT().viewer;
+  if (state.mode === "walk") return null;
+  return (
+    <Popover>
+      <Hint label={hint.heading}>
+        <PopoverTrigger aria-label={hint.heading} data-viewer-navigation-help="" className={cn(pillIcon, "pointer-coarse:hidden")}>
+          <MouseIcon aria-hidden="true" />
+        </PopoverTrigger>
+      </Hint>
+      <PopoverContent side="top" sideOffset={10} className="w-auto gap-1 p-3 text-xs text-muted-foreground">
+        <p className="pb-1 text-xs font-medium text-foreground">{hint.heading}</p>
+        <div className="flex flex-col gap-1">
+          <NavigationGuide plan={state.mode === "plan"} list />
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

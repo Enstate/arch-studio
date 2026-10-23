@@ -45,7 +45,7 @@ export function viewerAssets(base = '/viewer/library/', plansBase = '/viewer/pla
           const res = new Set([...(textures[def.pbr]?.res ?? []), ...meta.res.filter((r) => r <= max)]);
           if (!res.size) res.add(meta.res[0]);
           textures[def.pbr] = { ...meta, res: [...res].sort((a, b) => a - b) };
-          for (const r of res) for (const m of meta.maps) keep.add(`textures/${def.pbr}/${r}/${m}.webp`);
+          for (const r of res) for (const m of meta.maps) keep.add(`textures/${def.pbr}/${r}/${m}.${meta.ext ?? 'webp'}`);
         }
         for (const f of plan.furniture ?? []) {
           const id = f.model?.match(/^@lib\/models\/(.+)\.glb$/)?.[1];

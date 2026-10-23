@@ -1,13 +1,16 @@
 import { Button } from "@arch/ui/components/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@arch/ui/components/popover";
+import { Spinner } from "@arch/ui/components/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@arch/ui/components/tabs";
+import { Textarea } from "@arch/ui/components/textarea";
 import { useHotkey } from "@arch/ui/hooks/use-hotkey";
 import { useMountEffect } from "@arch/ui/hooks/use-mount-effect";
 import { cn } from "@arch/ui/lib/utils";
 import { addFurniture, furnitureId, paintSurfaces, placeFurniture, removeFurniture, type PlanEdits } from "@arch/viewer/plan/edits";
 import { FURNITURE_DEFAULT_SIZE } from "@arch/viewer/plan/furnitureSizes";
 import type { Furniture, MaterialDef, Vec2 } from "@arch/viewer/plan/schema";
-import { CopyIcon, LockIcon, PencilIcon, Redo2Icon, RotateCwIcon, Trash2Icon, Undo2Icon } from "lucide-react";
-import { type DragEvent, type MouseEvent, type RefObject, useRef, useState } from "react";
+import { ArrowUpIcon, CheckIcon, CopyIcon, LockIcon, Redo2Icon, RotateCwIcon, SparklesIcon, Trash2Icon, Undo2Icon } from "lucide-react";
+import { type DragEvent, type RefObject, useRef, useState } from "react";
 
 import { useT } from "./locale";
 
@@ -33,6 +36,8 @@ export interface ViewerEditing {
   search?(query: string, signal: AbortSignal): Promise<RemotePiece[]>;
   /** Brings a found piece into the library the viewer loads; the trays then read the library again. */
   add?(piece: RemotePiece): Promise<CatalogPiece>;
+  /** Sends a request to the project's agent in the open conversation. Absent when the host has no agent. */
+  ask?(request: string): Promise<void>;
 }
 
 /** Paints offered alongside the project's finishes and the library's textures. */
@@ -59,26 +64,11 @@ function changeCount(from: PlanEdits, to: PlanEdits) {
   return n;
 }
 
-/** The pill that starts editing, beside the storey and style pickers. */
-export function EditButton({ onStart }: { onStart: () => void }) {
-  const t = useT().viewer.edit;
-  return (
-    <button
-      type="button"
-      data-viewer-edit=""
-      className={cn(pillItem, "pointer-events-auto bg-popover text-popover-foreground shadow-popover")}
-      onClick={onStart}
-    >
-      <PencilIcon aria-hidden="true" />
-      {t.start}
-    </button>
-  );
-}
-
 /** Drag and drop onto the viewer, which its host hands to the whole viewer surface. */
 export interface DropHandlers {
   onDragOver: (e: DragEvent) => void;
   onDrop: (e: DragEvent) => void;
+  onDragLeave: (e: DragEvent) => void;
 }
 
 interface History {
@@ -197,16 +187,42 @@ export function EditSession({
       setSaving(false);
     }
   }
+  // Done shrinks the panel back into the Edit button it grew from, then ends the session.
+  const [closing, setClosing] = useState(false);
   function done() {
     if (dirty && !confirm(t.leave)) return;
     editor.select(null);
-    onDone();
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) onDone();
+    else setClosing(true);
   }
 
+  // A piece dragged out of the tray is in hand: the piece itself follows the pointer over the view.
+  const carrying = useRef<{ template: PieceTemplate; shown: boolean } | null>(null);
+  const carry = (template: PieceTemplate | null) => {
+    carrying.current = template && { template, shown: false };
+    if (!template) editor.preview(null);
+  };
+  const putDown = () => {
+    if (!carrying.current?.shown) return;
+    carrying.current.shown = false;
+    editor.preview(null);
+  };
   const onDragOver = (e: DragEvent) => {
     if (!e.dataTransfer.types.includes(PIECE) && !e.dataTransfer.types.includes(FINISH)) return;
+    const hand = carrying.current;
+    // Over the trays the piece goes back out of the room.
+    if (hand && e.target instanceof Element && e.target.closest("[data-viewer-editing]")) return putDown();
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
+    if (!hand) return;
+    if (!hand.shown) {
+      hand.shown = true;
+      editor.preview(hand.template);
+    }
+    editor.previewAt(e.clientX, e.clientY);
+  };
+  const onDragLeave = (e: DragEvent) => {
+    if (!(e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget))) putDown();
   };
   /** Adds a piece at the nearest free spot to a floor point, and selects it. */
   function place(template: PieceTemplate, floor: { position: Vec2; level?: string; room?: string }) {
@@ -217,10 +233,10 @@ export function EditSession({
     void commit(addFurniture(present, { ...added, position: at })).then(() => editor.select(id));
   }
   /** A click on a tray piece puts it in the room on show, or where the middle of the view meets the floor. */
-  function placeHere(template: PieceTemplate, e: MouseEvent<HTMLElement>) {
+  function placeHere(template: PieceTemplate, card: HTMLElement) {
     const { level, room } = shownRoom(viewer, state);
     if (room) return place(template, { position: room.centroid, ...(level && { level }), room: room.id });
-    const canvas = e.currentTarget.closest("[data-viewer]")?.querySelector("canvas")?.getBoundingClientRect();
+    const canvas = card.closest("[data-viewer]")?.querySelector("canvas")?.getBoundingClientRect();
     const floor = canvas && editor.floorAt(canvas.left + canvas.width / 2, canvas.top + canvas.height / 2);
     if (!floor) return flash(t.noRoom);
     place(template, floor);
@@ -231,8 +247,10 @@ export function EditSession({
     if (!pieceData && !finishData) return;
     e.preventDefault();
     if (pieceData) {
-      const floor = editor.floorAt(e.clientX, e.clientY);
-      if (floor) place(JSON.parse(pieceData) as PieceTemplate, floor);
+      // It lands where the piece in hand stood, or at the nearest free spot when that was in the way.
+      const spot = carrying.current?.shown ? editor.previewAt(e.clientX, e.clientY) : editor.floorAt(e.clientX, e.clientY);
+      carry(null);
+      if (spot) place(JSON.parse(pieceData) as PieceTemplate, spot);
       return;
     }
     const finish = JSON.parse(finishData) as MaterialDef;
@@ -242,7 +260,7 @@ export function EditSession({
     void commit(paintSurfaces(present, editor.plan(), surfaces, finish, state.designOption));
   };
 
-  dropTarget.current = { onDragOver, onDrop };
+  dropTarget.current = { onDragOver, onDrop, onDragLeave };
   useMountEffect(() => () => {
     dropTarget.current = null;
   });
@@ -256,7 +274,14 @@ export function EditSession({
       <section
         data-viewer-editing=""
         aria-label={t.title}
-        className="pointer-events-auto absolute top-3 right-3 bottom-24 flex w-80 max-w-[calc(100%-1.5rem)] flex-col overflow-hidden rounded-[20px] bg-popover text-popover-foreground shadow-overlay motion-safe:animate-in motion-safe:fade-in-0"
+        data-closing={closing || undefined}
+        onAnimationEnd={(e) => {
+          if (closing && e.target === e.currentTarget) onDone();
+        }}
+        className={cn(
+          "pointer-events-auto absolute top-3 right-3 bottom-24 flex w-80 max-w-[calc(100%-1.5rem)] flex-col overflow-hidden rounded-[20px] bg-popover text-popover-foreground shadow-overlay",
+          closing ? "pointer-events-none [animation:arch-edit-close_240ms_cubic-bezier(0.4,0,1,1)_forwards]" : "motion-safe:[animation:arch-edit-open_440ms_cubic-bezier(0.32,0.72,0,1)]",
+        )}
       >
         <header className="flex items-center gap-1 border-b border-border p-2">
           <h2 className="min-w-0 flex-1 truncate px-1.5 text-xs font-medium">{t.title}</h2>
@@ -279,8 +304,8 @@ export function EditSession({
             <TabsTrigger value="furniture" className="flex-1">{t.furniture}</TabsTrigger>
             <TabsTrigger value="materials" className="flex-1">{t.materials}</TabsTrigger>
           </TabsList>
-          <TabsContent value="furniture" className="min-h-0 flex-1 overflow-y-auto p-2">
-            <fieldset className="mb-2 flex gap-0.5 rounded-lg border-0 bg-foreground/5 p-0.5">
+          <TabsContent value="furniture" className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-2">
+            <fieldset className="mb-2 flex min-w-0 gap-0.5 rounded-lg border-0 bg-foreground/5 p-0.5">
               <legend className="sr-only">{t.furniture}</legend>
               {(["placed", "add"] as const).map((value) => (
                 <button key={value} type="button" aria-pressed={view === value} data-edit-view={value} onClick={() => setView(value)} className="h-7 flex-1 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground aria-pressed:bg-popover aria-pressed:text-foreground aria-pressed:shadow-popover">
@@ -289,15 +314,12 @@ export function EditSession({
               ))}
             </fieldset>
             {view === "placed" ? (
-              <>
-                <p className="px-1 pb-2 text-2xs text-muted-foreground">{t.dragHint}</p>
-                <PlacedList viewer={viewer} state={state} plan={editor.plan()} pieces={pieces} onRemove={remove} onBrowse={() => setView("add")} />
-              </>
+              <PlacedList viewer={viewer} state={state} plan={editor.plan()} pieces={pieces} onRemove={remove} onBrowse={() => setView("add")} />
             ) : (
-              <AddPanel viewer={viewer} plan={editor.plan()} pieces={pieces} search={editing.search} add={editing.add} onAdd={placeHere} />
+              <AddPanel viewer={viewer} plan={editor.plan()} pieces={pieces} search={editing.search} add={editing.add} onAdd={placeHere} onCarry={carry} />
             )}
           </TabsContent>
-          <TabsContent value="materials" className="min-h-0 flex-1 overflow-y-auto p-2">
+          <TabsContent value="materials" className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-2">
             <p className="px-1 pb-2 text-2xs text-muted-foreground">{t.dropHint}</p>
             <MaterialTray viewer={viewer} />
           </TabsContent>
@@ -322,29 +344,130 @@ export function EditSession({
           <div data-viewer-selection="" role="toolbar" aria-label={piece?.id} className="pointer-events-auto flex max-w-full items-center gap-1 rounded-2xl bg-popover p-1 text-popover-foreground shadow-popover">
             {blockedText ? (
               <span className="px-2.5 py-1 text-xs font-medium text-destructive">{blockedText}</span>
-            ) : piece && editor.locked(piece.id) ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-muted-foreground">
-                <LockIcon aria-hidden="true" className="size-3.5" />
-                <span className="font-medium text-foreground">{pieceLabel(piece, t.types, pieces)}</span>
-                {t.builtIn}
-              </span>
             ) : piece && (
               <>
-                <span className="max-w-48 truncate px-2.5 text-xs font-medium">{pieceLabel(piece, t.types, pieces)}<span className="ml-1.5 font-normal text-muted-foreground">{piece.id}</span></span>
-                <span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-border" />
-                <button type="button" className={pillItem} onClick={turn}><RotateCwIcon aria-hidden="true" />{t.turn}</button>
-                <Hint label={t.duplicate} keys="⌘D">
-                  <button type="button" className={pillItem} onClick={duplicate}><CopyIcon aria-hidden="true" />{t.duplicate}</button>
+                <Hint label={editor.locked(piece.id) ? t.fromPlan : t.moveHint}>
+                  <span className="inline-flex max-w-48 items-center gap-1.5 truncate px-2.5 py-1 text-xs font-medium">
+                    {editor.locked(piece.id) && <LockIcon aria-label={t.fromPlanShort} className="size-3.5 shrink-0 text-muted-foreground" />}
+                    <span className="truncate">{pieceLabel(piece, t.types, pieces)}</span>
+                  </span>
                 </Hint>
-                <Hint label={t.remove} keys="⌫">
-                  <button type="button" className={pillItem} onClick={() => remove()}><Trash2Icon aria-hidden="true" />{t.remove}</button>
-                </Hint>
+                {!editor.locked(piece.id) && (
+                  <>
+                    <span aria-hidden="true" className="mx-0.5 h-4 w-px shrink-0 bg-border" />
+                    <Hint label={t.turn}>
+                      <button type="button" aria-label={t.turn} className={pillIcon} onClick={turn}><RotateCwIcon aria-hidden="true" /></button>
+                    </Hint>
+                    <Hint label={t.duplicate} keys="⌘D">
+                      <button type="button" aria-label={t.duplicate} className={pillIcon} onClick={duplicate}><CopyIcon aria-hidden="true" /></button>
+                    </Hint>
+                    <Hint label={t.remove} keys="⌫">
+                      <button type="button" aria-label={t.remove} className={pillIcon} onClick={() => remove()}><Trash2Icon aria-hidden="true" /></button>
+                    </Hint>
+                  </>
+                )}
+                {editing.ask && (
+                  <>
+                    <span aria-hidden="true" className="mx-0.5 h-4 w-px shrink-0 bg-border" />
+                    <AskAgent key={piece.id} label={pieceLabel(piece, t.types, pieces)} context={pieceContext(piece, pieceLabel(piece, t.types, pieces), editor.locked(piece.id))} ask={async (request) => {
+                      // The agent works from saved versions, so hand edits are saved before it hears of them.
+                      if (dirty) await editing.save(present);
+                      await editing.ask!(request);
+                    }} />
+                  </>
+                )}
               </>
             )}
           </div>
         </div>
       )}
     </>
+  );
+}
+
+const metres = (n: number) => `${Math.round(n * 100) / 100} m`;
+
+/** What an agent needs to find the selected piece in the plan and know what it looks like now. */
+function pieceContext(piece: Furniture, label: string, fromPlan: boolean) {
+  const facts = [
+    `${label}, \`${piece.id}\` (${piece.type}${piece.model ? `, model ${piece.model}` : ""})`,
+    piece.room && `in room \`${piece.room}\``,
+    piece.level && `on level \`${piece.level}\``,
+    `centred at ${metres(piece.position[0])}, ${metres(piece.position[1])}`,
+    `turned ${piece.rotation ?? 0}°`,
+    piece.size && `${piece.size.map(metres).join(" × ")}`,
+  ].filter(Boolean);
+  return `Selected piece: ${facts.join(", ")}. ${fromPlan ? "It is part of the plan source." : "It was placed by hand in the editor."}`;
+}
+
+/** A bubble over the selected piece where someone writes what the agent should change about it. */
+function AskAgent({ label, context, ask }: { label: string; context: string; ask: (request: string) => Promise<void> }) {
+  const t = useT().viewer.edit.ask;
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [status, setStatus] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+  async function send() {
+    const request = text.trim();
+    if (!request || status === "sending") return;
+    setStatus("sending");
+    try {
+      await ask(`${request}\n\n${context}`);
+      setText("");
+      setStatus("sent");
+      setTimeout(() => {
+        setOpen(false);
+        setStatus("idle");
+      }, 1400);
+    } catch {
+      setStatus("failed");
+    }
+  }
+  return (
+    <Popover open={open} onOpenChange={(next) => {
+      setOpen(next);
+      if (next && status !== "sending") setStatus("idle");
+    }}>
+      <PopoverTrigger data-viewer-ask="" className={cn(pillItem, "aria-expanded:bg-foreground/9")}>
+        <SparklesIcon aria-hidden="true" />
+        {t.button}
+      </PopoverTrigger>
+      <PopoverContent side="top" sideOffset={12} className="w-80 gap-2 rounded-2xl p-2 shadow-overlay">
+        {status === "sent" ? (
+          <p role="status" className="flex items-center gap-2 px-1.5 py-2 text-xs font-medium"><CheckIcon aria-hidden="true" className="size-3.5 text-success" />{t.sent}</p>
+        ) : (
+          <form
+            className="flex flex-col gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void send();
+            }}
+          >
+            <Textarea
+              autoFocus
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  void send();
+                }
+              }}
+              placeholder={t.placeholder(label)}
+              aria-label={t.placeholder(label)}
+              disabled={status === "sending"}
+              className="max-h-40 min-h-14 resize-none border-0 bg-foreground/5 text-xs md:text-xs dark:bg-foreground/5"
+            />
+            <div className="flex items-center gap-2 px-1">
+              <span className={cn("min-w-0 flex-1 truncate text-2xs", status === "failed" ? "text-destructive" : "text-muted-foreground")}>{status === "failed" ? t.failed : t.note}</span>
+              <Button type="submit" size="sm" disabled={!text.trim() || status === "sending"}>
+                {status === "sending" ? <Spinner /> : <ArrowUpIcon aria-hidden="true" />}
+                {t.send}
+              </Button>
+            </div>
+          </form>
+        )}
+      </PopoverContent>
+    </Popover>
   );
 }
 

@@ -1447,8 +1447,8 @@ async function validatedArtifactPlan(directory:string, files:ArtifactManifest["f
   }
   if(hasLibrary){
     const id=z.string().regex(/^[a-zA-Z0-9_-]+$/);
-    const index=z.object({version:z.number().int().positive(),textures:z.record(id,z.object({res:z.array(z.number().int().positive()).min(1),maps:z.array(id).min(1)})),models:z.record(id,z.unknown()),hdris:z.record(id,z.unknown())}).parse(JSON.parse(await fs.readFile(await safeFile(directory,"outputs/artifact/library/index.json"),"utf8")));
-    for(const name of pbr){id.parse(name);const texture=index.textures[name];if(!texture)throw new Error("Unknown library texture");for(const resolution of texture.res)for(const map of texture.maps)local(`textures/${name}/${resolution}/${map}.webp`,true);}
+    const index=z.object({version:z.number().int().positive(),textures:z.record(id,z.object({res:z.array(z.number().int().positive()).min(1),maps:z.array(id).min(1),ext:z.enum(["webp","jpg"]).optional()})),models:z.record(id,z.unknown()),hdris:z.record(id,z.unknown())}).parse(JSON.parse(await fs.readFile(await safeFile(directory,"outputs/artifact/library/index.json"),"utf8")));
+    for(const name of pbr){id.parse(name);const texture=index.textures[name];if(!texture)throw new Error("Unknown library texture");for(const resolution of texture.res)for(const map of texture.maps)local(`textures/${name}/${resolution}/${map}.${texture.ext??"webp"}`,true);}
     const environment=plan.environment??"suburban_garden";
     if(plan.environment||index.hdris[environment]){id.parse(environment);if(!index.hdris[environment])throw new Error("Unknown library environment");local(`hdri/${environment}.hdr`,true);local(`hdri/${environment}-env.hdr`,true);}
   }
@@ -1553,7 +1553,7 @@ export async function bundleLibraryAssets(from: LibraryFolder | readonly Library
     const source = holder("textures", id);
     const entry = target.textures[id] ?? source?.index?.textures[id];
     if (!entry) throw new Error(`Library texture ${id} is in none of the libraries it could come from.`);
-    if (source) for (const resolution of entry.res) for (const map of entry.maps) await copy(source.folder, `textures/${id}/${resolution}/${map}.webp`);
+    if (source) for (const resolution of entry.res) for (const map of entry.maps) await copy(source.folder, `textures/${id}/${resolution}/${map}.${(entry as { ext?: string }).ext === "jpg" ? "jpg" : "webp"}`);
     target.textures[id] = entry;
   }
   await atomic(await writableFile(to.root, inLibrary(to, "index.json")), target);

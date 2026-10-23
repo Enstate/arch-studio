@@ -1,16 +1,17 @@
 import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { pieceCategory, type PieceCategory } from "@arch/viewer/plan/categories";
+import { materialCategory, pieceCategory, type MaterialCategory, type PieceCategory } from "@arch/viewer/plan/categories";
 import { z } from "zod";
 import { studioStoreDirectory } from "./index.ts";
+import { downloadPolyHavenTexture, polyHavenId } from "./polyhaven.ts";
 import { convertSimReadyAsset, simReadyId, writeAtomically } from "./simready.ts";
 
 /**
  * The asset catalog hand editing and agents choose from. It is two library folders with the
  * viewer's layout (`index.json`, `models/`, `textures/`): the shared CC0 library `bun run
  * fetch-assets` fills, and the store's own `library/`, where imported SimReady assets go. Entries
- * may carry `name`, `category`, `label`, `thumbnail` (a file in the folder) and `credit`, which the
+ * may carry `name`, `category`, `label` and `credit`, which the
  * viewer ignores. The first folder that holds an ID wins.
  */
 
@@ -24,8 +25,6 @@ export interface CatalogModel {
   source: "library" | "simready";
   /** What the asset is, in its source's words, such as "couch". */
   label?: string;
-  /** Picture of the asset, relative to the catalog. */
-  thumbnail?: string;
   /** CREDITS.md line a project delivering it keeps. */
   credit?: string;
 }
@@ -33,8 +32,13 @@ export interface CatalogModel {
 export interface CatalogTexture {
   id: string;
   name: string;
+  category: MaterialCategory;
   /** Metres one repeat covers. */
   size: [number, number];
+  source: "library" | "polyhaven";
+  /** The colour map at its smallest size, relative to the catalog, for pickers. */
+  swatch: string;
+  credit?: string;
 }
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]+$/);
@@ -45,7 +49,6 @@ const modelEntry = z.object({
   name: z.string().optional(),
   category: z.string().optional(),
   label: z.string().nullish(),
-  thumbnail: z.string().regex(/^thumbs\/[A-Za-z0-9_.-]+$/).optional(),
   credit: z.string().optional(),
   source: z.string().optional(),
 }).passthrough();
@@ -105,7 +108,7 @@ export async function assetCatalog(folders = catalogFolders()): Promise<{ models
     for (const [key, value] of Object.entries(index.models)) {
       const entry = modelEntry.safeParse(value);
       if (models.has(key) || !entry.success) continue;
-      const { name, category, label, thumbnail, credit, source, size } = entry.data;
+      const { name, category, label, credit, source, size } = entry.data;
       models.set(key, {
         id: key,
         name: name ?? humanize(key),
@@ -113,11 +116,22 @@ export async function assetCatalog(folders = catalogFolders()): Promise<{ models
         size,
         source: source === "simready" ? "simready" : "library",
         ...(label && { label }),
-        ...(thumbnail && { thumbnail }),
         ...(credit && { credit }),
       });
     }
-    for (const [key, value] of Object.entries(index.textures)) if (!textures.has(key)) textures.set(key, { id: key, name: humanize(key), size: value.size });
+    for (const [key, value] of Object.entries(index.textures)) {
+      if (textures.has(key)) continue;
+      const extra = value as { name?: string; category?: string; credit?: string; source?: string; ext?: string };
+      textures.set(key, {
+        id: key,
+        name: extra.name ?? humanize(key),
+        category: (extra.category as MaterialCategory | undefined) ?? materialCategory(key),
+        size: value.size,
+        source: extra.source === "polyhaven" ? "polyhaven" : "library",
+        swatch: `textures/${key}/${value.res[0]}/color.${extra.ext === "jpg" ? "jpg" : "webp"}`,
+        ...(extra.credit && { credit: extra.credit }),
+      });
+    }
   }
   return { models: [...models.values()], textures: [...textures.values()] };
 }
@@ -136,7 +150,7 @@ export async function catalogIndex(folders = catalogFolders()): Promise<CatalogI
 }
 
 /**
- * The file behind a catalog path such as `models/<id>.glb` or `thumbs/<id>.png`, from the first
+ * The file behind a catalog path such as `models/<id>.glb` or `textures/<id>/512/color.webp`, from the first
  * folder whose index holds it. Null for anything else, and for paths that leave the folder.
  */
 export async function catalogFile(relative: string, folders = catalogFolders()): Promise<string | null> {
@@ -148,8 +162,7 @@ export async function catalogFile(relative: string, folders = catalogFolders()):
     const [kind, name] = parts;
     const holds = kind === "models" ? !!index.models[name!.replace(/\.glb$/, "")]
       : kind === "textures" ? !!index.textures[name!]
-      : kind === "hdri" ? !!index.hdris[name!.replace(/(-env)?\.hdr$/, "")]
-      : kind === "thumbs";
+      : kind === "hdri" && !!index.hdris[name!.replace(/(-env)?\.hdr$/, "")];
     if (!holds) continue;
     const file = path.join(folder, ...parts);
     try {
@@ -194,30 +207,54 @@ export async function withLibraryLock<T>(library: string, change: () => Promise<
 }
 
 /**
- * Brings a SimReady asset into the store's library, once: converted, with its thumbnail and credit,
+ * Brings a SimReady asset into the store's library, once: converted, with its credit,
  * so hand editing and agents can place it as `@lib/models/simready_<asset>.glb`. Imports in one
  * process run one at a time, the index is written under the library's lock, and an asset already
  * there returns at once.
  */
-export function importSimReady(asset: string, { library = storeLibraryDirectory(), preview, signal }: { library?: string; preview?: { revision: string; root: string }; signal?: AbortSignal } = {}): Promise<CatalogModel> {
+export function importSimReady(asset: string, { library = storeLibraryDirectory(), signal }: { library?: string; signal?: AbortSignal } = {}): Promise<CatalogModel> {
   const libraryId = simReadyLibraryId(asset);
   const run = async () => {
     const existing = (await assetCatalog([library])).models.find((model) => model.id === libraryId);
     if (existing) return existing;
-    const model = await convertSimReadyAsset(asset, { preview, signal });
+    const model = await convertSimReadyAsset(asset, signal);
     await writeAtomically(path.join(library, "models", `${libraryId}.glb`), model.glb);
-    const jpeg = model.thumbnail?.[0] === 0xff && model.thumbnail[1] === 0xd8;
-    const thumbnail = model.thumbnail ? `thumbs/${libraryId}.${jpeg ? "jpg" : "png"}` : undefined;
-    if (model.thumbnail) await writeAtomically(path.join(library, thumbnail!), model.thumbnail);
     await withLibraryLock(library, async () => {
       const index = (await folderIndex(library)) ?? { version: 2, textures: {}, models: {}, hdris: {} };
-      index.models[libraryId] = { size: model.size, front: 0, name: model.name, category: model.category, ...(model.label && { label: model.label }), ...(thumbnail && { thumbnail }), credit: model.credit, source: "simready", url: model.source };
+      index.models[libraryId] = { size: model.size, front: 0, name: model.name, category: model.category, ...(model.label && { label: model.label }), credit: model.credit, source: "simready", url: model.source };
       await writeAtomically(path.join(library, "index.json"), `${JSON.stringify(index, null, 2)}\n`);
       const credits = path.join(library, "CREDITS.md");
       const previous = await fs.readFile(credits, "utf8").catch(() => "# Asset credits\n\nAssets imported into this Arch Studio library. NVIDIA SimReady assets are licensed CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/) and need this attribution wherever they are delivered.\n\n");
       if (!previous.includes(model.credit)) await writeAtomically(credits, `${previous}${model.credit}\n`);
     });
     return (await assetCatalog([library])).models.find((item) => item.id === libraryId)!;
+  };
+  const next = imports.then(run, run);
+  imports = next.catch(() => undefined);
+  return next;
+}
+
+/**
+ * Brings a Poly Haven texture set into the store's library, once, under its Poly Haven ID: its 1K
+ * colour, normal and occlusion-roughness-metal maps as JPEG, with its credit. Runs in the same
+ * queue as SimReady imports; a set the library already holds returns at once.
+ */
+export function importPolyHaven(texture: string, { library = storeLibraryDirectory(), signal }: { library?: string; signal?: AbortSignal } = {}): Promise<CatalogTexture> {
+  polyHavenId.parse(texture);
+  const run = async () => {
+    const existing = (await assetCatalog([library])).textures.find((item) => item.id === texture);
+    if (existing) return existing;
+    const set = await downloadPolyHavenTexture(texture, signal);
+    for (const [map, bytes] of Object.entries(set.maps)) await writeAtomically(path.join(library, "textures", texture, "1024", `${map}.jpg`), bytes);
+    await withLibraryLock(library, async () => {
+      const index = (await folderIndex(library)) ?? { version: 2, textures: {}, models: {}, hdris: {} };
+      index.textures[texture] = { size: set.size, maps: Object.keys(set.maps), res: [1024], ext: "jpg", name: set.name, category: set.category, credit: set.credit, source: "polyhaven" };
+      await writeAtomically(path.join(library, "index.json"), `${JSON.stringify(index, null, 2)}\n`);
+      const credits = path.join(library, "CREDITS.md");
+      const previous = await fs.readFile(credits, "utf8").catch(() => "# Asset credits\n\nAssets imported into this Arch Studio library.\n\n");
+      if (!previous.includes(set.credit)) await writeAtomically(credits, `${previous}${set.credit}\n`);
+    });
+    return (await assetCatalog([library])).textures.find((item) => item.id === texture)!;
   };
   const next = imports.then(run, run);
   imports = next.catch(() => undefined);

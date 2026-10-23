@@ -42,6 +42,21 @@ export interface ViewerEditor {
   catalog(): EditorCatalog;
   /** Reads the shared library again after its host added assets, so `catalog` and placing include them. */
   reloadCatalog(): Promise<void>;
+  /**
+   * A picture of a piece on its own, as a data URL: built-in shapes, the project's pieces and library
+   * models all look alike. Pictures are kept by look and taken one at a time.
+   */
+  picture(piece: Omit<Furniture, 'id' | 'position'>): Promise<string>;
+  /**
+   * Takes a new piece in hand while it is dragged in from a tray: the piece itself follows the
+   * pointer through `previewAt`. Null puts it away again.
+   */
+  preview(piece: Omit<Furniture, 'id' | 'position'> | null): void;
+  /**
+   * Moves the piece in hand to the floor under a screen point, snapped as a moved piece snaps, and
+   * says where it would land and what would be in the way. Null off the floor.
+   */
+  previewAt(clientX: number, clientY: number): { position: Vec2; level?: string; room?: string; problem: PlacementProblem | null } | null;
 }
 
 export interface EditorCatalog {
@@ -77,6 +92,8 @@ export interface EditorHost {
   report(patch: { selected?: string | null; blocked?: PlacementProblem | null }): void;
   catalog(): EditorCatalog;
   reloadCatalog(): Promise<void>;
+  /** A picture of a piece built on its own. */
+  picture(piece: THREE.Object3D): Promise<string>;
   signal: AbortSignal;
 }
 
@@ -325,6 +342,72 @@ export function createEditor(host: EditorHost): ViewerEditor {
     if (id) canvas.style.cursor = locked(id) ? 'pointer' : 'grab';
   }, { signal });
 
+  // ---------- a new piece in hand ----------
+
+  let inHand: { piece: Furniture; obj: THREE.Object3D | null } | null = null;
+  function preview(template: Omit<Furniture, 'id' | 'position'> | null) {
+    inHand?.obj?.removeFromParent();
+    inHand = null;
+    host.report({ blocked: null });
+    showOutline();
+    if (!template) return;
+    const hand = { piece: { ...template, id: 'in-hand', position: [0, 0] } as Furniture, obj: null as THREE.Object3D | null };
+    inHand = hand;
+    void after(async () => {
+      const obj = await house.editor.model(hand.piece);
+      // Put away, or swapped for another piece, while it was being built.
+      if (inHand !== hand) return;
+      obj.visible = false;
+      obj.userData.piece = hand.piece;
+      hand.obj = obj;
+      host.scene.add(obj);
+    });
+  }
+  function previewAt(clientX: number, clientY: number) {
+    const floor = editor.floorAt(clientX, clientY);
+    if (!inHand || !floor) return null;
+    const { piece, obj } = inHand;
+    piece.level = floor.level;
+    const rotation = piece.rotation ?? 0;
+    const elevation = levelOf(edited, floor.level).elevation;
+    const size = obj ? measure(obj).size : (piece.size ?? FURNITURE_DEFAULT_SIZE[piece.type]);
+    const at = snapPlacement(storeyOf(piece), floor.position, rotation, size);
+    const problem = problemAt(piece, at, rotation, size, piece.elevation ?? 0);
+    if (obj) {
+      pose(obj, at, rotation);
+      obj.position.y = elevation + (piece.elevation ?? 0);
+      obj.visible = true;
+      obj.updateMatrixWorld(true);
+    }
+    marker.show(size, at[0], elevation, at[1], -THREE.MathUtils.degToRad(rotation), problem ? BLOCKED : SELECTED);
+    host.report({ blocked: problem });
+    host.changed();
+    const room = roomAt(storeyOf(piece), at);
+    return { position: at, ...(floor.level && { level: floor.level }), ...(room && { room: room.id }), problem };
+  }
+
+  // ---------- pictures ----------
+
+  const pictures = new Map<string, Promise<string>>();
+  let taking: Promise<unknown> = Promise.resolve();
+  function picture(piece: Omit<Furniture, 'id' | 'position'>) {
+    const { level: _l, room: _r, rotation: _t, designOptions: _o, ...look } = piece as Furniture;
+    const key = JSON.stringify(look);
+    let taken = pictures.get(key);
+    if (!taken) {
+      const take = async () => {
+        if (signal.aborted) throw new Error('The viewer is gone.');
+        return host.picture(await house.editor.model({ ...look, id: 'picture', position: [0, 0] }));
+      };
+      taken = taking.then(take, take);
+      taking = taken.catch(() => undefined);
+      // A failed picture can be asked for again.
+      taken.catch(() => pictures.delete(key));
+      pictures.set(key, taken);
+    }
+    return taken;
+  }
+
   // ---------- edits ----------
 
   /** A piece's plan entry without where it stands: when this differs, it is built again. */
@@ -347,7 +430,7 @@ export function createEditor(host: EditorHost): ViewerEditor {
     else showOutline();
   }
 
-  return {
+  const editor: ViewerEditor = {
     start() {
       active = true;
       return after(() => {
@@ -424,6 +507,9 @@ export function createEditor(host: EditorHost): ViewerEditor {
     },
     catalog: () => host.catalog(),
     reloadCatalog: () => host.reloadCatalog(),
+    picture,
+    preview,
+    previewAt,
     surfacesWith(finish) {
       const out = new Set<string>();
       for (const g of [house.walls, house.floors]) g.traverse((o) => {
@@ -439,4 +525,5 @@ export function createEditor(host: EditorHost): ViewerEditor {
       return [...out];
     },
   };
+  return editor;
 }

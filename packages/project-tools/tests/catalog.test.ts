@@ -174,9 +174,8 @@ test("the catalog reads the store's imports before the shared library and serves
   const root = await temporary("catalog");
   try {
     const store = path.join(root, "library"), shared = path.join(root, "shared");
-    await write(path.join(store, "index.json"), { version: 2, textures: {}, models: { simready_sofa_a01: { size: [1.5, 0.7, 0.7], name: "Sofa A01", category: "seating", thumbnail: "thumbs/simready_sofa_a01.png", credit: "- Sofa A01 (model), NVIDIA SimReady, CC BY 4.0", source: "simready" } }, hdris: {} });
+    await write(path.join(store, "index.json"), { version: 2, textures: {}, models: { simready_sofa_a01: { size: [1.5, 0.7, 0.7], name: "Sofa A01", category: "seating", credit: "- Sofa A01 (model), NVIDIA SimReady, CC BY 4.0", source: "simready" } }, hdris: {} });
     await write(path.join(store, "models/simready_sofa_a01.glb"), "sofa");
-    await write(path.join(store, "thumbs/simready_sofa_a01.png"), "png");
     await write(path.join(shared, "index.json"), { version: 3, textures: { oak: { size: [1, 1], maps: ["color"], res: [512] } }, models: { modern_arm_chair_01: { size: [0.8, 0.8, 0.9] }, simready_sofa_a01: { size: [9, 9, 9] } }, hdris: { garden: { sun: [0, 1, 0] } } });
     await write(path.join(shared, "models/modern_arm_chair_01.glb"), "chair");
     await write(path.join(shared, "secret.json"), "{}");
@@ -194,8 +193,7 @@ test("the catalog reads the store's imports before the shared library and serves
     expect((index.models.simready_sofa_a01 as { size: number[] }).size).toEqual([1.5, 0.7, 0.7]);
     expect(await catalogFile("models/simready_sofa_a01.glb", folders)).toBe(path.join(store, "models/simready_sofa_a01.glb"));
     expect(await catalogFile("models/modern_arm_chair_01.glb", folders)).toBe(path.join(shared, "models/modern_arm_chair_01.glb"));
-    expect(await catalogFile("thumbs/simready_sofa_a01.png", folders)).toBe(path.join(store, "thumbs/simready_sofa_a01.png"));
-    for (const refused of ["secret.json", "models/unknown.glb", "models/../secret.json", "thumbs/.hidden", ""]) expect(await catalogFile(refused, folders)).toBeNull();
+    for (const refused of ["secret.json", "models/unknown.glb", "models/../secret.json", "thumbs/simready_sofa_a01.png", "models/.hidden", ""]) expect(await catalogFile(refused, folders)).toBeNull();
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

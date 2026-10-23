@@ -9,7 +9,7 @@
  *   HDRIs    → hdri/<id>.hdr (2K sky for the window view) and hdri/<id>-env.hdr (1K, sun clipped,
  *              for lighting and reflections), with the sun direction in index.json
  *   models   → models/<id>.glb (deduplicated, webp textures ≤ 1024 px, meshopt-compressed geometry),
- *              and thumbs/<id>.webp, Poly Haven's 256 px picture, which hand editing shows in its trays
+ *              listed with Poly Haven's name and a category for the edit trays
  * It also copies plans/* into the served folder. Skips anything already there.
  *   bun run fetch-assets [--from <existing library dir>] [--out <dir>]
  */
@@ -57,7 +57,7 @@ async function getJSON<T>(url: string): Promise<T> {
 }
 
 async function download(url: string): Promise<Buffer> {
-  if (!url.startsWith('https://dl.polyhaven.org/') && !url.startsWith('https://cdn.polyhaven.com/asset_img/')) throw new Error(`refusing URL outside Poly Haven's CDN: ${url}`);
+  if (!url.startsWith('https://dl.polyhaven.org/')) throw new Error(`refusing URL outside Poly Haven's CDN: ${url}`);
   const r = await fetch(url);
   if (!r.ok) throw new Error(`${r.status} ${url}`);
   const b = Buffer.from(await r.arrayBuffer());
@@ -331,30 +331,19 @@ async function deriveModel(id: string) {
   console.log(`✓ ${id}`);
 }
 
-/** A model's picture and what it is, for the trays: kept with the originals, copied into the library. */
-async function modelPicture(id: string): Promise<{ name: string; category: string; thumbnail?: string }> {
-  const metaFile = join(cache, 'thumbs', `${id}.json`);
-  const picture = join(cache, 'thumbs', `${id}.webp`);
-  let meta = existsSync(metaFile) ? readJSON<{ name: string; categories: string[] }>(metaFile) : null;
-  if (!meta || !existsSync(picture)) {
-    const info = await getJSON<{ name: string; categories?: string[]; thumbnail_url?: string }>(`${API}/info/${id}`);
-    meta = { name: info.name, categories: info.categories ?? [] };
-    mkdirSync(dirname(picture), { recursive: true });
-    if (info.thumbnail_url) writeFileSync(picture, await sharp(await download(info.thumbnail_url)).resize(256, 256, { fit: 'inside' }).webp({ quality: 80 }).toBuffer());
-    writeFileSync(metaFile, `${JSON.stringify(meta, null, 2)}\n`);
-  }
-  const served = join(lib, 'thumbs', `${id}.webp`);
-  if (existsSync(picture)) {
-    mkdirSync(dirname(served), { recursive: true });
-    copyFileSync(picture, served);
-  }
-  return { name: meta.name, category: pieceCategory(meta.categories.join(' '), id), ...(existsSync(picture) && { thumbnail: `thumbs/${id}.webp` }) };
+/** What a model is called and which tray category it goes in, from Poly Haven, kept with the originals. */
+async function modelListing(id: string): Promise<{ name: string; category: string }> {
+  const file = join(cache, 'models', `${id}.listing.json`);
+  const listing = existsSync(file) ? readJSON<{ name: string; categories: string[] }>(file) : null;
+  const { name, categories = [] } = listing ?? (await getJSON<{ name: string; categories?: string[] }>(`${API}/info/${id}`));
+  if (!listing) writeFileSync(file, `${JSON.stringify({ name, categories }, null, 2)}\n`);
+  return { name, category: pieceCategory(categories.join(' '), id) };
 }
 
 const index = {
   version: DERIVED,
   textures: {} as Record<string, { size: [number, number]; maps: string[]; res: number[] }>,
-  models: {} as Record<string, { size: [number, number, number]; front: number; name?: string; category?: string; thumbnail?: string }>,
+  models: {} as Record<string, { size: [number, number, number]; front: number; name?: string; category?: string }>,
   hdris: {} as Record<string, { sun: number[] }>,
 };
 for (const [id, o] of Object.entries(manifest.textures)) {
@@ -371,7 +360,7 @@ for (const [id, o] of Object.entries(manifest.models)) {
   const m = await fetchModel(id, o.res);
   await deriveModel(id);
   // glTF bounds are x, y (up), z; the library lists [width, depth, height] like plan pieces.
-  index.models[id] = { size: [m.size[0], m.size[2], m.size[1]], front: m.front ?? 0, ...(await modelPicture(id)) };
+  index.models[id] = { size: [m.size[0], m.size[2], m.size[1]], front: m.front ?? 0, ...(await modelListing(id)) };
 }
 writeFileSync(join(lib, 'index.json'), `${JSON.stringify(index)}\n`);
 

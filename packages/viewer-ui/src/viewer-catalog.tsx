@@ -9,13 +9,15 @@ import { levelOf, levelPlan } from "@arch/viewer/plan/levels";
 import { shownInOption } from "@arch/viewer/plan/options";
 import type { Furniture, FurnitureType, Plan } from "@arch/viewer/plan/schema";
 import {
-  ArchiveIcon, ArmchairIcon, BathIcon, BedDoubleIcon, BoxIcon, CheckIcon, ChevronDownIcon, CookingPotIcon, DownloadIcon, Flower2Icon, LampFloorIcon,
+  ArchiveIcon, ArmchairIcon, LayoutGridIcon, BathIcon, BedDoubleIcon, BoxIcon, ChevronDownIcon, CookingPotIcon, DownloadIcon, Flower2Icon, LampFloorIcon,
   LockIcon, type LucideIcon, SearchIcon, Table2Icon, Trash2Icon, TvIcon,
 } from "lucide-react";
-import { type MouseEvent, type ReactNode, useRef, useState } from "react";
+import { Fragment, type MouseEvent, type ReactNode, useRef, useState, useSyncExternalStore } from "react";
 import { useFormat } from "./format";
 import { useT } from "./locale";
 import type { RoomInfo, ViewerInstance, ViewerState } from "./viewer-model";
+
+type ViewerEditor = NonNullable<ViewerInstance["editor"]>;
 
 /** A library model as its host knows it: what it is called, where it belongs and what it looks like. */
 export interface CatalogPiece {
@@ -25,8 +27,6 @@ export interface CatalogPiece {
   category: PieceCategory;
   /** [width, depth, height] in metres. */
   size?: [number, number, number];
-  /** URL of a picture of it. */
-  thumbnail?: string;
   /** Where it comes from, when that is not the host's own library, such as "NVIDIA SimReady". */
   source?: string;
   /** Attribution its licence asks for. */
@@ -101,59 +101,106 @@ export const Dot = ({ color }: { color?: string }) => (
   <span aria-hidden="true" className="size-4 shrink-0 rounded-full border border-border bg-foreground/10" style={color ? { background: color } : undefined} />
 );
 
-/** A picture of a piece, or its category's symbol when there is none. */
-function Picture({ src, category, className }: { src?: string; category: PieceCategory; className?: string }) {
+/**
+ * Pictures the viewer takes of pieces, shared by every card and row showing the same look. A
+ * picture is asked for when its element first scrolls into view, and taken once per look.
+ */
+class PictureShelf {
+  private taken = new Map<string, string>();
+  private asked = new Set<string>();
+  private listeners = new Set<() => void>();
+  constructor(private editor: ViewerEditor) {}
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener);
+    return () => void this.listeners.delete(listener);
+  };
+  get = (key: string) => this.taken.get(key);
+  ask(key: string, piece: PieceTemplate) {
+    if (this.asked.has(key)) return;
+    this.asked.add(key);
+    this.editor.picture(piece).then((url) => {
+      this.taken.set(key, url);
+      for (const listener of this.listeners) listener();
+    }, (error) => {
+      this.asked.delete(key);
+      console.warn("A piece picture could not be taken", error);
+    });
+  }
+}
+const shelves = new WeakMap<ViewerEditor, PictureShelf>();
+const shelfOf = (editor: ViewerEditor) => shelves.get(editor) ?? shelves.set(editor, new PictureShelf(editor)).get(editor)!;
+const lookOf = ({ level: _l, room: _r, rotation: _t, designOptions: _o, ...look }: PieceTemplate & Partial<Furniture>) => look;
+
+/**
+ * A picture of a piece: one the viewer takes of `piece` in the editor's light, so built-in shapes,
+ * the project's pieces and library models all look alike, or a remote catalog's own `src`. Its
+ * category's symbol shows until the picture is there.
+ */
+function Picture({ editor, piece, src, category, className }: { editor?: ViewerEditor; piece?: PieceTemplate; src?: string; category: PieceCategory; className?: string }) {
+  const shelf = editor && piece ? shelfOf(editor) : undefined;
+  const key = piece ? JSON.stringify(lookOf(piece)) : "";
+  const taken = useSyncExternalStore(shelf?.subscribe ?? noSubscription, () => shelf?.get(key));
+  const url = taken ?? src;
   const Icon = ICONS[category];
+  // Asks for the picture once the element is on screen.
+  const watch = (element: HTMLSpanElement | null) => {
+    if (!element || !shelf || !piece || taken) return;
+    const seen = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      seen.disconnect();
+      shelf.ask(key, lookOf(piece));
+    });
+    seen.observe(element);
+    return () => seen.disconnect();
+  };
   return (
-    <span className={cn("relative flex shrink-0 items-center justify-center overflow-hidden rounded-lg bg-foreground/6 text-muted-foreground", className)}>
-      <Icon aria-hidden="true" className="size-4" />
-      {src && <img alt="" src={src} loading="lazy" draggable={false} className="absolute inset-0 size-full object-cover" />}
+    <span ref={watch} className={cn("relative flex shrink-0 items-center justify-center overflow-hidden rounded-lg bg-foreground/5 text-muted-foreground", className)}>
+      <Icon aria-hidden="true" className={cn("size-4", !url && shelf && "motion-safe:animate-pulse")} />
+      {url && <img alt="" src={url} loading="lazy" draggable={false} className={cn("absolute inset-0 size-full", taken ? "object-contain p-[6%]" : "object-cover")} />}
     </span>
   );
 }
+const noSubscription = () => () => undefined;
+/** A transparent drag image, loaded before any drag starts. */
+const NOTHING = typeof Image === "undefined" ? (undefined as unknown as HTMLImageElement) : Object.assign(new Image(), { src: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" });
 
-/** A card for a piece to add: drag it into place, or click to put it in the room on show. */
-function PieceCard({ name, meta, category, thumbnail, template, title, onAdd, action }: {
-  name: string; meta?: string; category: PieceCategory; thumbnail?: string; template?: PieceTemplate; title?: string;
-  onAdd?: (template: PieceTemplate, e: MouseEvent<HTMLElement>) => void; action?: ReactNode;
+/**
+ * A card for a piece to add: drag it into place, or click it. A card without a template, such as a
+ * remote piece not added yet, cannot be dragged.
+ */
+function PieceCard({ name, meta, category, editor, template, src, title, onPick, onCarry, badge, busy }: {
+  name: string; meta?: string; category: PieceCategory; editor: ViewerEditor; template?: PieceTemplate; src?: string; title?: string;
+  onPick: (card: HTMLElement) => void; onCarry?: (template: PieceTemplate | null) => void; badge?: ReactNode; busy?: boolean;
 }) {
   const t = useT().viewer.edit;
-  // Built-in pieces have no picture: a symbol and their name are enough.
-  const compact = !thumbnail && !action;
   return (
-    <div className="group relative flex min-w-0 flex-col overflow-hidden rounded-xl bg-foreground/4 hover:bg-foreground/8">
-      <button
-        type="button"
-        draggable={!!template}
-        disabled={!template && !action}
-        title={title ?? (template ? `${name}. ${t.catalog.clickHint}` : name)}
-        aria-label={name}
-        className={cn("flex min-w-0 text-left select-none outline-none focus-visible:ring-2 focus-visible:ring-ring", compact ? "items-center gap-2 p-1.5" : "flex-col gap-1 p-1.5", template ? "cursor-grab active:cursor-grabbing" : "cursor-default")}
-        onClick={(e) => template && onAdd?.(template, e)}
-        onDragStart={(e) => {
-          if (!template) return e.preventDefault();
-          e.dataTransfer.setData(PIECE, JSON.stringify(template));
-          e.dataTransfer.effectAllowed = "copy";
-        }}
-      >
-        {compact ? (
-          <>
-            <Picture category={category} className="size-8" />
-            <span className="flex min-w-0 flex-col">
-              <span className="truncate text-xs font-medium">{name}</span>
-              {meta && <span className="truncate text-2xs text-muted-foreground tabular-nums">{meta}</span>}
-            </span>
-          </>
-        ) : (
-          <>
-            <Picture src={thumbnail} category={category} className="aspect-4/3 w-full" />
-            <span className="truncate px-0.5 text-xs font-medium">{name}</span>
-            {meta && <span className="-mt-1 truncate px-0.5 text-2xs text-muted-foreground tabular-nums">{meta}</span>}
-          </>
-        )}
-      </button>
-      {action && <div className="absolute top-2.5 right-2.5">{action}</div>}
-    </div>
+    <button
+      type="button"
+      draggable={!!template}
+      disabled={busy}
+      aria-busy={busy || undefined}
+      title={title ?? [name, meta, t.catalog.clickHint].filter(Boolean).join(" · ")}
+      className="group relative flex min-w-0 flex-col gap-1 rounded-xl bg-foreground/4 p-1.5 text-left select-none outline-none hover:bg-foreground/8 focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-progress aria-busy:opacity-70 data-[draggable=true]:cursor-grab data-[draggable=true]:active:cursor-grabbing"
+      data-draggable={!!template}
+      onClick={(e) => onPick(e.currentTarget)}
+      onDragStart={(e) => {
+        if (!template) return e.preventDefault();
+        e.dataTransfer.setData(PIECE, JSON.stringify(template));
+        e.dataTransfer.effectAllowed = "copy";
+        // The piece itself follows the pointer in the view, not a picture of the card.
+        if (onCarry) e.dataTransfer.setDragImage(NOTHING, 0, 0);
+        onCarry?.(template);
+      }}
+      onDragEnd={() => onCarry?.(null)}
+    >
+      <Picture editor={editor} piece={template} src={src} category={category} className="aspect-4/3 w-full" />
+      <span className="truncate px-0.5 pb-0.5 text-xs font-medium">{name}</span>
+      {(badge || busy) && (
+        <span className="absolute top-2.5 right-2.5 flex size-6 items-center justify-center rounded-full bg-popover/90 text-foreground shadow-popover [&_svg]:size-3.5">
+          {busy ? <Spinner className="size-3.5" /> : badge}
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -236,13 +283,18 @@ export function PlacedList({ viewer, state, plan, pieces, onRemove, onBrowse }: 
               const locked = editor.locked(f.id);
               const selected = state.selected === f.id;
               return (
-                <div key={f.id} data-placed-piece={f.id} ref={selected ? (row) => {
-                  if (!row || scrolledTo.current === f.id) return;
-                  scrolledTo.current = f.id;
-                  row.scrollIntoView({ block: "nearest" });
-                } : undefined} className={cn("group flex items-center gap-2 rounded-xl p-1 pr-1.5 hover:bg-foreground/6", selected && "bg-foreground/9 hover:bg-foreground/9")}>
+                <div
+                  key={f.id}
+                  data-placed-piece={f.id}
+                  ref={selected ? (row) => {
+                    if (!row || scrolledTo.current === f.id) return;
+                    scrolledTo.current = f.id;
+                    row.scrollIntoView({ block: "nearest" });
+                  } : undefined}
+                  className={cn("group flex items-center gap-2 rounded-xl p-1 pr-1.5 hover:bg-foreground/6", selected && "bg-foreground/9 hover:bg-foreground/9")}
+                >
                   <button type="button" aria-pressed={selected} onClick={() => editor.select(selected ? null : f.id)} className="flex min-w-0 flex-1 items-center gap-2 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                    <Picture src={library?.thumbnail} category={library?.category ?? FURNITURE_CATEGORY[f.type]} className="size-9" />
+                    <Picture editor={editor} piece={f} category={library?.category ?? FURNITURE_CATEGORY[f.type]} className="size-10" />
                     <span className="flex min-w-0 flex-col">
                       <span className="truncate text-xs font-medium">{pieceLabel(f, t.types, pieces)}</span>
                       <span className="truncate text-2xs text-muted-foreground tabular-nums">{dimensions(f.size ?? library?.size ?? FURNITURE_DEFAULT_SIZE[f.type])}</span>
@@ -251,7 +303,7 @@ export function PlacedList({ viewer, state, plan, pieces, onRemove, onBrowse }: 
                   {locked ? (
                     <LockIcon aria-label={t.catalog.fixed} className="size-3.5 shrink-0 text-muted-foreground" />
                   ) : (
-                    <button type="button" aria-label={`${t.remove}: ${pieceLabel(f, t.types, pieces)}`} title={t.remove} onClick={() => onRemove(f.id)} className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-foreground/8 hover:text-foreground focus-visible:opacity-100 [&_svg]:size-3.5">
+                    <button type="button" aria-label={`${t.remove}: ${pieceLabel(f, t.types, pieces)}`} title={t.remove} onClick={() => onRemove(f.id)} className="flex h-7 min-w-0 items-center justify-center rounded-lg text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-foreground/8 hover:text-foreground focus-visible:opacity-100 [&_svg]:size-3.5">
                       <Trash2Icon aria-hidden="true" />
                     </button>
                   )}
@@ -267,15 +319,54 @@ export function PlacedList({ viewer, state, plan, pieces, onRemove, onBrowse }: 
 
 type Remote = { status: "idle" } | { status: "searching"; query: string } | { status: "done"; query: string; pieces: RemotePiece[] } | { status: "failed"; query: string };
 
+/** How long typing pauses before a search goes out to the remote catalog. */
+const SEARCH_PAUSE = 450;
+
+/** Which kind of piece the add panel shows, as a menu beside its search field. */
+function CategoryMenu({ value, onChange }: { value: PieceCategory | "all"; onChange: (category: PieceCategory | "all") => void }) {
+  const t = useT().viewer.edit;
+  const Icon = value === "all" ? LayoutGridIcon : ICONS[value];
+  const name = (c: PieceCategory | "all") => (c === "all" ? t.catalog.all : t.categories[c]);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger aria-label={t.catalog.categories} data-piece-category="" className="inline-flex h-8 max-w-32 shrink-0 items-center gap-1.5 rounded-lg bg-foreground/5 px-2.5 text-xs font-medium hover:bg-foreground/9 aria-expanded:bg-foreground/9 [&_svg]:size-3.5">
+        <Icon aria-hidden="true" className="text-muted-foreground" />
+        <span className="truncate">{name(value)}</span>
+        <ChevronDownIcon aria-hidden="true" className="text-muted-foreground" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="max-h-80 w-48">
+        <DropdownMenuRadioGroup value={value} onValueChange={(next) => onChange(next as PieceCategory | "all")}>
+          {(["all", ...PIECE_CATEGORIES] as const).map((c, i) => {
+            const ItemIcon = c === "all" ? LayoutGridIcon : ICONS[c];
+            return (
+              <Fragment key={c}>
+                {i === 1 && <DropdownMenuSeparator />}
+                <DropdownMenuRadioItem closeOnClick value={c} className="gap-2 [&_svg]:size-3.5">
+                  <ItemIcon aria-hidden="true" className="text-muted-foreground" />
+                  {name(c)}
+                </DropdownMenuRadioItem>
+              </Fragment>
+            );
+          })}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 /**
- * Everything someone can add, found by name and sorted into categories: the project's own pieces,
- * the library with its pictures, built-in shapes, and a remote catalog the host can search.
+ * Everything someone can add, in one searchable grid sorted into categories: the project's own
+ * pieces, the library, built-in shapes, and what a remote catalog has for the same words. A remote
+ * piece joins the library when clicked and is placed at once.
  */
-export function AddPanel({ viewer, plan, pieces, search, add, onAdd }: {
+export function AddPanel({ viewer, plan, pieces, search, add, onAdd, onCarry }: {
   viewer: ViewerInstance; plan: Plan; pieces: Map<string, CatalogPiece>;
   search?: (query: string, signal: AbortSignal) => Promise<RemotePiece[]>;
   add?: (piece: RemotePiece) => Promise<CatalogPiece>;
-  onAdd: (template: PieceTemplate, e: MouseEvent<HTMLElement>) => void;
+  /** Places a piece; `card` is the element clicked, which locates the view it goes into. */
+  onAdd: (template: PieceTemplate, card: HTMLElement) => void;
+  /** The piece being dragged out of the tray, or null when the drag ends. */
+  onCarry: (template: PieceTemplate | null) => void;
 }) {
   const t = useT().viewer.edit;
   const dimensions = useDimensions();
@@ -283,8 +374,8 @@ export function AddPanel({ viewer, plan, pieces, search, add, onAdd }: {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<PieceCategory | "all">("all");
   const [remote, setRemote] = useState<Remote>({ status: "idle" });
-  const [searching, setSearching] = useState<AbortController | null>(null);
-  const [adding, setAdding] = useState<Record<string, "adding" | CatalogPiece | "failed">>({});
+  const [adding, setAdding] = useState<Record<string, "adding" | "failed">>({});
+  const pending = useRef<{ timer?: ReturnType<typeof setTimeout>; controller?: AbortController }>({});
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const matches = (text: string, of: PieceCategory) => (category === "all" || of === category) && words.every((word) => text.toLowerCase().includes(word));
 
@@ -298,20 +389,22 @@ export function AddPanel({ viewer, plan, pieces, search, add, onAdd }: {
     if (!own.has(key)) own.set(key, { template, category: library?.category ?? FURNITURE_CATEGORY[f.type], label: pieceLabel(f, t.types, pieces) });
   }
   const ownShown = [...own].filter(([, item]) => matches(`${item.label} ${t.categories[item.category]}`, item.category));
-  const library = editor.catalog().models.map((m) => {
+  const models = editor.catalog().models;
+  const library = models.map((m) => {
     const known = pieces.get(m.id);
-    return { ...m, name: known?.name ?? humanize(m.id), category: known?.category ?? pieceCategory(m.id), thumbnail: known?.thumbnail, source: known?.source, credit: known?.credit };
+    return { ...m, name: known?.name ?? humanize(m.id), category: known?.category ?? pieceCategory(m.id), source: known?.source, credit: known?.credit };
   }).filter((m) => matches(`${m.name} ${m.id} ${t.categories[m.category]} ${m.source ?? ""}`, m.category));
   const shapes = PLACEABLE.filter((type) => matches(`${t.types[type]} ${t.categories[FURNITURE_CATEGORY[type]]}`, FURNITURE_CATEGORY[type]));
-  const inLibrary = new Map(editor.catalog().models.map((m) => [m.id, m]));
+  const inLibrary = new Map(models.map((m) => [m.id, m]));
 
-  // The remote catalog is indexed in English, so a category alone searches by its English key.
-  const remoteQuery = query.trim() || (category !== "all" && category !== "other" ? category : "");
-  async function runSearch() {
-    if (!search || !remoteQuery) return;
-    searching?.abort();
+  /** Searches the remote catalog now, for the typed words or, without any, the category's English key. */
+  async function searchRemote(text: string, of: PieceCategory | "all") {
+    clearTimeout(pending.current.timer);
+    pending.current.controller?.abort();
+    const remoteQuery = text.trim() || (of !== "all" && of !== "other" ? of : "");
+    if (!search || remoteQuery.length < 2) return setRemote({ status: "idle" });
     const controller = new AbortController();
-    setSearching(controller);
+    pending.current.controller = controller;
     setRemote({ status: "searching", query: remoteQuery });
     try {
       const found = await search(remoteQuery, controller.signal);
@@ -320,120 +413,91 @@ export function AddPanel({ viewer, plan, pieces, search, add, onAdd }: {
       if (!controller.signal.aborted) setRemote({ status: "failed", query: remoteQuery });
     }
   }
-  async function bring(piece: RemotePiece) {
+  function type(text: string) {
+    setQuery(text);
+    clearTimeout(pending.current.timer);
+    pending.current.timer = setTimeout(() => void searchRemote(text, category), SEARCH_PAUSE);
+  }
+  function choose(of: PieceCategory | "all") {
+    setCategory(of);
+    void searchRemote(query, of);
+  }
+  /** A remote piece goes into the library first, then into the room like any other piece. */
+  async function bring(piece: RemotePiece, card: HTMLElement) {
     if (!add) return;
     setAdding((current) => ({ ...current, [piece.key]: "adding" }));
     try {
       const added = await add(piece);
       await editor.reloadCatalog();
-      setAdding((current) => ({ ...current, [piece.key]: added }));
+      const model = editor.catalog().models.find((m) => m.id === added.id);
+      setAdding(({ [piece.key]: _done, ...rest }) => rest);
+      if (model) onAdd({ type: "box", model: model.path, size: model.size }, card);
     } catch {
       setAdding((current) => ({ ...current, [piece.key]: "failed" }));
     }
   }
-  const remotePieces = remote.status === "done" ? remote.pieces.filter((p) => category === "all" || p.category === category) : [];
-  const nothing = !ownShown.length && !library.length && !shapes.length;
+  // Pieces already in the library show there; the remote list keeps the rest.
+  const remotePieces = remote.status === "done" ? remote.pieces.filter((p) => (category === "all" || p.category === category) && !(p.libraryId && inLibrary.has(p.libraryId))) : [];
+  const nothing = !ownShown.length && !library.length && !shapes.length && remote.status !== "searching" && !remotePieces.length;
 
   return (
     <>
-      <search className="mb-2 block px-1">
+      <search className="mb-3 flex gap-1.5 px-1">
         <form
-          className="relative"
+          className="relative min-w-0 flex-1"
           onSubmit={(e) => {
             e.preventDefault();
-            void runSearch();
+            void searchRemote(query, category);
           }}
         >
           <SearchIcon aria-hidden="true" className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t.catalog.search} aria-label={t.catalog.search} className="h-8 pl-8 text-xs md:text-xs" />
+          <Input type="search" value={query} onChange={(e) => type(e.target.value)} placeholder={search ? t.catalog.searchEverywhere : t.catalog.search} aria-label={t.catalog.search} className="h-8 pl-8 text-xs md:text-xs" />
         </form>
+        <CategoryMenu value={category} onChange={choose} />
       </search>
-      <fieldset className="mb-2 flex flex-wrap gap-1 border-0 px-1">
-        <legend className="sr-only">{t.catalog.categories}</legend>
-        {(["all", ...PIECE_CATEGORIES] as const).map((c) => (
-          <button key={c} type="button" aria-pressed={category === c} onClick={() => setCategory(c)} className="inline-flex h-7 shrink-0 items-center rounded-lg px-2 text-xs font-medium whitespace-nowrap text-muted-foreground hover:bg-foreground/7 hover:text-foreground aria-pressed:bg-foreground/11 aria-pressed:text-foreground">
-            {c === "all" ? t.catalog.all : t.categories[c]}
-          </button>
-        ))}
-      </fieldset>
-      <p className="px-1 pb-2 text-2xs text-muted-foreground">{t.catalog.clickHint}</p>
       {!!library.length && (
-        <TrayGroup title={t.groups.library}>
-          {library.map((m) => (
-            <PieceCard key={m.id} name={m.name} category={m.category} thumbnail={m.thumbnail} meta={[dimensions(m.size), m.source].filter(Boolean).join(" · ")} title={m.credit ? `${m.name}. ${m.credit}` : undefined} template={{ type: "box", model: m.path, size: m.size }} onAdd={onAdd} />
-          ))}
+        <TrayGroup title={category === "all" ? t.groups.library : t.categories[category]}>
+          {library.map((m) => {
+            const template: PieceTemplate = { type: "box", model: m.path, size: m.size };
+            return <PieceCard key={m.id} name={m.name} category={m.category} editor={editor} template={template} meta={dimensions(m.size)} title={m.credit ? `${m.name}. ${m.credit}` : undefined} onPick={(card) => onAdd(template, card)} onCarry={onCarry} />;
+          })}
         </TrayGroup>
       )}
       {!!ownShown.length && (
         <TrayGroup title={t.groups.project}>
           {ownShown.map(([key, item]) => (
-            <PieceCard key={key} name={item.label} category={item.category} thumbnail={item.template.model ? pieces.get(modelName(item.template)!)?.thumbnail : undefined} template={item.template} onAdd={onAdd} meta={dimensions(item.template.size ?? (item.template.model ? pieces.get(modelName(item.template)!)?.size : FURNITURE_DEFAULT_SIZE[item.template.type]))} />
+            <PieceCard key={key} name={item.label} category={item.category} editor={editor} template={item.template} onPick={(card) => onAdd(item.template, card)} onCarry={onCarry} meta={dimensions(item.template.size ?? (item.template.model ? inLibrary.get(modelName(item.template)!)?.size : FURNITURE_DEFAULT_SIZE[item.template.type]))} />
           ))}
         </TrayGroup>
       )}
       {!!shapes.length && (
         <TrayGroup title={t.groups.pieces}>
           {shapes.map((type) => (
-            <TrayItem key={type} kind={PIECE} data={{ type } satisfies PieceTemplate} label={t.types[type]} onClick={(e) => onAdd({ type }, e)} title={`${t.types[type]}. ${t.catalog.clickHint}`} swatch={<Picture category={FURNITURE_CATEGORY[type]} className="size-6 rounded-md [&_svg]:size-3.5" />} />
+            <PieceCard key={type} name={t.types[type]} category={FURNITURE_CATEGORY[type]} editor={editor} template={{ type }} onPick={(card) => onAdd({ type }, card)} onCarry={onCarry} meta={dimensions(FURNITURE_DEFAULT_SIZE[type])} />
           ))}
         </TrayGroup>
       )}
-      {nothing && <p className="px-1 pb-3 text-xs text-muted-foreground">{t.catalog.noMatches}</p>}
-      {search && (
-        <section aria-label={t.catalog.remote} className="border-t border-border pt-3 pb-1">
-          <h3 className="px-1 pb-1 text-2xs font-medium text-muted-foreground">{t.catalog.remote}</h3>
-          <p className="px-1 pb-2 text-2xs text-muted-foreground">{t.catalog.remoteNote}</p>
-          <button
-            type="button"
-            disabled={!remoteQuery || remote.status === "searching"}
-            onClick={() => void runSearch()}
-            className="mx-1 mb-2 inline-flex h-7 max-w-[calc(100%-0.5rem)] items-center gap-1.5 rounded-lg bg-foreground/7 px-2.5 text-xs font-medium hover:bg-foreground/11 disabled:opacity-50 [&_svg]:size-3.5"
-          >
-            {remote.status === "searching" ? <Spinner className="size-3.5" /> : <SearchIcon aria-hidden="true" />}
-            <span className="truncate">{remoteQuery ? t.catalog.searchRemote(remoteQuery) : t.catalog.typeToSearch}</span>
-          </button>
-          {remote.status === "failed" && <p role="status" className="px-1 pb-2 text-2xs text-destructive">{t.catalog.remoteFailed}</p>}
-          {remote.status === "done" && !remotePieces.length && <p role="status" className="px-1 pb-2 text-2xs text-muted-foreground">{t.catalog.remoteNone(remote.query)}</p>}
-          {!!remotePieces.length && (
-            <div className="grid grid-cols-2 gap-1.5">
-              {remotePieces.map((piece) => {
-                const state = adding[piece.key];
-                const added = typeof state === "object" ? state : undefined;
-                const id = added?.id ?? piece.libraryId;
-                const placeable = id ? inLibrary.get(id) : undefined;
-                return (
-                  <PieceCard
-                    key={piece.key}
-                    name={piece.name}
-                    category={piece.category}
-                    thumbnail={added?.thumbnail ?? piece.thumbnail}
-                    meta={[dimensions(piece.size), piece.license].filter(Boolean).join(" · ")}
-                    template={placeable ? { type: "box", model: placeable.path, size: placeable.size } : undefined}
-                    title={placeable ? `${piece.name}. ${t.catalog.clickHint}` : `${piece.name}. ${piece.source}${piece.license ? `, ${piece.license}` : ""}`}
-                    onAdd={onAdd}
-                    action={
-                      placeable ? (
-                        <span title={t.catalog.inLibrary} className="flex size-6 items-center justify-center rounded-full bg-popover/90 text-foreground shadow-popover [&_svg]:size-3.5"><CheckIcon aria-label={t.catalog.inLibrary} /></span>
-                      ) : (
-                        <button
-                          type="button"
-                          disabled={state === "adding"}
-                          aria-label={`${t.catalog.addToLibrary}: ${piece.name}`}
-                          title={state === "failed" ? t.catalog.addFailed : t.catalog.addToLibrary}
-                          onClick={() => void bring(piece)}
-                          className={cn("flex size-6 items-center justify-center rounded-full bg-popover/90 shadow-popover hover:bg-popover [&_svg]:size-3.5", state === "failed" ? "text-destructive" : "text-foreground")}
-                        >
-                          {state === "adding" ? <Spinner className="size-3.5" /> : <DownloadIcon aria-hidden="true" />}
-                        </button>
-                      )
-                    }
-                  />
-                );
-              })}
-            </div>
-          )}
-        </section>
+      {search && remote.status !== "idle" && (
+        <TrayGroup title={t.catalog.remote} aside={remote.status === "searching" && <Spinner className="size-3" />}>
+          {remote.status === "failed" && <p role="status" className="col-span-2 px-1 text-2xs text-destructive">{t.catalog.remoteFailed}</p>}
+          {remote.status === "done" && !remotePieces.length && <p role="status" className="col-span-2 px-1 text-2xs text-muted-foreground">{t.catalog.remoteNone(remote.query)}</p>}
+          {remotePieces.map((piece) => (
+            <PieceCard
+              key={piece.key}
+              name={piece.name}
+              category={piece.category}
+              editor={editor}
+              src={piece.thumbnail}
+              meta={[dimensions(piece.size), piece.license].filter(Boolean).join(" · ")}
+              title={adding[piece.key] === "failed" ? t.catalog.addFailed : `${piece.name}. ${t.catalog.remoteHint}`}
+              busy={adding[piece.key] === "adding"}
+              badge={<DownloadIcon aria-label={t.catalog.notInLibrary} className={adding[piece.key] === "failed" ? "text-destructive" : undefined} />}
+              onPick={(card) => void bring(piece, card)}
+            />
+          ))}
+        </TrayGroup>
       )}
+      {nothing && remote.status !== "done" && <p className="px-1 pb-3 text-xs text-muted-foreground">{t.catalog.noMatches}</p>}
     </>
   );
 }
