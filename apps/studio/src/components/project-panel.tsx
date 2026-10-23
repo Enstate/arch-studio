@@ -1,5 +1,6 @@
 import { threadTitle } from "../lib/thread-title";
 import { StudioFailure } from "./studio-failure";
+import { referenceExtensions } from "@arch/project";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@arch/ui/components/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@arch/ui/components/popover";
 import { Spinner } from "@arch/ui/components/spinner";
@@ -73,7 +74,7 @@ export function ProjectPanel(props: {
         <div className="flex h-9 items-center gap-2.5 px-2.5 text-ui"><ProjectBadge name={props.projectName} /><span className="min-w-0 flex-1 truncate font-medium">{props.projectName}</span>{props.clientName && <span className="max-w-32 truncate text-xs text-muted-foreground">{props.clientName}</span>}</div>
         <Row icon={<FolderOpenIcon />} label={t.openFolder} onClick={props.reveal} />
         <Row icon={add.isPending ? <Spinner /> : <PlusIcon />} label={add.isPending ? t.addingFiles : t.addFiles} onClick={() => input.current?.click()} disabled={add.isPending} />
-        <input ref={input} type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.svg,.txt,.md,.json" className="sr-only" tabIndex={-1} onChange={event => {const files = [...event.target.files ?? []]; event.target.value = ""; if (files.length) add.mutate(files);}} />
+        <input ref={input} type="file" multiple accept={referenceExtensions.join(",")} className="sr-only" tabIndex={-1} onChange={event => {const files = [...event.target.files ?? []]; event.target.value = ""; if (files.length) add.mutate(files);}} />
         {add.error && <StudioFailure className="px-2.5 pb-1 text-xs text-destructive" error={add.error} />}
       </Section>
       <Section>

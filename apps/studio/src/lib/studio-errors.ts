@@ -1,8 +1,9 @@
+import { failureCode, redactDiagnostics } from "./diagnostics";
 import { type Locale, studioText } from "./messages";
 
 const en = {
   generic: "That didn't work. Try again.", details: "Technical details",
-  ARCH_REFERENCE_FILES: "Choose PDF, PNG, JPEG, WebP, SVG, text, Markdown or JSON files. Each file must be between 1 byte and 100 MiB.",
+  ARCH_REFERENCE_FILES: "Choose PDF, PNG, JPEG, WebP, SVG, text, Markdown or JSON files, or DXF, CSV and GeoJSON survey data. Each file must be between 1 byte and 100 MiB.",
   ARCH_ATTACHMENTS: "Images must be between 1 byte and 10 MiB. PDF, SVG, text, Markdown and JSON files can be up to 100 MiB.",
   ARCH_IMAGE_LIMIT: "Attach up to 8 images per round.",
   ARCH_SOURCE_REQUIRED: "Open a project folder first.",
@@ -28,12 +29,22 @@ const en = {
   ARCH_EXPORT_NEEDS_VERSION: "Create a version before exporting this project.",
   ARCH_PACKAGE_EXPIRED: "This file was opened too long ago. Choose it again.",
   ARCH_PROJECT_BUSY: "Studio is still saving or updating this project. Try again in a moment.",
+  ARCH_RESTORE_BUSY: "A round or build is working in this project. Restore it when that finishes.",
+  ARCH_NO_SAVED_VERSION: "This project has no saved version to go back to yet.",
+  ARCH_PROJECT_FILE: "A file in the project folder isn't valid.",
+  copyDetails: "Copy details", copiedDetails: "Copied",
+  fileInvalid: "The file {file} isn't valid: {problem}.",
+  fileTooLong: "{field} is longer than {max} characters", fileTooMany: "{field} has more than {max} entries",
+  fileEmpty: "{field} is empty", fileMissing: "{field} is missing", fileUnexpected: "{field} doesn't belong there",
+  fileNotJson: "it can't be read as JSON", fileBadValue: "{field} has a value Studio can't use",
+  ARCH_PROJECT_WORKING: "The agent is working on this project. Change this when it finishes.",
+  ARCH_LOCATION_UNAVAILABLE: "Couldn't reach OpenStreetMap. Paste the coordinates or a Google Maps link instead.",
 };
 const copy: Record<Locale, Record<keyof typeof en, string>> = {
   en,
   de: {
     generic: "Das hat nicht geklappt. Versuch es noch einmal.", details: "Technische Details",
-    ARCH_REFERENCE_FILES: "Wähle PDF-, PNG-, JPEG-, WebP-, SVG-, Text-, Markdown- oder JSON-Dateien. Jede Datei muss zwischen 1 Byte und 100 MiB groß sein.",
+    ARCH_REFERENCE_FILES: "Wähle PDF-, PNG-, JPEG-, WebP-, SVG-, Text-, Markdown- oder JSON-Dateien oder Vermessungsdaten als DXF, CSV oder GeoJSON. Jede Datei muss zwischen 1 Byte und 100 MiB groß sein.",
     ARCH_ATTACHMENTS: "Bilder müssen zwischen 1 Byte und 10 MiB groß sein. PDF-, SVG-, Text-, Markdown- und JSON-Dateien dürfen bis zu 100 MiB groß sein.",
     ARCH_IMAGE_LIMIT: "Hänge bis zu 8 Bilder pro Runde an.",
     ARCH_SOURCE_REQUIRED: "Öffne zuerst einen Projektordner.",
@@ -59,10 +70,20 @@ const copy: Record<Locale, Record<keyof typeof en, string>> = {
     ARCH_EXPORT_NEEDS_VERSION: "Erstelle eine Version, bevor du dieses Projekt exportierst.",
     ARCH_PACKAGE_EXPIRED: "Diese Datei wurde vor zu langer Zeit geöffnet. Wähle sie noch einmal aus.",
     ARCH_PROJECT_BUSY: "Studio speichert oder aktualisiert dieses Projekt gerade. Versuch es gleich noch einmal.",
+    ARCH_RESTORE_BUSY: "In diesem Projekt läuft gerade eine Runde oder ein Build. Stelle es wieder her, sobald das fertig ist.",
+    ARCH_NO_SAVED_VERSION: "Dieses Projekt hat noch keine gespeicherte Version, zu der es zurückkehren kann.",
+    ARCH_PROJECT_FILE: "Eine Datei im Projektordner ist ungültig.",
+    copyDetails: "Details kopieren", copiedDetails: "Kopiert",
+    fileInvalid: "Die Datei {file} ist ungültig: {problem}.",
+    fileTooLong: "{field} hat mehr als {max} Zeichen", fileTooMany: "{field} hat mehr als {max} Einträge",
+    fileEmpty: "{field} ist leer", fileMissing: "{field} fehlt", fileUnexpected: "{field} gehört nicht hierher",
+    fileNotJson: "sie lässt sich nicht als JSON lesen", fileBadValue: "{field} hat einen Wert, den Studio nicht verwenden kann",
+    ARCH_PROJECT_WORKING: "Der Agent arbeitet gerade an diesem Projekt. Ändere das, wenn er fertig ist.",
+    ARCH_LOCATION_UNAVAILABLE: "OpenStreetMap ist nicht erreichbar. Füge stattdessen die Koordinaten oder einen Google-Maps-Link ein.",
   },
   es: {
     generic: "No se pudo completar la acción. Inténtalo de nuevo.", details: "Detalles técnicos",
-    ARCH_REFERENCE_FILES: "Elige archivos PDF, PNG, JPEG, WebP, SVG, texto, Markdown o JSON. Cada archivo debe tener entre 1 byte y 100 MiB.",
+    ARCH_REFERENCE_FILES: "Elige archivos PDF, PNG, JPEG, WebP, SVG, texto, Markdown o JSON, o levantamientos en DXF, CSV o GeoJSON. Cada archivo debe tener entre 1 byte y 100 MiB.",
     ARCH_ATTACHMENTS: "Las imágenes deben tener entre 1 byte y 10 MiB. Los archivos PDF, SVG, texto, Markdown y JSON pueden tener hasta 100 MiB.",
     ARCH_IMAGE_LIMIT: "Adjunta hasta 8 imágenes por ronda.",
     ARCH_SOURCE_REQUIRED: "Abre primero una carpeta de proyecto.",
@@ -88,10 +109,20 @@ const copy: Record<Locale, Record<keyof typeof en, string>> = {
     ARCH_EXPORT_NEEDS_VERSION: "Crea una versión antes de exportar este proyecto.",
     ARCH_PACKAGE_EXPIRED: "Este archivo se abrió hace demasiado tiempo. Vuelve a elegirlo.",
     ARCH_PROJECT_BUSY: "Studio todavía está guardando o actualizando este proyecto. Inténtalo de nuevo en un momento.",
+    ARCH_RESTORE_BUSY: "Hay una ronda o una generación en curso en este proyecto. Restáuralo cuando termine.",
+    ARCH_NO_SAVED_VERSION: "Este proyecto aún no tiene una versión guardada a la que volver.",
+    ARCH_PROJECT_FILE: "Un archivo de la carpeta del proyecto no es válido.",
+    copyDetails: "Copiar detalles", copiedDetails: "Copiado",
+    fileInvalid: "El archivo {file} no es válido: {problem}.",
+    fileTooLong: "{field} tiene más de {max} caracteres", fileTooMany: "{field} tiene más de {max} elementos",
+    fileEmpty: "{field} está vacío", fileMissing: "falta {field}", fileUnexpected: "{field} no debería estar ahí",
+    fileNotJson: "no se puede leer como JSON", fileBadValue: "{field} tiene un valor que Studio no puede usar",
+    ARCH_PROJECT_WORKING: "El agente está trabajando en este proyecto. Cámbialo cuando termine.",
+    ARCH_LOCATION_UNAVAILABLE: "No se pudo conectar con OpenStreetMap. Pega las coordenadas o un enlace de Google Maps.",
   },
   pt: {
     generic: "Não foi possível concluir a ação. Tente novamente.", details: "Detalhes técnicos",
-    ARCH_REFERENCE_FILES: "Escolha arquivos PDF, PNG, JPEG, WebP, SVG, texto, Markdown ou JSON. Cada arquivo deve ter entre 1 byte e 100 MiB.",
+    ARCH_REFERENCE_FILES: "Escolha arquivos PDF, PNG, JPEG, WebP, SVG, texto, Markdown ou JSON, ou levantamentos em DXF, CSV ou GeoJSON. Cada arquivo deve ter entre 1 byte e 100 MiB.",
     ARCH_ATTACHMENTS: "As imagens devem ter entre 1 byte e 10 MiB. Arquivos PDF, SVG, texto, Markdown e JSON podem ter até 100 MiB.",
     ARCH_IMAGE_LIMIT: "Anexe até 8 imagens por rodada.",
     ARCH_SOURCE_REQUIRED: "Abra primeiro uma pasta de projeto.",
@@ -117,17 +148,62 @@ const copy: Record<Locale, Record<keyof typeof en, string>> = {
     ARCH_EXPORT_NEEDS_VERSION: "Crie uma versão antes de exportar este projeto.",
     ARCH_PACKAGE_EXPIRED: "Este arquivo foi aberto há muito tempo. Escolha-o novamente.",
     ARCH_PROJECT_BUSY: "O Studio ainda está salvando ou atualizando este projeto. Tente novamente em instantes.",
+    ARCH_RESTORE_BUSY: "Há uma rodada ou geração em andamento neste projeto. Restaure quando terminar.",
+    ARCH_NO_SAVED_VERSION: "Este projeto ainda não tem uma versão salva para a qual voltar.",
+    ARCH_PROJECT_FILE: "Um arquivo da pasta do projeto não é válido.",
+    copyDetails: "Copiar detalhes", copiedDetails: "Copiado",
+    fileInvalid: "O arquivo {file} não é válido: {problem}.",
+    fileTooLong: "{field} tem mais de {max} caracteres", fileTooMany: "{field} tem mais de {max} itens",
+    fileEmpty: "{field} está vazio", fileMissing: "falta {field}", fileUnexpected: "{field} não deveria estar aí",
+    fileNotJson: "não dá para ler como JSON", fileBadValue: "{field} tem um valor que o Studio não consegue usar",
+    ARCH_PROJECT_WORKING: "O agente está trabalhando neste projeto. Mude isso quando ele terminar.",
+    ARCH_LOCATION_UNAVAILABLE: "Não foi possível acessar o OpenStreetMap. Cole as coordenadas ou um link do Google Maps.",
   },
 };
 
+type FileIssue = {path?: string; code?: string; origin?: string; maximum?: number; minimum?: number; keys?: string[]; missing?: boolean};
+/** "The file arch.context.json isn't valid: driver is longer than 160 characters." */
+function fileProblem(message: string, t: typeof en) {
+  let value: {file?: unknown; issues?: unknown};
+  try { value = JSON.parse(message) as typeof value; } catch { return null; }
+  if (typeof value.file !== "string" || !Array.isArray(value.issues) || !value.issues.length) return null;
+  const file = value.file;
+  const reasons = (value.issues as FileIssue[]).slice(0, 3).map(issue => {
+    const fill = (text: string, field = issue.path || file) => text.replace("{field}", field).replace("{max}", String(issue.maximum));
+    if (issue.code === "invalid_json") return t.fileNotJson;
+    if (issue.code === "too_big" && issue.maximum !== undefined) return fill(issue.origin === "array" ? t.fileTooMany : t.fileTooLong);
+    if (issue.code === "too_small" && (issue.minimum ?? 0) <= 1) return fill(t.fileEmpty);
+    if (issue.missing) return fill(t.fileMissing);
+    if (issue.code === "unrecognized_keys" && issue.keys?.length) return fill(t.fileUnexpected, issue.keys.map(key => issue.path ? `${issue.path}.${key}` : key).join(", "));
+    return fill(t.fileBadValue);
+  });
+  return t.fileInvalid.replace("{file}", file).replace("{problem}", reasons.join("; "));
+}
+
 export function studioFailure(error: {message: string}, locale: Locale) {
   const t = copy[locale];
-  if (error.message === "ARCH_SESSION_REQUIRED") return {message: studioText[locale].sessionRequired, detailsLabel: t.details, details: undefined};
+  const labels = {detailsLabel: t.details, copyLabel: t.copyDetails, copiedLabel: t.copiedDetails};
+  if (error.message === "ARCH_SESSION_REQUIRED") return {message: studioText[locale].sessionRequired, ...labels, details: undefined};
   // Validation errors wrap a code in a JSON issues array. Match complete quoted codes only.
-  const code = Object.hasOwn(en, error.message) ? error.message : error.message.match(/"(ARCH_[A-Z_]+)"/)?.[1];
-  return {
-    message: code && Object.hasOwn(t, code) ? t[code as keyof typeof en] : t.generic,
-    detailsLabel: t.details,
-    details: code && Object.hasOwn(t, code) ? undefined : error.message,
-  };
+  const code = failureCode(error.message);
+  if (code === "ARCH_PROJECT_FILE") return {message: fileProblem(error.message, t) ?? t.ARCH_PROJECT_FILE, ...labels, details: undefined};
+  const known = !!code && Object.hasOwn(t, code);
+  return {message: known ? t[code as keyof typeof en] : t.generic, ...labels, details: known ? undefined : error.message};
+}
+
+/** What "Copy details" puts on the clipboard: the message and its code, never URLs or tokens. */
+export function failureDetails(error: {message: string; name?: string}, locale: Locale) {
+  return [
+    studioFailure(error, locale).message,
+    `Code: ${failureCode(error.message) ?? "none"}`,
+    `Error: ${error.name || "Error"}`,
+    `Message: ${redactDiagnostics(error.message).slice(0, 4000)}`,
+    `Time: ${new Date().toISOString()}`,
+  ].join("\n");
+}
+
+/** One line for surfaces that show only text, such as the viewer's notice. Unknown failures keep their own words. */
+export function failureLine(error: unknown, locale: Locale) {
+  const failure = studioFailure(error instanceof Error ? error : new Error(String(error)), locale);
+  return failure.details ? `${failure.message} (${redactDiagnostics(failure.details).slice(0, 200)})` : failure.message;
 }

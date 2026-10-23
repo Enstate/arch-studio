@@ -596,8 +596,12 @@ export async function buildFurniture(
       // Walk-through: rugs, worktop fittings, slim lamps, and anything hung or standing on
       // other furniture. Their bounding boxes are mostly air and would block doorways.
       // A roof's bounding box would wall in the whole storey; the walker meets the ceilings instead.
-      const passable = f.roof || ['rug', 'hob', 'sink', 'floor-lamp', 'plant'].includes(f.type) || (f.elevation ?? DEFAULT_ELEVATION[f.type] ?? 0) > 0.3;
-      obj.userData = { kind: 'furniture', id: f.id, type: f.type, size, collide: !passable, loose: !f.roof && !isFixture(f), roof: !!f.roof, ...(f.designOptions && { designOptions: f.designOptions }) };
+      // Ground collides as its own surface (see buildHouse), never as a box.
+      const passable = f.roof || f.ground || ['rug', 'hob', 'sink', 'floor-lamp', 'plant'].includes(f.type) || (f.elevation ?? DEFAULT_ELEVATION[f.type] ?? 0) > 0.3;
+      obj.userData = {
+        kind: 'furniture', id: f.id, type: f.type, size, collide: !passable, loose: !f.roof && !f.ground && !isFixture(f), roof: !!f.roof,
+        ...(f.ground && { ground: true }), ...(f.designOptions && { designOptions: f.designOptions }),
+      };
       group.add(obj);
     }),
   );

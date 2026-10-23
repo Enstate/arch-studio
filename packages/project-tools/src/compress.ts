@@ -12,6 +12,49 @@ export interface ModelCompression {
   after: number;
 }
 
+/** glTF extensions the build cannot decode, with what they compress. */
+const unreadableExtensions: Record<string, string> = {
+  KHR_draco_mesh_compression: "Draco mesh compression",
+  KHR_texture_basisu: "Basis Universal (KTX2) textures",
+};
+
+/** The extensions a .glb or .gltf file declares, read from its JSON alone. */
+function declaredExtensions(bytes: Buffer, binary: boolean): string[] {
+  let json: unknown;
+  try {
+    if (binary) {
+      if (bytes.length < 20 || bytes.readUInt32LE(0) !== 0x46546c67 || bytes.readUInt32LE(16) !== 0x4e4f534a) return [];
+      json = JSON.parse(bytes.subarray(20, 20 + bytes.readUInt32LE(12)).toString("utf8"));
+    } else json = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    return [];
+  }
+  if (!json || typeof json !== "object") return [];
+  const { extensionsUsed, extensionsRequired } = json as { extensionsUsed?: unknown; extensionsRequired?: unknown };
+  return [...(Array.isArray(extensionsUsed) ? extensionsUsed : []), ...(Array.isArray(extensionsRequired) ? extensionsRequired : [])].filter((name): name is string => typeof name === "string");
+}
+
+/**
+ * Rejects models in an artifact folder that use Draco or Basis compression, naming each file and
+ * the fix. The build cannot read them, and it compresses plain models itself.
+ */
+export async function requireReadableModels(artifact: string): Promise<void> {
+  const problems: string[] = [];
+  const walk = async (directory: string) => {
+    for (const entry of (await fs.readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) await walk(file);
+      else if (entry.isFile() && /\.(glb|gltf)$/i.test(entry.name)) {
+        const used = [...new Set(declaredExtensions(await fs.readFile(file), /\.glb$/i.test(entry.name)))].filter(name => name in unreadableExtensions);
+        if (used.length) problems.push(`${path.relative(artifact, file).split(path.sep).join("/")} uses ${used.map(name => `${unreadableExtensions[name]} (${name})`).join(" and ")}`);
+      }
+    }
+  };
+  await walk(artifact);
+  if (problems.length)
+    throw new Error(`The build cannot read compressed models: ${problems.join("; ")}. Export each one again without Draco or KTX2/Basis compression, as a plain GLB with PNG, JPEG or WebP textures, and keep it uncompressed in assets/. The build compresses models with meshopt itself.`);
+}
+
 /**
  * Compresses the binary glTF models a generator wrote into an artifact folder: shared data merged,
  * unused data dropped, vertices welded and the geometry meshopt-compressed, which the viewer decodes.

@@ -1,6 +1,7 @@
 import { threadTitle } from "../lib/thread-title";
 import { StudioFailure } from "./studio-failure";
-import { studioFailure } from "../lib/studio-errors";
+import { failureLine } from "../lib/studio-errors";
+import { ProjectRecovery } from "./project-recovery";
 import type { ReviewNote } from "@arch/project";
 import { ArchMark } from "@arch/ui/components/arch-logo";
 import { Button } from "@arch/ui/components/button";
@@ -28,12 +29,14 @@ import { SourceSetup } from "./source-setup";
 import { IntakeOverview, WorkPlan } from "./intake-overview";
 import { AddFiles, ProjectFiles, projectFiles } from "./project-files";
 import { DesktopUpdates } from "./desktop-updates";
-import { SettingsNav, SettingsPage } from "./settings";
+import { AgentSetupCard, SettingsNav, SettingsPage } from "./settings";
 import { closeSettings, openSettings, useSettingsSection } from "../lib/settings";
 import { dismissOpenedProjectFile, useOpenedProjectFile } from "../lib/opened-project-file";
+import { saveComposerDraft } from "../lib/composer-draft";
 import { NewProject } from "./new-project";
 import { Rounds, branchVersions, useRoundAgent, versionChange } from "./rounds";
 import { ProjectHome } from "./project-home";
+import { ProjectSetup } from "./project-setup";
 import { OpenProject, ShareProject } from "./share-project";
 import { Compare } from "./compare";
 import { ProjectBadge, type ThreadActionHandler, ThreadList } from "./thread-sidebar";
@@ -54,8 +57,6 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
   const threads = useQuery({queryKey: ["studio-threads"], queryFn: () => threadList(), refetchInterval: 2000});
   // `home` opens the project itself rather than one of its conversations.
   const [selection, setSelection] = useState<{threadId?: string; projectId?: string; home?: boolean}>({});
-  // A conversation started from a suggestion opens with that request in its composer.
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sections, setSections] = useState<Record<string, Section>>({});
   const [filter, setFilter] = useState<Filter>({kind: "all"});
   const [search, setSearch] = useState("");
@@ -85,11 +86,10 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
   const setSection = (value: Section) => setSections(current => ({...current, [sectionKey]: value}));
   const visit = (target: StudioThread | undefined) => {if (target) void updateThread({data: {projectId: target.projectId, threadId: target.id, action: {kind: "visit"}}});};
   // Leaving a thread marks what you saw there as read, as does opening one.
-  const select = (next: StudioThread) => {if (thread?.id !== next.id) {visit(thread); forgetDraft(thread);} visit(next); setSelection({threadId: next.id}); setMobileOpen(false);};
-  const forgetDraft = (left?: StudioThread) => {if (left && left.id in drafts) setDrafts(current => Object.fromEntries(Object.entries(current).filter(([id]) => id !== left.id)));};
-  const openHome = (projectId: string) => {visit(thread); forgetDraft(thread); setSelection({projectId, home: true}); setSections(current => ({...current, [projectId]: "intake"})); setMobileOpen(false);};
+  const select = (next: StudioThread) => {if (thread?.id !== next.id) visit(thread); visit(next); setSelection({threadId: next.id}); setMobileOpen(false);};
+  const openHome = (projectId: string) => {visit(thread); setSelection({projectId, home: true}); setSections(current => ({...current, [projectId]: "intake"})); setMobileOpen(false);};
   const act = useMutation({mutationFn: ({target, action}: {target: StudioThread; action: Exclude<Parameters<ThreadActionHandler>[1], {kind: "newThread"}>}) => updateThread({data: {projectId: target.projectId, threadId: target.id, action}}), onSuccess: () => queryClient.invalidateQueries({queryKey: ["studio-threads"]})});
-  const create = useMutation({mutationFn: ({draft: _draft, ...input}: {projectId: string; branch?: string; fromCheckpoint?: string; draft?: string}) => createThread({data: input}), onSuccess: async (value, input) => {await queryClient.invalidateQueries({queryKey: ["studio-threads"]}); visit(thread); forgetDraft(thread); if (input.draft) setDrafts(current => ({...current, [value.threadId]: input.draft!})); setSelection({threadId: value.threadId, projectId: input.projectId}); setSections(current => ({...current, [value.threadId]: "rounds"}));}});
+  const create = useMutation({mutationFn: ({draft: _draft, ...input}: {projectId: string; branch?: string; fromCheckpoint?: string; draft?: string}) => createThread({data: input}), onSuccess: async (value, input) => {await queryClient.invalidateQueries({queryKey: ["studio-threads"]}); visit(thread); if (input.draft) saveComposerDraft(input.projectId, value.threadId, input.draft); setSelection({threadId: value.threadId, projectId: input.projectId}); setSections(current => ({...current, [value.threadId]: "rounds"}));}});
   const handle: ThreadActionHandler = (target, action) => action.kind === "newThread" ? create.mutate({projectId: target.projectId, branch: target.branch}) : act.mutate({target, action});
   const openFolder = useMutation({mutationFn: (directory: string) => openProjectFolder({data: {directory}}), onSuccess: async value => {
     await queryClient.invalidateQueries();
@@ -175,10 +175,10 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
   return <><div className="studio-shell"><ProjectLayout sidebar={sidebar} sidebarOpen={sidebarOpen} isMobile={isMobile} mobileOpen={mobileOpen} onMobileOpenChange={setMobileOpen} labels={{skipToContent: t.skipToContent, sidebar: t.sidebar, mobileTitle: t.mobileTitle, mobileDescription: t.mobileDescription}}>
     {settingsSection ? <SettingsPage section={settingsSection} navigation={navigation} locale={locale} changeLocale={changeLocale} restore={() => {setMobileOpen(false); setImportOpen(true);}} t={t} />
       : error ? <ProjectPage title={t.studio} navigation={navigation}><div className="m-auto grid gap-3"><p role="alert">{t.error}</p><Button onClick={() => {void studio.refetch(); void threads.refetch();}}>{t.retry}</Button></div></ProjectPage>
-      : project ? <Project key={`${project.id}:${thread?.id ?? ""}`} project={project} thread={thread} threads={all.filter(item => item.projectId === project.id)} openThread={select} openHome={() => openHome(project.id)} draft={thread && drafts[thread.id]} starting={create.isPending} openVariant={branch => {const existing = all.filter(item => item.projectId === project.id && item.branch === branch).sort((a, b) => recent(b).localeCompare(recent(a)))[0]; if (existing) select(existing); else create.mutate({projectId: project.id, branch});}} t={t} navigation={navigation} section={section} setSection={setSection} newThread={input => create.mutate({projectId: project.id, ...input})} showThread={threadId => {visit(thread); forgetDraft(thread); setSelection({threadId, projectId: project.id}); setSections(current => ({...current, [threadId]: "preview"}));}} />
-      : <ProjectPage title={t.studio} navigation={navigation}><div className="m-auto grid max-w-sm gap-4 p-6 text-center text-ui"><p>{studio.isPending || threads.isPending ? t.loading : all.length ? t.selectThread : t.noProjects}</p><Button disabled={studio.isPending} onClick={openNewProject}>{t.newProject}</Button><Button variant="outline" onClick={() => setImportOpen(true)}>{t.openProjectFile}</Button></div></ProjectPage>}
+      : project ? <Project key={`${project.id}:${thread?.id ?? ""}`} project={project} thread={thread} threads={all.filter(item => item.projectId === project.id)} openThread={select} openHome={() => openHome(project.id)} starting={create.isPending} openVariant={branch => {const existing = all.filter(item => item.projectId === project.id && item.branch === branch).sort((a, b) => recent(b).localeCompare(recent(a)))[0]; if (existing) select(existing); else create.mutate({projectId: project.id, branch});}} t={t} navigation={navigation} section={section} setSection={setSection} newThread={input => create.mutate({projectId: project.id, ...input})} showThread={(threadId, view = "preview") => {visit(thread); setSelection({threadId, projectId: project.id}); setSections(current => ({...current, [threadId]: view}));}} />
+      : <ProjectPage title={t.studio} navigation={navigation}><div className="m-auto grid max-w-sm gap-4 p-6 text-center text-ui"><AgentSetupCard t={t} /><p>{studio.isPending || threads.isPending ? t.loading : all.length ? t.selectThread : t.noProjects}</p><Button disabled={studio.isPending} onClick={openNewProject}>{t.newProject}</Button><Button variant="outline" onClick={() => setImportOpen(true)}>{t.openProjectFile}</Button></div></ProjectPage>}
   </ProjectLayout></div>
-    <NewProject open={newProjectOpen} setOpen={setNewProjectOpen} clients={data?.clients ?? []} defaultClientId={filter.kind === "client" ? filter.id : project?.clientId} created={value => {void queryClient.invalidateQueries({queryKey: ["studio-threads"]}); setSelection(value.threadId ? {threadId: value.threadId, projectId: value.projectId} : {projectId: value.projectId, home: true});}} t={t} />
+    <NewProject open={newProjectOpen} setOpen={setNewProjectOpen} defaultClientId={filter.kind === "client" ? filter.id : project?.clientId} created={value => {void queryClient.invalidateQueries({queryKey: ["studio-threads"]}); openHome(value.projectId);}} t={t} />
     <Dialog open={importOpen || !!openedFile} onOpenChange={open => {setImportOpen(open); if (!open) dismissOpenedProjectFile();}}><DialogContent><OpenProject key={openedFile ?? "chosen"} path={openedFile ?? undefined} opened={projectId => {setImportOpen(false); dismissOpenedProjectFile(); setFilter({kind: "all"}); setSelection({projectId, home: true}); setSections(current => ({...current, [projectId]: "intake"}));}} t={t} /></DialogContent></Dialog>
     <Dialog open={folderOpen} onOpenChange={open => {setFolderOpen(open); if (!open) openFolder.reset();}}><DialogContent><DialogHeader><DialogTitle>{t.openProjectFolder}</DialogTitle><DialogDescription>{t.inspectSource}</DialogDescription></DialogHeader><form autoComplete="off" className="grid gap-4" onSubmit={event => {event.preventDefault(); if (!openFolder.isPending) openFolder.mutate(directory);}}><Field><FieldLabel htmlFor="studio-open-folder">{t.folder}</FieldLabel><Input id="studio-open-folder" value={directory} onChange={event => setDirectory(event.target.value)} required maxLength={4096} disabled={openFolder.isPending} autoComplete="off" /></Field>{openFolder.error && <StudioFailure className="text-destructive" error={openFolder.error} />}<Button type="submit" disabled={openFolder.isPending}>{openFolder.isPending ? t.loading : t.register}</Button></form></DialogContent></Dialog>
     <Dialog open={creatingClient} onOpenChange={setCreatingClient}><DialogContent><DialogHeader><DialogTitle>{t.newClient}</DialogTitle></DialogHeader><form autoComplete="off" onSubmit={event => {event.preventDefault(); void clientForm.handleSubmit();}} className="grid gap-4 text-ui">
@@ -205,7 +205,7 @@ function ProjectViews({view, setSection, hasModel, counts, t, className}: {view:
 function ScrollPage({children}: {children: ReactNode}) {
   return <div className="min-h-0 flex-1 overflow-y-auto"><div className="mx-auto grid w-full max-w-3xl content-start gap-8 px-6 py-8 text-ui max-md:px-4 max-md:py-6">{children}</div></div>;
 }
-function Project({project, thread, threads, openThread, openHome, draft, starting, openVariant, t, navigation, section, setSection, newThread, showThread}: {project: StudioProjectSummary; thread?: StudioThread; threads: StudioThread[]; openThread: (thread: StudioThread) => void; openHome: () => void; draft?: string; starting: boolean; openVariant: (branch: string) => void; t: Copy; navigation: ReactNode; section: Section; setSection: (section: Section) => void; newThread: (input: {branch?: string; fromCheckpoint?: string; draft?: string}) => void; showThread: (threadId: string) => void}) {
+function Project({project, thread, threads, openThread, openHome, starting, openVariant, t, navigation, section, setSection, newThread, showThread}: {project: StudioProjectSummary; thread?: StudioThread; threads: StudioThread[]; openThread: (thread: StudioThread) => void; openHome: () => void; starting: boolean; openVariant: (branch: string) => void; t: Copy; navigation: ReactNode; section: Section; setSection: (section: Section) => void; newThread: (input: {branch?: string; fromCheckpoint?: string; draft?: string}) => void; showThread: (threadId: string, view?: Section) => void}) {
   const queryClient = useQueryClient();
   const {locale} = useStudioLocale();
   const details = useQuery({queryKey: ["studio-project", project.id], queryFn: () => projectDetails({data: {projectId: project.id}}), refetchInterval: 5000});
@@ -236,7 +236,7 @@ function Project({project, thread, threads, openThread, openHome, draft, startin
     try {
       await saveEdits({data: {projectId: project.id, branch: branch!.name, edits: next}});
     } catch (error) {
-      throw new Error(studioFailure(error instanceof Error ? error : new Error(String(error)), locale).message);
+      throw new Error(failureLine(error, locale));
     }
     setVersionId(undefined);
     await queryClient.invalidateQueries();
@@ -317,13 +317,13 @@ function Project({project, thread, threads, openThread, openHome, draft, startin
     <DropdownMenu><DropdownMenuTrigger className={projectIconButton} aria-label={t.projectSections} title={t.projectSections}><MoreHorizontalIcon /></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-60"><DropdownMenuRadioGroup value={section} onValueChange={value => setSection(value as Section)}>{toolSections.map(value => <DropdownMenuRadioItem closeOnClick key={value} value={value} className="studio-choice">{t[value]}</DropdownMenuRadioItem>)}</DropdownMenuRadioGroup><DropdownMenuSeparator /><DropdownMenuItem render={<a href="https://arch.enstate-labs.workers.dev/staff" target="_blank" rel="noreferrer" />}><ArrowUpRightIcon />{t.hosted}</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
   </>;
   const tool = (content: ReactNode) => <ScrollPage><h2 className="text-lg font-medium">{t[view as typeof toolSections[number]]}</h2>{content}</ScrollPage>;
-  const content = details.isError ? <div className="m-auto grid gap-3"><StudioFailure error={details.error} /><Button onClick={() => {void details.refetch();}}>{t.retry}</Button></div>
+  const content = details.isError ? <ProjectRecovery projectId={project.id} error={details.error} retry={() => {void details.refetch();}} busy={build.isPending || threads.some(item => item.status === "working" || item.status === "approval")} t={t} />
     : view === "preview" && version ? <VersionPreview key={version.id} version={version} editing={editing} editsPending={edits.isLoading || library.isLoading} rebuild={source && branch ? () => ensureGrant(() => build.mutate()) : undefined} rebuilding={build.isPending} t={t} />
-    : view === "rounds" && branch && thread ? <Rounds projectId={project.id} threadId={thread.id} startedAt={thread.createdAt} branch={branch} versions={allVersions} versionLabel={versionLabel} openVersion={showVersion} compare={compare} forkFrom={checkpointId => newThread({fromCheckpoint: checkpointId})} ensureGrant={ensureGrant} initialRequest={draft} t={t} />
+    : view === "rounds" && branch && thread ? <Rounds projectId={project.id} threadId={thread.id} startedAt={thread.createdAt} branch={branch} versions={allVersions} versionLabel={versionLabel} openVersion={showVersion} compare={compare} forkFrom={checkpointId => newThread({fromCheckpoint: checkpointId})} ensureGrant={ensureGrant} t={t} />
     : view === "compare" ? <Compare projectId={project.id} versions={versions} base={compared?.base} target={compared?.target} select={(base, target) => setCompared({base, target})} versionLabel={versionLabel} t={t} />
     : details.isPending ? <p role="status" className="m-auto text-ui text-muted-foreground">{t.loading}</p>
     : view === "intake" ? <ScrollPage>
-      {source ? <ProjectHome projectName={project.name} clientName={client} threads={threads} openThread={openThread} startConversation={request => newThread(request ? {draft: request} : {})} starting={starting} share={() => setExportOpen(true)} t={t} /> : <h2 className="sr-only">{t.intake}</h2>}
+      {source ? <ProjectHome projectName={project.name} clientName={client} threads={threads} openThread={openThread} startConversation={request => newThread(request ? {draft: request} : {})} starting={starting} share={() => setExportOpen(true)} setup={branch && source.manifest.schemaVersion === 2 && <ProjectSetup projectId={project.id} projectName={project.name} clientId={project.clientId} manifest={source.manifest} branch={branch} busy={build.isPending || threads.some(item => item.status === "working" || item.status === "approval")} openConversation={threadId => showThread(threadId, "rounds")} t={t} />} t={t} /> : <h2 className="sr-only">{t.intake}</h2>}
       {!source && <header className="grid gap-1"><h3 className="text-lg font-medium">{t.connectSource}</h3><p className="text-muted-foreground">{t.noSources}</p></header>}
       <SourceSetup projectId={project.id} attached={!!source} confirmationOnly={!!source} t={t} />
       {source && <IntakeOverview intake={intake} error={intakeError} assumptions={assumptions} files={allFiles} {...filesSource} openFile={openFile} openFiles={() => setSection("files")} openWork={() => setSection("work")} t={t} />}

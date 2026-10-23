@@ -13,8 +13,8 @@ import { ProjectBadge } from "./thread-sidebar";
 type Copy = typeof studioText.en;
 const recent = (thread: StudioThread) => [thread.latestCompletedAt, thread.latestRequestAt, thread.createdAt].filter(Boolean).sort().at(-1) ?? "";
 
-/** Where a project opens: start a conversation, pick up an earlier one, share it. The overview follows. */
-export function ProjectHome({projectName, clientName, threads, openThread, startConversation, starting, share, children, t}: {projectName: string; clientName?: string; threads: StudioThread[]; openThread: (thread: StudioThread) => void; startConversation?: (request?: string) => void; starting: boolean; share?: () => void; children?: ReactNode; t: Copy}) {
+/** Where a project opens: set it up, start a conversation, pick up an earlier one, share it. The overview follows. */
+export function ProjectHome({projectName, clientName, threads, openThread, startConversation, starting, share, setup, children, t}: {projectName: string; clientName?: string; threads: StudioThread[]; openThread: (thread: StudioThread) => void; startConversation?: (request?: string) => void; starting: boolean; share?: () => void; setup?: ReactNode; children?: ReactNode; t: Copy}) {
   const format = useStudioFormat();
   const now = Date.now();
   const sorted = [...threads].sort((a, b) => recent(b).localeCompare(recent(a)));
@@ -27,6 +27,7 @@ export function ProjectHome({projectName, clientName, threads, openThread, start
         {startConversation && <Button size="sm" disabled={starting} onClick={() => startConversation()}>{starting ? <Spinner /> : <SquarePenIcon />}{t.newThread}</Button>}
       </div>
     </header>
+    {setup}
     {startConversation && <section className="grid gap-3">
       <SectionHeader title={t.getStarted} />
       <div className="grid gap-2 sm:grid-cols-2">{starters(t).map(starter => <button type="button" key={starter.title} disabled={starting} onClick={() => startConversation(starter.request)} className="grid gap-1 rounded-lg border px-4 py-3 text-left outline-none transition-colors hover:bg-foreground/4 focus-visible:ring-1 focus-visible:ring-ring/50 disabled:opacity-60">

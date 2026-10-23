@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import type { Plan, Vec2, Wall, Opening } from '../plan/schema.ts';
 import { withDefaults } from '../plan/schema.ts';
-import { wallDir, wallLength, wallThickness, roomAt, pointSegment, ceilingAt, slopeDirection, pointInPolygon } from '../plan/geom.ts';
+import { wallDir, wallLength, wallThickness, roomAt, pointSegment, ceilingAt, slopeDirection, pointInPolygon, hasCeiling } from '../plan/geom.ts';
 import { stairFlights } from '../plan/levels.ts';
 import { FURNITURE_DEFAULT_SIZE } from '../plan/furnitureSizes.ts';
 import type { MaterialLibrary } from './materials.ts';
@@ -23,7 +23,7 @@ export function buildDressing(plan: Plan, lib: MaterialLibrary, mat: MatFn) {
 
   const furnitureNear = (p: Vec2, r: number) =>
     (plan.furniture ?? []).some((f) => {
-      if (f.type === 'rug' || f.type === 'plant' || f.type === 'floor-lamp') return false;
+      if (f.type === 'rug' || f.type === 'plant' || f.type === 'floor-lamp' || f.ground) return false;
       const [w, dd] = f.size ?? FURNITURE_DEFAULT_SIZE[f.type] ?? [0.5, 0.5, 0.5];
       return Math.hypot(f.position[0] - p[0], f.position[1] - p[1]) < r + Math.max(w, dd) / 2;
     });
@@ -123,6 +123,7 @@ export function buildDressing(plan: Plan, lib: MaterialLibrary, mat: MatFn) {
   const flights = stairFlights(plan);
   const lensMat = mat('bulb');
   for (const r of plan.rooms ?? []) {
+    if (!hasCeiling(plan, r)) continue;
     const xs = r.polygon.map((q) => q[0]), ys = r.polygon.map((q) => q[1]);
     const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
     const nx = Math.max(1, Math.round((x1 - x0) / 1.8)), ny = Math.max(1, Math.round((y1 - y0) / 1.8));

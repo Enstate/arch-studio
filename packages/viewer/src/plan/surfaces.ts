@@ -53,7 +53,7 @@ export function surfaceFinish(plan: Plan, id: string): string | undefined {
     case 'floor':
       return room && (room.floor ?? d.floor);
     case 'ceiling':
-      return room && (room.ceiling ?? d.ceiling);
+      return room && (room.ceiling || d.ceiling);
     case 'wall': {
       const wall = plan.walls.find((w) => w.id === s.wall);
       return room && wall && wallFaceFinish(plan, wall, room);

@@ -13,6 +13,7 @@ import { catalogFolders } from "@arch/project-tools/catalog";
 import { localCatalog, requireProject } from "./local-catalog";
 import { grantRoundMcp } from "./mcp.server";
 import { requireStudio } from "./local-session";
+import { recordFailure } from "./studio-log.server";
 import type { RoundActivity, RoundEvent, RoundSummary, StudioThread } from "./model";
 import { buildVersion } from "./studio.server";
 
@@ -257,6 +258,7 @@ function append(roundId: string, event: RoundEvent) {
   rounds().prepare("INSERT INTO round_events(round_id,seq,event) VALUES(?,?,?)").run(roundId, round.events.length - 1, JSON.stringify(event));
 }
 function finish(roundId: string, values: { status: RoundSummary["status"]; checkpointId?: string | null; summary?: string | null; error?: string | null }) {
+  if (values.error) void recordFailure(`${values.status} round`, values.error, { round: roundId });
   rounds().prepare("UPDATE rounds SET status=?, checkpoint_id=?, summary=?, error=?, completed_at=? WHERE id=?").run(values.status, values.checkpointId ?? null, values.summary ?? null, values.error ?? null, new Date().toISOString(), roundId);
 }
 async function agentTurn(roundId: string, input: Parameters<typeof import("@arch/agent").startTurn>[0], threadId: string) {

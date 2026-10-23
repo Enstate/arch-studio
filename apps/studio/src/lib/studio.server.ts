@@ -5,12 +5,13 @@ import path from "node:path";
 import { addReviewNote, artifactDetails, artifactFile, buildProjectArtifact, droppedHandEdits, handEdits, inspectArtifact, inspectProject, listProjects, registerProject, inspectSource, viewerRuntimeHash, exportCheckpoint, importCheckpoint, restoreCheckpoint, checkpointBrief, referenceFile, readProjectIntake, readCheckpointIntake, studioStoreDirectory, projectBranches, createBranch as forkBranch, makePrimaryBranch, archiveBranch as archiveProjectBranch, discardBranchChanges, compareCheckpoints } from "@arch/project-tools";
 import { initializeProject } from "@arch/project-tools/intake";
 import { z } from "zod";
-import { relativeProjectPath, viewerSupportsRuntime } from "@arch/project";
+import { relativeProjectPath, viewerSupportsRuntime, type ProjectFacts } from "@arch/project";
 import { spawn } from "node:child_process";
 import { changeCatalog, localCatalog, requireProject } from "./local-catalog";
 import { requireStudio, studioOrigin } from "./local-session";
 import { referenceHeaders } from "./reference-headers";
 import { VIEWER_MISMATCH, type StudioBranch, type StudioCatalog, type StudioProjectDetails, type StudioVersion } from "./model";
+import { recordFailure } from "./studio-log.server";
 export { session } from "./local-session";
 const sha = z.string().regex(/^[a-f0-9]{64}$/);
 const previewKey = randomBytes(32);
@@ -34,39 +35,26 @@ export async function createClient({ data }: { data: { name: string } }) {
   });
 }
 const localClient = { id: "local", name: "Local" };
-/** One step from references to a registered source in a managed folder. Uploads are staged, never executed. */
-export async function createProject({ data }: { data: { name: string; client: { id: string } | { name: string } | null; brief: string; references: File[] } }) {
+/**
+ * A name and the facts the user confirmed become a registered source in a managed folder.
+ * References, the brief and the client follow on the project's overview.
+ */
+export async function createProject({ data }: { data: { name: string; clientId?: string; facts: ProjectFacts } }) {
   requireStudio();
   const id = `source-${randomBytes(12).toString("hex")}`;
-  const store = studioStoreDirectory();
-  const staging = path.join(store, "staging", randomUUID());
-  await fs.mkdir(staging, { recursive: true, mode: 0o700 });
-  try {
-    const names = new Set<string>();
-    for (const file of data.references) {
-      const base = path.basename(file.name).replace(/[\\/]/g, "_");
-      const extension = path.extname(base);
-      let name = base;
-      for (let copy = 2; names.has(name.toLocaleLowerCase()); copy++) name = `${base.slice(0, base.length - extension.length)} ${copy}${extension}`;
-      names.add(name.toLocaleLowerCase());
-      await fs.writeFile(path.join(staging, name), new Uint8Array(await file.arrayBuffer()), { flag: "wx" });
-    }
-    const branches = path.join(store, "projects", id, "branches");
-    await fs.mkdir(branches, { recursive: true, mode: 0o700 });
-    return await changeCatalog(async catalog => {
-      const client = data.client === null ? catalog.clients.find(item => item.id === localClient.id) ?? localClient
-        : "id" in data.client ? catalog.clients.find(item => item.id === (data.client as { id: string }).id)
-        : { id: clientKey(catalog, data.client.name), name: data.client.name };
-      if (!client) throw new Error("ARCH_CLIENT_MISSING");
-      const initialized = await initializeProject({ ...(data.references.length ? { inputsDirectory: await fs.realpath(staging) } : {}), directory: path.join(await fs.realpath(branches), "main"), id, name: data.name, client, description: data.brief });
-      if (!catalog.clients.some(item => item.id === client.id)) catalog.clients.push(client);
-      const projectId = randomUUID();
-      catalog.projects.push({ id: projectId, clientId: client.id, name: data.name, sourceId: initialized.project.manifest.id, createdAt: new Date().toISOString() });
-      return { clientId: client.id, projectId };
-    });
-  } finally { await fs.rm(staging, { recursive: true, force: true }); }
+  const branches = path.join(studioStoreDirectory(), "projects", id, "branches");
+  await fs.mkdir(branches, { recursive: true, mode: 0o700 });
+  return changeCatalog(async catalog => {
+    const client = data.clientId === undefined ? catalog.clients.find(item => item.id === localClient.id) ?? localClient : catalog.clients.find(item => item.id === data.clientId);
+    if (!client) throw new Error("ARCH_CLIENT_MISSING");
+    const initialized = await initializeProject({ directory: path.join(await fs.realpath(branches), "main"), id, name: data.name, client, facts: data.facts });
+    if (!catalog.clients.some(item => item.id === client.id)) catalog.clients.push(client);
+    const projectId = randomUUID();
+    catalog.projects.push({ id: projectId, clientId: client.id, name: data.name, sourceId: initialized.project.manifest.id, createdAt: new Date().toISOString() });
+    return { clientId: client.id, projectId };
+  });
 }
-function clientKey(catalog: StudioCatalog, name: string) {
+export function clientKey(catalog: StudioCatalog, name: string) {
   const base = name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 70) || "client";
   let key = base;
   for (let copy = 2; catalog.clients.some(client => client.id === key); copy++) key = `${base}-${copy}`;
@@ -198,8 +186,22 @@ export async function makePrimary({ data }: { data: { projectId: string; name: s
 export async function archiveBranch({ data }: { data: { projectId: string; name: string; archived: boolean } }) {
   requireStudio(); return archiveProjectBranch(await boundSource(data.projectId), data.name, data.archived);
 }
-export async function discardChanges({ data }: { data: { projectId: string; name: string } }) {
-  requireStudio(); return discardBranchChanges(await boundSource(data.projectId), data.name);
+/**
+ * Return a branch folder, the primary one without a name, to its last saved version. It reads
+ * only the catalog and the saved checkpoint, never the folder, so it also repairs a folder
+ * that no longer validates. Never while a round or a queued build works in that folder.
+ */
+export async function discardChanges({ data }: { data: { projectId: string; name?: string } }) {
+  requireStudio();
+  const sourceId = await boundSource(data.projectId);
+  const lines = await projectBranches(sourceId);
+  const name = data.name ?? lines.primary;
+  if (!lines.branches.find(line => line.name === name)?.headId) throw new Error("ARCH_NO_SAVED_VERSION");
+  const { holdProject } = await import("./rounds.server");
+  return holdProject(sourceId, [name], running => {
+    if (running.has(name)) throw new Error("ARCH_RESTORE_BUSY");
+    return discardBranchChanges(sourceId, name);
+  });
 }
 /** The hand edits saved in a branch folder, laid over its plan on every build. */
 export async function projectEdits({ data }: { data: { projectId: string; branch: string } }) {
@@ -307,6 +309,7 @@ export async function artifactResponse(request: Request, checkpointId: string, t
   } catch (error) {
     // Callers only learn "not found"; the local log keeps the reason.
     console.error(`Artifact request failed: ${error instanceof Error ? error.message : String(error)}`);
+    void recordFailure("artifact request", error);
     return new Response(null, { status: 404 });
   }
 }

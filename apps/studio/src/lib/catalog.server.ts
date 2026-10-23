@@ -5,6 +5,7 @@ import { assetCatalog, catalogFile, catalogFolders, catalogIndex, importSimReady
 import { searchSimReady, simReadyPreview, writeAtomically } from "@arch/project-tools/simready";
 import type { CatalogPiece, RemotePiece } from "@arch/viewer-ui";
 import { requireStudio, studioOrigin } from "./local-session";
+import { recordFailure } from "./studio-log.server";
 
 /**
  * The asset catalog hand editing offers: the shared library and this store's imports, served as
@@ -103,6 +104,7 @@ export async function catalogResponse(request: Request, capability: string, rela
     return new Response(request.method === "HEAD" ? null : new Uint8Array(body), { headers });
   } catch (error) {
     console.error(`Catalog request failed: ${error instanceof Error ? error.message : String(error)}`);
+    void recordFailure("catalog request", error);
     return new Response(null, { status: 404 });
   }
 }

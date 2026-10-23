@@ -39,7 +39,7 @@ test('v2 archive roundtrip verifies artifact bytes and rejects tampering', async
  const original=await fs.readFile(generator,'utf8');
  await fs.writeFile(generator,original.replace("name:'Test'","name:'Test',materials:{unsafe:{color:'#fff',texture:'http://127.0.0.1/private.png'}}"));
  await expect(buildProjectArtifact('test-house',{authorizeSourceExecution:true})).rejects.toThrow('Asset reference');
- await fs.writeFile(generator,original.replace("walls:[{id:'wall',a:[0,0],b:[4,0]}]","walls:[]"));
+ await fs.writeFile(generator,original.replace("walls:[{id:'wall',a:[0,0],b:[4,0]}]","walls:[{id:'wall',a:[0,0],b:[0,0]}]"));
  await expect(buildProjectArtifact('test-house',{authorizeSourceExecution:true})).rejects.toThrow('Invalid generated plan');
  }finally {if(prior===undefined)delete process.env.ARCH_HOME;else process.env.ARCH_HOME=prior;await fs.rm(temp,{recursive:true,force:true});}
 });

@@ -13,6 +13,7 @@ import { changeCatalog, localCatalog, requireProject } from "./local-catalog";
 import { requireStudio, studioOrigin } from "./local-session";
 import type { ProjectFilePreview } from "./model";
 import { holdProject, rounds, runningBranches } from "./rounds.server";
+import { recordFailure } from "./studio-log.server";
 
 const sha = z.string().regex(/^[a-f0-9]{64}$/);
 const uuid = z.string().uuid();
@@ -251,16 +252,28 @@ export async function exportProject({ data }: { data: { projectId: string } }): 
   if (!project.sourceId) throw new Error("ARCH_SOURCE_REQUIRED");
   const sourceId = project.sourceId;
   const unsaved = await saveBranchChanges(sourceId);
-  const directory = await privateDirectory("exports");
-  await removeExpired(directory, exportLifetime, name => exportNames.delete(name.replace(/\.archproject$/, "")));
-  const exportId = randomUUID();
   // Branches without a version stay out of the file, and so do their conversations.
   const versioned = new Set((await projectBranches(sourceId)).branches.flatMap(line => (line.headId ? [line.name] : [])));
   const conversations = studioConversations(sourceId, versioned, await machinePathRedactor(sourceId));
-  const { bytes, skipped } = await exportProjectPackage(sourceId, path.join(directory, `${exportId}.archproject`), { name: project.name, studio: conversations.value, blobs: conversations.blobs });
-  const fileName = packageFileName(project.name);
+  let skipped: string[] = [];
+  const offered = await offerDownload(origin, packageFileName(project.name), async file => {
+    const written = await exportProjectPackage(sourceId, file, { name: project.name, studio: conversations.value, blobs: conversations.blobs });
+    skipped = written.skipped;
+    return written.bytes;
+  });
+  return { ...offered, unsaved: [...new Set([...unsaved, ...skipped])] };
+}
+
+/** Exports are project files or problem reports. The stored name keeps the download's extension. */
+const downloadExtension = (fileName: string) => (fileName.endsWith(".zip") ? ".zip" : ".archproject");
+/** Write one file into the private exports folder and return a short-lived download capability for it. */
+export async function offerDownload(origin: string, fileName: string, write: (file: string) => Promise<number>) {
+  const directory = await privateDirectory("exports");
+  await removeExpired(directory, exportLifetime, name => exportNames.delete(name.replace(/\.(archproject|zip)$/, "")));
+  const exportId = randomUUID();
+  const bytes = await write(path.join(directory, `${exportId}${downloadExtension(fileName)}`));
   exportNames.set(exportId, fileName);
-  return { url: `${origin}/api/exports/${exportId}/${capability(exportId)}`, fileName, bytes, unsaved: [...new Set([...unsaved, ...skipped])] };
+  return { url: `${origin}/api/exports/${exportId}/${capability(exportId)}`, fileName, bytes };
 }
 
 /** Copy a project file chosen on this machine. Only a regular file is read, never through a link. */
@@ -362,12 +375,12 @@ export async function exportResponse(request: Request, exportId: string, token: 
     if (!timingSafeEqual(Buffer.from(token), Buffer.from(capability(exportId)))) return new Response(null, { status: 404 });
     if (!["GET", "HEAD"].includes(request.method)) return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
     // The name is built from a validated UUID, so it cannot leave the exports directory.
-    const file = path.join(studioStoreDirectory(), "exports", `${exportId}.archproject`);
+    const fileName = exportNames.get(exportId) ?? "project.archproject";
+    const file = path.join(studioStoreDirectory(), "exports", `${exportId}${downloadExtension(fileName)}`);
     const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
       const stat = await handle.stat();
       if (!stat.isFile() || Date.now() - stat.mtimeMs > exportLifetime) { await handle.close(); return new Response(null, { status: 404 }); }
-      const fileName = exportNames.get(exportId) ?? "project.archproject";
       const fallback = fileName.replace(/[^\x20-\x7e]|["\\%]/g, "_");
       const headers = new Headers({
         "Content-Type": "application/zip",
@@ -383,6 +396,7 @@ export async function exportResponse(request: Request, exportId: string, token: 
     } catch (error) { await handle.close().catch(() => {}); throw error; }
   } catch (error) {
     console.error(`Export request failed: ${error instanceof Error ? error.message : String(error)}`);
+    void recordFailure("export request", error);
     return new Response(null, { status: 404 });
   }
 }

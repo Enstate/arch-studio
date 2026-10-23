@@ -1,5 +1,5 @@
 import { StudioFailure } from "./studio-failure";
-import type { ProjectIntakePlan } from "@arch/project";
+import { referenceExtensions, type ProjectIntakePlan } from "@arch/project";
 import { buttonVariants } from "@arch/ui/components/button";
 import { projectIconButton } from "@arch/ui/components/project-layout";
 import { cn } from "@arch/ui/lib/utils";
@@ -264,7 +264,7 @@ export function AddFiles({ projectId, branch, disabled, reveal, t }: { projectId
       {reveal && <button type="button" onClick={reveal} aria-label={t.openFolder} title={t.openFolder} className={projectIconButton}><FolderOpenIcon /></button>}
       <Button type="button" size="sm" variant="outline" disabled={disabled || add.isPending} onClick={() => input.current?.click()}><PlusIcon />{add.isPending ? t.addingFiles : t.addFiles}</Button>
     </div>
-    <input ref={input} type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.svg,.txt,.md,.json" className="sr-only" tabIndex={-1} onChange={event => {const files = [...event.target.files ?? []]; event.target.value = ""; if (files.length) add.mutate(files);}} />
+    <input ref={input} type="file" multiple accept={referenceExtensions.join(",")} className="sr-only" tabIndex={-1} onChange={event => {const files = [...event.target.files ?? []]; event.target.value = ""; if (files.length) add.mutate(files);}} />
     {add.error && <StudioFailure className="max-w-60 text-xs text-destructive" error={add.error} />}
   </div>;
 }

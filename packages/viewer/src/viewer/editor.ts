@@ -26,7 +26,7 @@ export interface ViewerEditor {
   /** Hears when a piece is selected, and when a held piece is let go where it can stand. */
   listen(events: EditorEvents | null): void;
   select(id: string | null): void;
-  /** Stairs, roofs and fixtures stay where the agent put them; they can only be painted. */
+  /** Stairs, roofs, ground and fixtures stay where the agent put them; they can only be painted. */
   locked(id: string): boolean;
   /** Turns a piece where it stands. False, and nothing changes, when it would run into something. */
   turn(id: string, degrees: number): boolean;
@@ -149,7 +149,7 @@ export function createEditor(host: EditorHost): ViewerEditor {
   const pieceOf = (id: string) => edited.furniture?.find((f) => f.id === id);
   const locked = (id: string) => {
     const f = pieceOf(id);
-    return !f || f.type === 'stairs' || !!f.roof || isFixture(f);
+    return !f || f.type === 'stairs' || !!f.roof || !!f.ground || isFixture(f);
   };
 
   /** A piece's [width, depth, height] and how high its base stands, as drawn. */
@@ -204,7 +204,7 @@ export function createEditor(host: EditorHost): ViewerEditor {
 
   /** The piece under a screen point, if one shows there. */
   function pieceAt(clientX: number, clientY: number) {
-    let o: THREE.Object3D | null = host.aim(clientX, clientY, [house.furniture, house.roofs])?.object ?? null;
+    let o: THREE.Object3D | null = host.aim(clientX, clientY, [house.furniture, house.roofs, house.ground])?.object ?? null;
     for (; o; o = o.parent) if (o.userData.kind === 'furniture' && pieces.get(o.userData.id) === o) return o.userData.id as string;
     return null;
   }

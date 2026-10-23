@@ -25,6 +25,14 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => { void cleanup().finally(() => process.exit(1)); });
 }
 function passed(name: string) { checks.push(name); console.log(`PASS ${name}`); }
+/** Waits for a change Studio saves in the background to reach the project folder. */
+async function settled<T>(read: () => Promise<T>, done: (value: T) => boolean, what: string): Promise<T> {
+  for (const deadline = Date.now() + 15000; Date.now() < deadline; await new Promise(resolve => setTimeout(resolve, 100))) {
+    const value = await read();
+    if (done(value)) return value;
+  }
+  throw new Error(`The ${what} change was not saved`);
+}
 function syntheticFloorPlanPdf() {
   const drawing = "0.8 w 30 30 540 340 re S BT /F1 20 Tf 50 325 Td (Synthetic floor plan) Tj 0 -35 Td (6 m x 4 m - ceiling 2.6 m) Tj ET 100 80 360 180 re S";
   const objects = [
@@ -196,29 +204,52 @@ try {
   passed("origin-scoped bearer protects metadata, survives navigation, and never reaches another loopback port");
   await page.getByRole("button", { name: "New project", exact: true }).first().click();
   let dialog = page.getByRole("dialog");
-  await dialog.getByLabel("Project name", { exact: true }).fill("Standalone room");
-  await dialog.getByRole("combobox").click();
-  await page.getByRole("option", { name: "New client…", exact: true }).click();
-  await dialog.getByLabel(studioText.en.clientName, { exact: true }).fill("Synthetic verification");
-  await dialog.locator("#new-project-references").setInputFiles([path.join(inputs, "dimensions.svg"), path.join(inputs, "floor-plan.pdf"), path.join(inputs, "brief.txt")]);
-  await dialog.getByText("brief.txt", { exact: true }).waitFor();
-  // Verification never starts a real agent, even when the machine has one signed in.
-  const startIntake = dialog.getByLabel(studioText.en.startIntake, { exact: false });
-  if (await startIntake.count()) await startIntake.uncheck();
-  await dialog.getByRole("button", { name: "Create project", exact: true }).click();
+  // Creating asks three questions: the name, what it is and, optionally, where it is.
+  await dialog.getByLabel(studioText.en.name, { exact: true }).fill("Standalone room");
+  await dialog.getByRole("button", { name: studioText.en.next, exact: true }).click();
+  await dialog.getByRole("radio", { name: studioText.en.kindInterior, exact: false }).check();
+  await dialog.getByRole("button", { name: studioText.en.next, exact: true }).click();
+  // Pasted coordinates are read on this computer, so verification never asks OpenStreetMap.
+  await dialog.getByLabel(studioText.en.locationLabel, { exact: true }).fill("-33.45, -70.66");
+  await dialog.getByRole("button", { name: studioText.en.locationFind, exact: true }).click();
+  await dialog.getByRole("radio", { name: "-33.45, -70.66", exact: true }).check();
+  await dialog.getByRole("button", { name: studioText.en.create, exact: true }).click();
   await dialog.waitFor({ state: "hidden" });
   const created = JSON.parse(await cli(home, "list")).find((project: {manifest: {name: string}}) => project.manifest.name === "Standalone room");
   assert.ok(created, "New project registers a source");
   const source: string = created.directory;
   assert.equal(source, path.join(home, "projects", created.manifest.id, "branches/main"), "New project sources live in the managed store");
-  assert.equal(created.manifest.client.id, "synthetic-verification");
+  assert.deepEqual(created.manifest.facts, { kind: "interior", location: { label: "-33.45, -70.66", latitude: -33.45, longitude: -70.66 } });
+  assert.equal(created.manifest.client.id, "local");
+  assert.equal(created.manifest.references.length, 0, "Creating a project asks for no documents");
+  // The project opens on its overview, which sets it up: facts edit in place, then one client field, documents and the brief.
+  const savedManifest = async () => { try { return JSON.parse(await readFile(path.join(source, "arch.project.json"), "utf8")); } catch { return null; } };
+  const facts = page.locator("[data-studio-facts]");
+  await facts.waitFor();
+  await facts.getByLabel(studioText.en.storeyHeight, { exact: true }).fill("2,6");
+  await facts.getByLabel(studioText.en.storeyHeight, { exact: true }).press("Enter");
+  await settled(savedManifest, value => value?.facts?.storeyHeight === 2.6, "storey height");
+  await facts.getByRole("button", { name: studioText.en.northRight, exact: true }).click();
+  await settled(savedManifest, value => value?.facts?.north === 90, "north");
+  await page.getByRole("button", { name: studioText.en.clientLabel, exact: true }).click();
+  await page.getByPlaceholder(studioText.en.clientSearch, { exact: true }).fill("Synthetic verification");
+  await page.getByRole("option", { name: studioText.en.clientCreate.replace("{name}", "Synthetic verification"), exact: true }).click();
+  await settled(savedManifest, value => value?.client?.id === "synthetic-verification", "client");
+  await page.getByRole("textbox", { name: studioText.en.briefLabel, exact: true }).fill("One synthetic room for verification.");
+  await page.getByRole("textbox", { name: studioText.en.briefLabel, exact: true }).blur();
+  await settled(savedManifest, value => value?.description === "One synthetic room for verification.", "brief");
+  await page.locator("#project-references").setInputFiles([path.join(inputs, "dimensions.svg"), path.join(inputs, "floor-plan.pdf"), path.join(inputs, "brief.txt")]);
+  await settled(savedManifest, value => value?.references?.length === 3, "references");
   assert.equal(await readFile(path.join(source, "reference/dimensions.svg"), "utf8"), reference);
+  assert.equal((await savedManifest()).facts.location.latitude, -33.45, "Later changes keep the confirmed place");
+  // Reviewing is offered with documents. Verification never starts a real agent, so it never clicks it.
+  await page.getByRole("button", { name: studioText.en.startIntake, exact: true }).waitFor();
   // A new project opens on its home, with suggested first requests.
   await page.getByText(studioText.en.getStarted, { exact: true }).waitFor();
   await page.getByRole("button", { name: studioText.en.reviewDocuments, exact: false }).waitFor();
-  // Rounds opens its conversation. Creating the project is its first saved state, not a numbered version.
+  // Rounds opens its conversation. The project's saved states are not numbered versions.
   await page.locator('[data-studio-view="rounds"]:visible').click();
-  await page.getByText(`${studioText.en.projectCreated} · 3 ${studioText.en.filesShort}`, { exact: true }).waitFor();
+  await page.getByText(`${studioText.en.filesAdded} · `, { exact: false }).first().waitFor();
   assert.equal(await page.getByText(`${studioText.en.version} 1`, { exact: false }).count(), 0, "No version number before a model is built");
   await page.getByRole("button", { name: studioText.en.reviewDocuments, exact: true }).click();
   assert.equal(await page.getByRole("textbox", { name: studioText.en.composerPlaceholder, exact: true }).inputValue(), studioText.en.reviewDocumentsRequest);
@@ -558,18 +589,25 @@ try {
   await page.getByRole("button", { name: studioText.en.addProject, exact: true }).click();
   await page.getByRole("menuitem", { name: "New project", exact: true }).click();
   dialog = page.getByRole("dialog");
-  await dialog.getByLabel("Project name", { exact: true }).fill("Name only");
-  assert.equal(await dialog.getByLabel(studioText.en.startIntake, { exact: false }).count(), 0, "No intake offer without references");
-  await dialog.getByRole("button", { name: "Create project", exact: true }).click();
+  await dialog.getByLabel(studioText.en.name, { exact: true }).fill("Name only");
+  // Enter answers a question, as the button does.
+  await dialog.getByLabel(studioText.en.name, { exact: true }).press("Enter");
+  await dialog.getByRole("radio", { name: studioText.en.kindBuilding, exact: false }).check();
+  await dialog.getByRole("button", { name: studioText.en.next, exact: true }).click();
+  // The place is optional: skipping it creates the project.
+  await dialog.getByRole("button", { name: studioText.en.skipForNow, exact: true }).click();
   await dialog.waitFor({ state: "hidden" });
   await page.locator("main header").getByText("Name only", { exact: false }).first().waitFor();
   assert.equal(await page.locator('[data-studio-round="running"]').count(), 0, "Creating a project never starts a round");
+  await page.getByText(studioText.en.reviewNeedsFiles, { exact: true }).waitFor();
+  assert.ok(await page.getByRole("button", { name: studioText.en.startIntake, exact: true }).isDisabled(), "No review without references");
   await section(page, "Files");
   await page.getByText("No references yet.", { exact: false }).waitFor();
   await page.locator('input[type="file"][accept^=".pdf"]').setInputFiles(path.join(inputs, "brief.txt"));
   await page.getByRole("button", { name: "brief.txt", exact: false }).first().waitFor();
   const nameOnly = JSON.parse(await cli(home, "list")).find((project: {manifest: {name: string}}) => project.manifest.name === "Name only");
   assert.deepEqual(nameOnly.manifest.references.map((reference: {path: string}) => reference.path), ["reference/brief.txt"]);
+  assert.deepEqual(nameOnly.manifest.facts, { kind: "building" }, "A skipped place leaves no location");
   passed("name-only project starts idle and takes references later as a new version");
   await page.getByRole("button", { name: "Filter projects", exact: true }).click();
   await page.getByRole("menuitem", { name: studioText.en.newClient, exact: true }).click();

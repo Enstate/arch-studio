@@ -1,5 +1,5 @@
 import { validatePlan } from "@arch/viewer/plan/validate";
-import { compressArtifactModels } from "./compress.ts";
+import { compressArtifactModels, requireReadableModels } from "./compress.ts";
 import { cameraView } from "@arch/viewer/plan/levels";
 import { applyEdits, hasEdits, type PlanEdits } from "@arch/viewer/plan/edits";
 import type { Plan } from "@arch/viewer/plan/schema";
@@ -16,6 +16,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { planEditsSchema } from "./hand-edits.ts";
 import { openArchive, writeArchive, type ArchiveEntry, type ArchiveReader } from "./project-archive.ts";
+export { writeArchive, type ArchiveEntry } from "./project-archive.ts";
 import {
   artifactManifestSchema,
   type ArtifactManifest,
@@ -30,6 +31,7 @@ import {
   type CheckpointManifest,
   type ProjectInspection,
   type ProjectIntakePlan,
+  type ProjectFacts,
   type ProjectManifest,
   type ReviewNote,
   type PreviewSession,
@@ -70,6 +72,8 @@ const allowed = new Set([
 ]);
 const excluded =
   /(^\.|(?:^|[._-])(?:secrets?|credentials?|tokens?|private[-_]?key)(?:[._-]|$)|\.(?:pem|key|p12|pfx)$)/i;
+/** Files macOS and Windows leave in folders: Finder metadata, AppleDouble files and thumbnail caches. They are never project source or references. */
+export const isFolderLitter = (name: string) => name === ".DS_Store" || name.startsWith("._") || /^(thumbs\.db|desktop\.ini)$/i.test(name);
 const digest = (data: string | Uint8Array) =>
   createHash("sha256").update(data).digest("hex");
 function canonical(value: unknown): string {
@@ -118,6 +122,20 @@ function requireRuntime(manifest: StudioProject["manifest"]) {
   )
     throw new Error("Unsupported runtime or template version");
 }
+const dependencyRule = `The build accepts exactly one package: three ${runtimeVersion}, under "dependencies" in package.json and pinned in package-lock.json or bun.lock. It installs nothing else, so no other dependency, devDependency, optionalDependency or peerDependency can load.`;
+const dependencyFix = `Remove it from package.json and the lockfile, and write that code yourself in source/: noise, terrain grids, geometry and GLB files need no package. BUILDERS.md "Dependencies" shows how.`;
+/** Packages a package.json lists besides the pinned three, as name@version. */
+function extraDependencies(pkg: unknown): string[] {
+  if (!pkg || typeof pkg !== "object") return [];
+  const extras: string[] = [];
+  for (const group of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
+    const listed = (pkg as Record<string, unknown>)[group];
+    if (!listed || typeof listed !== "object") continue;
+    for (const [name, version] of Object.entries(listed))
+      if (group !== "dependencies" || name !== "three" || version !== runtimeVersion) extras.push(`${name}@${String(version)}${group === "dependencies" ? "" : ` (${group})`}`);
+  }
+  return extras;
+}
 function requireDependencies(
   manifest: StudioProject["manifest"],
   contents: Map<string, string>,
@@ -128,28 +146,38 @@ function requireDependencies(
       dependencies: z.object({ three: z.literal(runtimeVersion) }).strict(),
     })
     .passthrough();
-  const pkg = dependencySchema.parse(
-    JSON.parse(contents.get("package.json") ?? "null"),
-  );
+  let raw: unknown;
+  try {
+    raw = JSON.parse(contents.get("package.json") ?? "null");
+  } catch {
+    throw new Error(`package.json is not valid JSON. ${dependencyRule}`);
+  }
+  const extras = extraDependencies(raw);
+  if (extras.length)
+    throw new Error(`package.json lists ${extras.join(", ")}. ${dependencyRule} ${dependencyFix}`);
+  const pkg = dependencySchema.safeParse(raw);
+  if (!pkg.success)
+    throw new Error(`package.json must list "dependencies": {"three": "${runtimeVersion}"} and nothing else. ${dependencyRule}`);
   for (const group of [
     "devDependencies",
     "optionalDependencies",
     "peerDependencies",
   ]) {
     if (
-      group in pkg &&
-      Object.keys(z.record(z.string(), z.unknown()).parse(pkg[group])).length
+      group in pkg.data &&
+      !z.record(z.string(), z.unknown()).safeParse(pkg.data[group]).success
     )
-      throw new Error("Only the pinned three runtime dependency is supported");
+      throw new Error(`package.json ${group} must be an object. ${dependencyRule}`);
   }
+  const lockFix = `Restore the starter package-lock.json, which pins only three ${runtimeVersion}, or run bun install again after removing every other package from package.json.`;
   if (!contents.has("bun.lock") && !contents.has("package-lock.json"))
-    throw new Error("Missing dependency lockfile");
+    throw new Error(`Missing dependency lockfile. ${dependencyRule} ${lockFix}`);
   if (contents.has("bun.lock")) {
     const errors: ParseError[] = [];
     const parsedLock: unknown = parseJsonc(contents.get("bun.lock")!, errors, {
       allowTrailingComma: true,
     });
-    if (errors.length) throw new Error("Invalid Bun lockfile JSONC");
+    if (errors.length) throw new Error(`bun.lock is not valid JSONC. ${lockFix}`);
     const lock = z
       .object({
         lockfileVersion: z.union([z.literal(1), z.literal(2)]),
@@ -166,12 +194,15 @@ function requireDependencies(
           .strict(),
       })
       .passthrough()
-      .parse(parsedLock);
-    if (lock.workspaces[""].dependencies.three !== runtimeVersion)
-      throw new Error("Dependency lock mismatch");
+      .safeParse(parsedLock);
+    if (!lock.success || lock.data.workspaces[""].dependencies.three !== runtimeVersion)
+      throw new Error(`bun.lock must pin three@${runtimeVersion} and no other package. ${dependencyRule} ${lockFix}`);
   }
   if (contents.has("package-lock.json")) {
-    z.object({
+    let parsedLock: unknown;
+    try { parsedLock = JSON.parse(contents.get("package-lock.json")!); }
+    catch { throw new Error(`package-lock.json is not valid JSON. ${lockFix}`); }
+    const lock = z.object({
       lockfileVersion: z.union([z.literal(2), z.literal(3)]),
       packages: z
         .object({
@@ -187,7 +218,9 @@ function requireDependencies(
         .strict(),
     })
       .passthrough()
-      .parse(JSON.parse(contents.get("package-lock.json")!));
+      .safeParse(parsedLock);
+    if (!lock.success)
+      throw new Error(`package-lock.json must pin three@${runtimeVersion} and no other package. ${dependencyRule} ${lockFix}`);
   }
 }
 async function projectDependencies(
@@ -318,6 +351,38 @@ export async function readCheckpointIntake(checkpointId: string): Promise<Projec
   if (file.size > maximumIntakeBytes) throw new Error("Project intake exceeds the 2 MiB limit.");
   return projectIntakePlan(await verifiedBlob(path.join(archiveDirectory(), "blobs", "sha256"), file), saved.project);
 }
+/** One reason a project file is invalid. `path` names the field, empty for the whole file. */
+export type ProjectFileIssue = { path: string; code: string; origin?: string; maximum?: number; minimum?: number; keys?: string[]; missing?: boolean };
+/** A project file that is not JSON or fails its schema, naming the file and fields to fix. */
+export class ProjectFileError extends Error {
+  override name = "ProjectFileError";
+  /** `reasons` are the schema's own messages, which never quote the file's values. */
+  constructor(readonly file: string, readonly issues: ProjectFileIssue[], reasons: string[] = issues.map((issue) => issue.code)) {
+    super(`${file} is invalid: ${issues.map((issue, index) => `${issue.path || "file"}: ${reasons[index]}`).join("; ")}`);
+  }
+}
+/** Read and validate one JSON file of a project folder. Never quotes the file's contents. */
+async function projectFile<T>(directory: string, file: string, schema: { parse(value: unknown): T }): Promise<T> {
+  const contents = await fs.readFile(await safeFile(directory, file), "utf8");
+  let value: unknown;
+  try { value = JSON.parse(contents); }
+  catch { throw new ProjectFileError(file, [{ path: "", code: "invalid_json" }]); }
+  try { return schema.parse(value); }
+  catch (error) {
+    const issues = (error as { issues?: unknown }).issues;
+    if (!Array.isArray(issues)) throw error;
+    const listed = issues.slice(0, 10) as Record<string, unknown>[];
+    throw new ProjectFileError(file, listed.map((issue) => ({
+      path: Array.isArray(issue.path) ? issue.path.join(".") : "",
+      code: String(issue.code),
+      ...(typeof issue.origin === "string" && { origin: issue.origin }),
+      ...(typeof issue.maximum === "number" && { maximum: issue.maximum }),
+      ...(typeof issue.minimum === "number" && { minimum: issue.minimum }),
+      ...(Array.isArray(issue.keys) && { keys: issue.keys.slice(0, 10).map(String) }),
+      ...(issue.code === "invalid_type" && String(issue.message).endsWith("received undefined") && { missing: true }),
+    })), listed.map((issue) => String(issue.message).slice(0, 300)));
+  }
+}
 async function projectAt(directory: string): Promise<StudioProject> {
   const absolute = path.resolve(directory);
   if (
@@ -325,15 +390,11 @@ async function projectAt(directory: string): Promise<StudioProject> {
     (await fs.realpath(absolute)) !== absolute
   )
     throw new Error("Project directory must not contain symlinks");
-  const manifest = projectManifestSchema.parse(
-    await fileContents(await safeFile(absolute, "arch.project.json")),
-  );
+  const manifest = await projectFile(absolute, "arch.project.json", projectManifestSchema);
   await projectDependencies(absolute, manifest);
   safeRelative(manifest.entry);
   await safeFile(absolute, manifest.entry);
-  continuationBriefSchema.parse(
-    await fileContents(await safeFile(absolute, "arch.context.json")),
-  );
+  await projectFile(absolute, "arch.context.json", continuationBriefSchema);
   for (const reference of [...manifest.references, ...manifest.artifacts]) {
     safeRelative(reference.path);
     await safeFile(absolute, reference.path);
@@ -425,8 +486,10 @@ async function projectFiles(
   ).sort((a, b) => a.name.localeCompare(b.name))) {
     // These non-source root entries are intentionally absent from checkpoints.
     // .claude and .codex hold agent-local session and sandbox state, never project source.
-    if (!relative && [".git", "node_modules", ".DS_Store", "AGENT_BRIEF.md", ".claude", ".codex"].includes(entry.name))
+    if (!relative && [".git", "node_modules", "AGENT_BRIEF.md", ".claude", ".codex"].includes(entry.name))
       continue;
+    // Folder litter from macOS and Windows, at any depth, is never project source.
+    if (isFolderLitter(entry.name)) continue;
     const name = relative ? `${relative}/${entry.name}` : entry.name;
     if ((!relative && !allowed.has(entry.name)) || excluded.test(entry.name))
       throw new Error(`Cannot checkpoint disallowed project path: ${name}`);
@@ -1601,6 +1664,31 @@ export async function saveHandEdits(directory: string, edits: PlanEdits, librari
   if (folders.length) await bundleLibraryAssets(folders, { root: directory, library: "assets/library" }, handEditAssets(checked));
   await atomic(await writableFile(directory, handEditsPath), checked);
 }
+/**
+ * Writes the confirmed site latitude and north into the generated plan, replacing what the generator
+ * wrote. Leaves a missing or non-object plan for the build's own checks.
+ */
+async function applyProjectFacts(directory: string, facts: ProjectFacts | undefined): Promise<void> {
+  if (facts?.location === undefined && facts?.north === undefined) return;
+  let planFile: string;
+  try {
+    planFile = await safeFile(directory, "outputs/artifact/plan.json");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  let plan: unknown;
+  try {
+    plan = JSON.parse(await fs.readFile(planFile, "utf8"));
+  } catch (error) {
+    throw new Error(`The generated plan.json is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!plan || typeof plan !== "object" || Array.isArray(plan)) return;
+  const placed = plan as Record<string, unknown>;
+  if (facts.location) placed.latitude = facts.location.latitude;
+  if (facts.north !== undefined) placed.north = facts.north;
+  await atomic(planFile, placed);
+}
 const artifactBuilds=new Set<string>();
 const sourceBuildProcesses = new Set<() => void>();
 let sourceBuildsStopping = false;
@@ -1681,7 +1769,10 @@ export async function buildProjectArtifact(projectId: string, options: { authori
   });
   // Hand edits from the viewer win over the generated plan; edits whose target is gone are listed.
   await applyHandEdits(current.directory);
+  // The user's confirmed facts win over the generator, before anything is hashed.
+  await applyProjectFacts(current.directory, current.manifest.facts);
   // Generated models ship compressed, so clients download about half as much.
+  await requireReadableModels(output);
   await compressArtifactModels(output);
   const files = await Promise.all((await projectFiles(current.directory,"outputs/artifact")).map(async p=>{const b=await fs.readFile(await safeFile(current.directory,p));return {path:p,sha256:digest(b),size:b.length}}));
   const plan = "outputs/artifact/plan.json";

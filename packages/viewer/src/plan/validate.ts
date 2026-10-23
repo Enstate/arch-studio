@@ -1,8 +1,8 @@
 import type { Plan, Vec2 } from './schema.ts';
 import { withDefaults } from './schema.ts';
 import {
-  EPS, dist, planBounds, pointInPolygon, pointSegment, polygonSelfIntersects, roomNetArea,
-  wallHeight, wallLength, wallThickness, wallDir, cross, sub, dot, ceilingAt,
+  EPS, dist, planBounds, pointInPolygon, pointSegment, polygonArea, polygonSelfIntersects, roomNetArea,
+  wallHeight, wallLength, wallThickness, wallDir, cross, sub, dot, ceilingAt, hasCeiling,
 } from './geom.ts';
 import { FURNITURE_DEFAULT_SIZE } from './furnitureSizes.ts';
 import { levelPlan, levels, stairFlights } from './levels.ts';
@@ -15,11 +15,14 @@ export interface Issue {
 
 const isVec2 = (v: unknown): v is Vec2 =>
   Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === 'number' && Number.isFinite(n));
+const isLength = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0;
+const isNumber = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
 
 /**
- * Checks a plan for mistakes that would break the build or betray a misread
- * plan: dangling walls, openings that don't fit, room areas that disagree
- * with the printed labels, furniture outside its room.
+ * Checks a plan for mistakes. Errors are what breaks the build or the plan's integrity: bad numbers,
+ * degenerate shapes, openings that don't fit, broken references. Warnings are building heuristics that
+ * betray a misread plan: dangling walls, room areas that disagree with the printed labels, furniture
+ * outside its room. A plan without walls (a plaza, a landscape) is valid.
  */
 export function validatePlan(plan: Plan): Issue[] {
   const issues: Issue[] = [];
@@ -34,22 +37,25 @@ export function validatePlan(plan: Plan): Issue[] {
   };
 
   if (plan.version !== 1) err('plan', `version must be 1, got ${String(plan.version)}`);
-  if (!Array.isArray(plan.walls) || plan.walls.length === 0) {
-    err('plan', 'needs at least one wall');
+  if (!Array.isArray(plan.walls)) {
+    err('plan', 'walls must be an array, empty for a plan without walls');
     return issues;
   }
+  if (plan.north !== undefined && !isNumber(plan.north)) err('plan', 'north must be degrees clockwise from the top of the plan');
+  if (plan.latitude !== undefined && !(isNumber(plan.latitude) && Math.abs(plan.latitude) <= 90)) err('plan', 'latitude must be degrees from -90 to 90');
 
   if (plan.levels !== undefined && !checkLevels(plan, err, warn, claim)) return issues;
   checkDesignOptions(plan, err, claim);
   checkLevelReferences(plan, err);
   for (const level of levels(plan)) {
     const storey = levelPlan(plan, level);
-    if (plan.levels?.length && !storey.walls.length) err(`level ${level.id}`, 'has no walls');
-    else checkStorey(storey, err, warn, claim);
+    // A storey without walls is a terrace or a site level; in a building it is usually a slip.
+    if (plan.levels?.length && plan.walls.length && !storey.walls.length) warn(`level ${level.id}`, 'has no walls');
+    checkStorey(storey, err, warn, claim);
   }
 
   // Overall size against the printed dimensions
-  if (plan.source?.overall) {
+  if (plan.source?.overall && plan.walls.length) {
     const b = planBounds(plan);
     // Bounds use centerlines; the printed overall size is to the outside faces.
     const t = d.exteriorThickness;
@@ -86,7 +92,9 @@ function checkLevels(plan: Plan, err: Report, warn: Report, claim: (id: string, 
   for (let i = 1; i < stacked.length; i++) {
     const below = stacked[i - 1], above = stacked[i];
     const gap = above.elevation - below.elevation;
-    if (gap < 2) err(`level ${above.id}`, `sits ${gap.toFixed(2)} m above level ${below.id}; storeys need at least 2 m`);
+    // Head room is a rule for the walls of a building; terraces of a site may step by any height.
+    if (!levelPlan(plan, below).walls.length) continue;
+    if (gap < 2) warn(`level ${above.id}`, `sits ${gap.toFixed(2)} m above level ${below.id}; storeys of a building need at least 2 m`);
     else if ((below.height ?? withDefaults(plan).wallHeight) > gap + 0.01)
       warn(`level ${below.id}`, `walls of ${below.height ?? withDefaults(plan).wallHeight} m reach through the ${gap.toFixed(2)} m storey into level ${above.id}`);
   }
@@ -155,6 +163,8 @@ function checkStorey(plan: Plan, err: Report, warn: Report, claim: (id: string, 
     }
     const L = wallLength(w);
     if (L < 0.05) err(`wall ${w.id}`, `is ${L.toFixed(3)} m long`);
+    if (w.thickness !== undefined && !isLength(w.thickness)) err(`wall ${w.id}`, 'thickness must be a positive number of meters');
+    if (w.height !== undefined && !isLength(w.height)) err(`wall ${w.id}`, 'height must be a positive number of meters');
     if (w.outsideFinish !== undefined && typeof w.outsideFinish !== 'string') err(`wall ${w.id}`, 'outsideFinish must be a material key or colour');
     const t = wallThickness(plan, w);
     if (t < 0.05 || t > 0.8) warn(`wall ${w.id}`, `thickness ${t} m looks wrong (expected 0.08 to 0.5)`);
@@ -190,10 +200,14 @@ function checkStorey(plan: Plan, err: Report, warn: Report, claim: (id: string, 
       err(`opening ${o.id}`, `wall "${o.wall}" does not exist`);
       continue;
     }
+    if (!isNumber(o.offset) || !isLength(o.width) || (o.height !== undefined && !isLength(o.height)) || (o.sill !== undefined && !isNumber(o.sill))) {
+      err(`opening ${o.id}`, 'offset, width, height and sill must be numbers of meters, width and height above 0');
+      continue;
+    }
     const L = wallLength(w);
     const s = o.offset - o.width / 2;
     const e = o.offset + o.width / 2;
-    if (o.width <= 0.2) err(`opening ${o.id}`, `width ${o.width} m is too small`);
+    if (o.width <= 0.2) warn(`opening ${o.id}`, `width ${o.width} m is very small`);
     if (s < 0.05 || e > L - 0.05)
       err(`opening ${o.id}`, `spans ${s.toFixed(2)} to ${e.toFixed(2)} m but wall ${w.id} is ${L.toFixed(2)} m long`);
     const isWindow = o.type === 'window';
@@ -219,8 +233,14 @@ function checkStorey(plan: Plan, err: Report, warn: Report, claim: (id: string, 
     if (dist(r.polygon[0], r.polygon[r.polygon.length - 1]) < EPS)
       warn(`room ${r.id}`, 'last point repeats the first; drop it');
     if (polygonSelfIntersects(r.polygon)) err(`room ${r.id}`, 'polygon crosses itself');
+    if (polygonArea(r.polygon) < 1e-4) {
+      err(`room ${r.id}`, 'polygon encloses no area');
+      continue;
+    }
+    if (r.ceiling !== undefined && r.ceiling !== false && typeof r.ceiling !== 'string') err(`room ${r.id}`, 'ceiling must be a material key or colour, or false for no ceiling');
+    if (r.ceilingHeight !== undefined && !isLength(r.ceilingHeight)) err(`room ${r.id}`, 'ceilingHeight must be a positive number of meters');
     const area = roomNetArea(plan, r.polygon);
-    if (area < 1) err(`room ${r.id}`, `net area is only ${area.toFixed(2)} m²`);
+    if (area < 1 && plan.walls.length) warn(`room ${r.id}`, `net area is only ${area.toFixed(2)} m²`);
     if (r.wallFinishes !== undefined) {
       if (!r.wallFinishes || typeof r.wallFinishes !== 'object') err(`room ${r.id}`, 'wallFinishes must map wall ids to material keys');
       else
@@ -236,7 +256,7 @@ function checkStorey(plan: Plan, err: Report, warn: Report, claim: (id: string, 
       else if (typeof slope.toward !== 'number' || !Number.isFinite(slope.toward))
         err(`room ${r.id}`, 'ceilingSlope.toward must be degrees clockwise from the top of the plan');
       else if (slope.from !== undefined && !isVec2(slope.from)) err(`room ${r.id}`, 'ceilingSlope.from must be [x, y]');
-      else {
+      else if (hasCeiling(plan, r)) {
         if (slope.rise > 1) warn(`room ${r.id}`, `ceiling pitch of ${(slope.rise * 100).toFixed(0)}% is steeper than 45°`);
         const low = Math.min(...r.polygon.map((p) => ceilingAt(plan, r, p)));
         if (low < 1.8) warn(`room ${r.id}`, `sloped ceiling comes down to ${low.toFixed(2)} m`);
@@ -254,17 +274,24 @@ function checkStorey(plan: Plan, err: Report, warn: Report, claim: (id: string, 
     claim(f.id, 'furniture');
     if (f.fixture !== undefined && typeof f.fixture !== 'boolean') err(`furniture ${f.id}`, 'fixture must be a boolean');
     if (f.roof !== undefined && typeof f.roof !== 'boolean') err(`furniture ${f.id}`, 'roof must be a boolean');
+    if (f.ground !== undefined && typeof f.ground !== 'boolean') err(`furniture ${f.id}`, 'ground must be a boolean');
     if (!isVec2(f.position)) {
       err(`furniture ${f.id}`, 'position must be [x, y]');
       continue;
     }
-    if (!(f.type in FURNITURE_DEFAULT_SIZE)) err(`furniture ${f.id}`, `unknown type "${f.type}"`);
+    if (f.size !== undefined && !(Array.isArray(f.size) && f.size.length === 3 && f.size.every(isLength)))
+      err(`furniture ${f.id}`, 'size must be [width, depth, height], each a positive number of meters');
+    if (f.rotation !== undefined && !isNumber(f.rotation)) err(`furniture ${f.id}`, 'rotation must be a number of degrees');
+    if (f.elevation !== undefined && !isNumber(f.elevation)) err(`furniture ${f.id}`, 'elevation must be a number of meters');
+    if (!(f.type in FURNITURE_DEFAULT_SIZE))
+      warn(`furniture ${f.id}`, `unknown type "${f.type}"; it is drawn ${f.model ? 'from its model' : 'as a box'}`);
     if (f.room) {
       const room = plan.rooms?.find((r) => r.id === f.room);
       if (!room) err(`furniture ${f.id}`, `room "${f.room}" does not exist`);
-      else if (!pointInPolygon(f.position, room.polygon)) warn(`furniture ${f.id}`, `center is outside room ${room.id}`);
+      else if (!f.ground && !pointInPolygon(f.position, room.polygon)) warn(`furniture ${f.id}`, `center is outside room ${room.id}`);
     }
-    if (f.type === 'rug' || f.type === 'stairs') continue;
+    // Ground spans the site; its centre says nothing about the walls.
+    if (f.type === 'rug' || f.type === 'stairs' || f.ground) continue;
     const [fw, fd] = f.size ?? FURNITURE_DEFAULT_SIZE[f.type] ?? [0.5, 0.5, 0.5];
     const r = Math.min(fw, fd) / 2;
     for (const w of plan.walls) {

@@ -1,19 +1,23 @@
 import type { AgentAccount, AgentProvider, AgentProviderStatus } from "@arch/agent";
 import { Button } from "@arch/ui/components/button";
+import { Input } from "@arch/ui/components/input";
 import { ProjectPage } from "@arch/ui/components/project-layout";
+import { Spinner } from "@arch/ui/components/spinner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@arch/ui/components/select";
 import { Switch } from "@arch/ui/components/switch";
 import { useHotkey } from "@arch/ui/hooks/use-hotkey";
 import { useTheme } from "@arch/ui/lib/theme";
 import { cn } from "@arch/ui/lib/utils";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeftIcon, BotIcon, CheckIcon, CopyIcon, ExternalLinkIcon, InfoIcon, PaletteIcon, RefreshCwIcon, Settings2Icon, TriangleAlertIcon } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowLeftIcon, BotIcon, CheckIcon, CopyIcon, DownloadIcon, ExternalLinkIcon, InfoIcon, PaletteIcon, RefreshCwIcon, Settings2Icon, TriangleAlertIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { languageNames, relativeTime, useStudioFormat } from "../lib/locale";
 import type { Locale, studioText } from "../lib/messages";
-import { agentRunnable, agentProvidersQuery, closeSettings, openSettings, type SettingsSection, settingsSections, useDisabledAgents } from "../lib/settings";
-import { agentProviders } from "../lib/server";
+import { agentRunnable, agentProvidersQuery, closeSettings, openSettings, refreshAgentProviders, type SettingsSection, settingsSections, useDisabledAgents } from "../lib/settings";
+import { type AgentSetup, useAgentSetup } from "../lib/desktop-agent-setup";
 import { useDesktopUpdate } from "./desktop-updates";
+import { StudioFailure } from "./studio-failure";
+import { problemReport } from "../lib/server";
 import { ClaudeIcon, OpenAIIcon } from "./model-picker";
 
 type Copy = typeof studioText.de;
@@ -105,7 +109,7 @@ const planNames: Record<string, string> = {free: "Free", go: "Go", plus: "Plus",
 const cloudNames: Record<string, string> = {bedrock: "Amazon Bedrock", vertex: "Google Vertex AI", foundry: "Microsoft Foundry", anthropicAws: "Claude on AWS", anthropicGoogleCloud: "Claude on Google Cloud", gateway: "Claude gateway", mantle: "Mantle"};
 const windowsHost = () => typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
 /** Official install and sign-in commands. Codex installs through npm on every platform. */
-const setup = (provider: AgentProvider) => provider === "claude"
+const setupCommands = (provider: AgentProvider) => provider === "claude"
   ? {install: windowsHost() ? "irm https://claude.ai/install.ps1 | iex" : "curl -fsSL https://claude.ai/install.sh | bash", signIn: "claude auth login", docs: "https://docs.claude.com/en/docs/claude-code/setup"}
   : {install: "npm install -g @openai/codex", signIn: "codex login", docs: "https://developers.openai.com/codex/cli"};
 
@@ -142,8 +146,7 @@ function AgentSettings({t}: {t: Copy}) {
   const [refreshing, setRefreshing] = useState(false);
   const refresh = async () => {
     setRefreshing(true);
-    try { queryClient.setQueryData(agentProvidersQuery.queryKey, await agentProviders({data: {refresh: true}})); }
-    catch { await queryClient.invalidateQueries({queryKey: agentProvidersQuery.queryKey}); }
+    try { await refreshAgentProviders(queryClient); }
     finally { setRefreshing(false); }
   };
   const checkedAt = providers.data?.map(item => Date.parse(item.checkedAt)).sort((a, b) => b - a)[0];
@@ -191,8 +194,10 @@ function Notice({tone, title, children}: {tone: "warning" | "error"; title: stri
 
 function AgentDetails({provider, status, enabled, summary, t}: {provider: AgentProvider; status: AgentProviderStatus | undefined; enabled: boolean; summary: {tone: Tone; headline: string}; t: Copy}) {
   const [showEmail, setShowEmail] = useState(false);
+  // The desktop app installs Claude Code and signs it in itself. The browser shows the commands.
+  const desktopSetup = useAgentSetup() !== null && provider === "claude";
   const name = providerNames[provider];
-  const commands = setup(provider);
+  const commands = setupCommands(provider);
   const values = {provider: name, terminal: windowsHost() ? t.powershell : t.terminal};
   const guide = <a href={commands.docs} target="_blank" rel="noreferrer" className="inline-flex w-fit items-center gap-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">{t.setupGuide}<ExternalLinkIcon className="size-3" /></a>;
   const issue = status?.issue;
@@ -209,9 +214,9 @@ function AgentDetails({provider, status, enabled, summary, t}: {provider: AgentP
       </div>
     </div>
     {!enabled && <p className="text-xs text-muted-foreground">{fill(t.agentOffHint, values)}</p>}
-    {issue === "not-installed" && <Notice tone="error" title={fill(t.installTitle, values)}><p className="text-xs text-muted-foreground">{fill(t.installHint, values)}</p><CommandBox command={commands.install} t={t} />{guide}</Notice>}
-    {issue === "launcher-only" && <Notice tone="error" title={fill(t.reinstallTitle, values)}><p className="text-xs text-muted-foreground">{fill(t.reinstallHint, values)}</p><CommandBox command={commands.install} t={t} />{guide}</Notice>}
-    {(issue === "signed-out" || issue === "unverified") && <Notice tone="warning" title={fill(t.signInTitle, values)}><p className="text-xs text-muted-foreground">{fill(issue === "signed-out" ? t.signInHint : t.unverifiedHint, values)}</p><CommandBox command={commands.signIn} t={t} /></Notice>}
+    {issue === "not-installed" && <Notice tone="error" title={fill(t.installTitle, values)}>{desktopSetup ? <ClaudeSetupStep step="install" issue={issue} t={t} /> : <><p className="text-xs text-muted-foreground">{fill(t.installHint, values)}</p><CommandBox command={commands.install} t={t} /></>}{guide}</Notice>}
+    {issue === "launcher-only" && <Notice tone="error" title={fill(t.reinstallTitle, values)}><p className="text-xs text-muted-foreground">{fill(t.reinstallHint, values)}</p>{desktopSetup ? <ClaudeSetupStep step="install" issue={issue} t={t} /> : <CommandBox command={commands.install} t={t} />}{guide}</Notice>}
+    {(issue === "signed-out" || issue === "unverified") && <Notice tone="warning" title={fill(t.signInTitle, values)}>{desktopSetup ? <ClaudeSetupStep step="sign-in" issue={issue} t={t} /> : <><p className="text-xs text-muted-foreground">{fill(issue === "signed-out" ? t.signInHint : t.unverifiedHint, values)}</p><CommandBox command={commands.signIn} t={t} /></>}</Notice>}
     {issue === "failed" && <Notice tone="error" title={fill(t.failedTitle, values)}><p className="text-xs text-muted-foreground">{fill(t.failedHint, values)}</p><CommandBox command={provider} t={t} />{guide}</Notice>}
     {status?.warnings.includes("git-bash-missing") && <Notice tone="warning" title={t.gitBashTitle}><p className="text-xs text-muted-foreground">{t.gitBashHint}</p><a href="https://git-scm.com/downloads/win" target="_blank" rel="noreferrer" className="inline-flex w-fit items-center gap-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">{t.downloadGit}<ExternalLinkIcon className="size-3" /></a></Notice>}
     {status?.installed && <div className="overflow-hidden rounded-lg border border-border/50 [&>*+*]:border-t [&>*+*]:border-border/50">
@@ -224,6 +229,86 @@ function AgentDetails({provider, status, enabled, summary, t}: {provider: AgentP
   </div>;
 }
 
+type SetupStep = "install" | "sign-in";
+const setupStep = (status?: AgentProviderStatus): SetupStep | null => status?.issue === "not-installed" || status?.issue === "launcher-only" ? "install" : status?.issue === "signed-out" || status?.issue === "unverified" ? "sign-in" : null;
+
+/** One step of setting up Claude Code in the desktop app: install it, or sign in through the browser. */
+function ClaudeSetupStep({step, issue, t}: {step: SetupStep; issue: AgentProviderStatus["issue"]; t: Copy}) {
+  const queryClient = useQueryClient();
+  const setup = useAgentSetup();
+  const [code, setCode] = useState("");
+  const [requestFailed, setRequestFailed] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  if (!setup) return null;
+  const bridge = window.archDesktop;
+  const values = {provider: providerNames.claude, terminal: windowsHost() ? t.powershell : t.terminal};
+  const commands = setupCommands("claude");
+  const busy = setup.status === "installing" || setup.status === "signing-in" || setup.status === "waiting-for-code";
+  const recheck = async () => {setRefreshing(true); try {await refreshAgentProviders(queryClient);} finally {setRefreshing(false);}};
+  // Each bridge call resolves when its step ends, so the status check follows a finished install or sign-in.
+  const run = async (action: (() => Promise<AgentSetup>) | undefined) => {
+    setRequestFailed(false);
+    try {
+      const result = await action?.();
+      if (result?.status === "installed" || result?.status === "signed-in") await recheck();
+    } catch {setRequestFailed(true);}
+  };
+  const note = (text: string, tone?: "error") => <p role={tone === "error" ? "alert" : undefined} className={cn("text-xs", tone === "error" ? "text-destructive" : "text-muted-foreground")}>{text}</p>;
+  const working = (label: string) => <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Spinner className="size-3.5" />{label}</p>;
+  if (step === "install") {
+    const installing = setup.status === "installing";
+    const failed = setup.status === "install-failed" || requestFailed;
+    return <div className="grid gap-2.5">
+      {installing ? <>
+        {working(t.agentInstalling)}
+        {!!setup.lines.length && <code className="block truncate font-mono text-xs text-muted-foreground" title={setup.lines.at(-1)}>{setup.lines.at(-1)}</code>}
+      </> : <>
+        {note(issue === "launcher-only" ? t.agentReinstallDesktopHint : t.agentInstallDesktopHint)}
+        {setup.status === "installed" && !refreshing && issue === "not-installed" && note(t.agentInstalledNotFound)}
+        <Button size="sm" className="w-fit" disabled={busy} onClick={() => void run(bridge?.installAgent && (() => bridge.installAgent!("claude")))}>{t.agentInstallButton}</Button>
+      </>}
+      {failed && <>{note(fill(t.agentInstallFailed, values), "error")}<CommandBox command={commands.install} t={t} /></>}
+    </div>;
+  }
+  const failed = setup.status === "sign-in-failed" || requestFailed;
+  const submit = () => {const value = code.trim(); setCode(""); if (value) void run(bridge?.submitAgentSignInCode && (() => bridge.submitAgentSignInCode!(value)));};
+  const cancel = <Button size="sm" variant="ghost" className="w-fit" onClick={() => void run(bridge?.cancelAgentSignIn)}>{t.cancel}</Button>;
+  if (setup.status === "waiting-for-code") return <form className="grid gap-2.5" onSubmit={event => {event.preventDefault(); submit();}}>
+    {note(t.agentPasteCodeHint)}
+    <Input value={code} onChange={event => setCode(event.target.value)} aria-label={t.agentSignInCode} placeholder={t.agentSignInCode} autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} className="font-mono" />
+    <div className="flex flex-wrap items-center gap-2"><Button type="submit" size="sm" disabled={!code.trim()}>{t.agentFinishSignIn}</Button>{bridge?.openAgentSignInPage && <Button type="button" size="sm" variant="ghost" className="w-fit" onClick={() => void run(bridge.openAgentSignInPage)}>{t.agentOpenSignInPage}</Button>}{cancel}</div>
+  </form>;
+  if (setup.status === "signing-in") return <div className="grid gap-2.5">{working(t.agentSigningIn)}{cancel}</div>;
+  if (setup.status === "terminal") return <div className="grid gap-2.5">
+    {note(fill(t.agentTerminalSignIn, values))}
+    <div className="flex flex-wrap items-center gap-2"><Button size="sm" disabled={refreshing} onClick={() => void recheck()}><RefreshCwIcon className={refreshing ? "motion-safe:animate-spin" : undefined} />{t.checkAgain}</Button><Button size="sm" variant="ghost" onClick={() => void run(bridge?.signInAgent && (() => bridge.signInAgent!("claude")))}>{t.agentSignInAgain}</Button></div>
+  </div>;
+  return <div className="grid gap-2.5">
+    {note(issue === "unverified" ? t.agentUnverifiedDesktopHint : t.agentSignInDesktopHint)}
+    <Button size="sm" className="w-fit" disabled={busy} onClick={() => void run(bridge?.signInAgent && (() => bridge.signInAgent!("claude")))}>{t.agentSignInButton}</Button>
+    {failed && <>{note(fill(t.agentSignInFailed, values), "error")}<CommandBox command={commands.signIn} t={t} /></>}
+  </div>;
+}
+
+/** Shown where Studio opens when no agent can run yet, so setup is one click away. */
+export function AgentSetupCard({t}: {t: Copy}) {
+  const providers = useQuery(agentProvidersQuery);
+  const {disabled} = useDisabledAgents();
+  const setup = useAgentSetup();
+  if (!providers.data || providers.data.some(item => !disabled.includes(item.provider) && agentRunnable(item))) return null;
+  const claude = providers.data.find(item => item.provider === "claude");
+  const step = setup && !disabled.includes("claude") ? setupStep(claude) : null;
+  return <section className="grid gap-3 rounded-xl border border-border/60 bg-card/40 p-4 text-left shadow-xs/5">
+    <div className="flex items-center gap-3">
+      <span className="grid size-9 shrink-0 place-items-center rounded-lg border border-border/60 bg-muted/30"><ClaudeIcon aria-hidden="true" className="size-4.5" /></span>
+      <h2 className="text-sm font-medium">{t.agentSetupTitle}</h2>
+    </div>
+    <p className="text-xs text-muted-foreground">{setup ? t.agentSetupHint : t.agentSetupBrowserHint}</p>
+    {step && <ClaudeSetupStep step={step} issue={claude!.issue} t={t} />}
+    <Button size="sm" variant={step ? "ghost" : "outline"} className="w-fit" onClick={() => openSettings("agents")}>{t.agentSetupMore}</Button>
+  </section>;
+}
+
 function AboutSettings({t}: {t: Copy}) {
   const control = useDesktopUpdate(t);
   return <SettingsGroup title={t.about}>
@@ -231,5 +316,20 @@ function AboutSettings({t}: {t: Copy}) {
       {control?.failure && <div className="pt-2">{control.failure}</div>}
       {control?.confirmation}
     </SettingsRow>
+    <ProblemReportRow appVersion={control?.update.currentVersion || null} t={t} />
   </SettingsGroup>;
+}
+
+/** One ZIP for whoever helps. Studio only saves it; the person decides where it goes. */
+function ProblemReportRow({appVersion, t}: {appVersion: string | null; t: Copy}) {
+  const format = useStudioFormat();
+  const report = useMutation({mutationFn: () => problemReport({data: {appVersion}}), onSuccess: value => {
+    const link = document.createElement("a");
+    link.href = value.url; link.download = value.fileName;
+    link.click();
+  }});
+  const size = report.data && format.number(Math.max(0.1, report.data.bytes / 1024 / 1024), {style: "unit", unit: "megabyte", unitDisplay: "short", maximumFractionDigits: 1});
+  return <SettingsRow title={t.problemReport} description={t.problemReportHint} status={report.data && <span role="status">{fill(t.projectFileReady, {name: report.data.fileName, size: size ?? ""})}</span>} control={<Button size="sm" variant="outline" disabled={report.isPending} onClick={() => report.mutate()}>{report.isPending ? <><Spinner />{t.loading}</> : <><DownloadIcon />{t.problemReportCreate}</>}</Button>}>
+    {report.error && <StudioFailure className="pt-2 text-xs text-destructive" error={report.error} />}
+  </SettingsRow>;
 }

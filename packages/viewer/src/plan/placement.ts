@@ -116,7 +116,7 @@ export function placementProblem(storey: Plan, piece: Placed, sizeOf: (f: Furnit
   const low = piece.elevation ?? 0, high = low + piece.size[2];
   if (!flat(piece.type, piece.size[2]))
     for (const f of storey.furniture ?? []) {
-      if (f.id === piece.id || f.roof || !shownInOption(f, look)) continue;
+      if (f.id === piece.id || f.roof || f.ground || !shownInOption(f, look)) continue;
       const size = sizeOf(f);
       const fLow = f.elevation ?? 0;
       if (flat(f.type, size[2]) || fLow >= high - TOUCH || fLow + size[2] <= low + TOUCH) continue;

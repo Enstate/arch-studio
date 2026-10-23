@@ -29,6 +29,11 @@ export const SUNRISE = 6.5;
 export const SUNSET = 19.5;
 /** Highest sun at solar noon, in degrees. */
 const NOON_ELEVATION = 52;
+/** Clock time of solar noon, midway between sunrise and sunset. */
+const SOLAR_NOON = (SUNRISE + SUNSET) / 2;
+/** Radius of the shadow-only ground disc, and the sun's distance from the house, at house scale. */
+const GROUND_RADIUS = 80;
+const SUN_DISTANCE = 30;
 /**
  * Sun elevation where the light set flips between the day lights (window spots) and the evening
  * lights (lamps). Both sides fade their own lights to zero here, so the flip itself is invisible.
@@ -41,6 +46,17 @@ const smooth = (x: number, a: number, b: number) => THREE.MathUtils.smoothstep(x
 export function sunElevation(t: number) {
   const p = (t * 24 - SUNRISE) / (SUNSET - SUNRISE);
   return NOON_ELEVATION * Math.sin(Math.PI * p);
+}
+
+/**
+ * Unit vector toward the sun at `latitude` on an equinox (declination 0), for t = 0..1 over the day,
+ * with solar noon at the clock's noon. Plan frame: +x east, +y up, +z south.
+ */
+export function solarDirection(t: number, latitude: number, v = new THREE.Vector3()) {
+  const hour = THREE.MathUtils.degToRad(15 * (t * 24 - SOLAR_NOON));
+  const lat = THREE.MathUtils.degToRad(latitude);
+  // East, up and north components are -sin H, cos φ cos H and -sin φ cos H; south is −north.
+  return v.set(-Math.sin(hour), Math.cos(lat) * Math.cos(hour), Math.sin(lat) * Math.cos(hour));
 }
 
 /** How the light blends at a sun elevation; every factor runs 0..1 and changes smoothly. */
@@ -66,6 +82,8 @@ const NOON_SUN = new THREE.Color(1, 0.97, 0.93);
 const LOW_SUN = new THREE.Color(1, 0.76, 0.52);
 /** Walk-mode sky behind the windows once the sky texture has faded out. */
 const NIGHT_SKY = '#1d242c';
+/** Daytime horizon the haze fades into under the sky. */
+const HAZE = new THREE.Color('#dde3e8');
 /** Display refresh rates the frame-rate target snaps to. */
 const REFRESH_RATES = [60, 72, 75, 90, 100, 120, 144, 165, 240];
 
@@ -155,6 +173,8 @@ export class Stage {
   readonly bounds = new THREE.Box3();
   /** Plan north, degrees clockwise from the top of the plan (see Plan.north). */
   north = 0;
+  /** Site latitude in degrees (see Plan.latitude); null keeps the central European day. */
+  latitude: number | null = null;
   /** Frames per second the resolution controller aims for; follows the display refresh. */
   targetFps = 60;
 
@@ -187,6 +207,9 @@ export class Stage {
   /** Sky seen through the windows in walk mode; null on phones, which load only the lighting copy. */
   private skyBox: THREE.CubeRenderTarget | null;
   private center = new THREE.Vector3();
+  private sunDistance = SUN_DISTANCE;
+  /** Haze over a scene larger than a house; null at house scale, where it would change nothing. */
+  private haze: THREE.Fog | null = null;
   private flat = false;
 
   // Internal render resolution as a fraction of the drawing buffer, stepped by adaptResolution.
@@ -271,7 +294,7 @@ export class Stage {
 
     // Shadow only: the house's shadow falls on the paper without a visible lawn disc.
     const groundMat = new THREE.ShadowNodeMaterial({ opacity: 0.28 });
-    this.ground = new THREE.Mesh(new THREE.CircleGeometry(80, 64), groundMat);
+    this.ground = new THREE.Mesh(new THREE.CircleGeometry(GROUND_RADIUS, 64), groundMat);
     this.ground.rotation.x = -Math.PI / 2;
     this.ground.position.y = -0.3;
     this.ground.receiveShadow = true;
@@ -430,7 +453,8 @@ export class Stage {
 
   private placeSun() {
     const { x: cx, z: cz } = this.center;
-    this.sun.position.set(cx + SUN_DIR.x * 30, SUN_DIR.y * 30, cz + SUN_DIR.z * 30);
+    const r = this.sunDistance;
+    this.sun.position.set(cx + SUN_DIR.x * r, SUN_DIR.y * r, cz + SUN_DIR.z * r);
     this.sun.target.position.set(cx, 0, cz);
     this.sun.target.updateMatrixWorld();
     this.sun.updateMatrixWorld();
@@ -481,14 +505,16 @@ export class Stage {
    */
   setTimeOfDay(t: number) {
     t = THREE.MathUtils.clamp(t, 0, 1);
-    const deg = sunElevation(t);
+    // At a known latitude the sun stands where it does there: a northern noon sun south of the equator.
+    const solar = this.latitude === null ? null : solarDirection(t, this.latitude);
+    const deg = solar ? THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(solar.y, -1, 1))) : sunElevation(t);
     this.elevation = deg;
     this.mix = lightMix(deg);
     this.preset = deg < SWITCH_ELEVATION ? 'evening' : 'day';
     this.lamps = this.mix.lamps;
     this.skylight = this.mix.skylight;
     // Plan +x is east and plan +y (world +z) is south: the sun swings east → south → west.
-    const az = Math.PI * ((t * 24 - SUNRISE) / (SUNSET - SUNRISE));
+    const az = solar ? Math.atan2(solar.z, solar.x) : Math.PI * ((t * 24 - SUNRISE) / (SUNSET - SUNRISE));
     const turn = -THREE.MathUtils.degToRad(this.north);
     const at = (el: number, v: THREE.Vector3) =>
       v.set(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).applyAxisAngle(UP, turn);
@@ -505,10 +531,39 @@ export class Stage {
   fitSun(box: THREE.Box3) {
     box.getCenter(this.center).setY(0);
     this.bounds.copy(box);
+    // Far enough that the whole box lies in front of the shadow camera.
+    this.sunDistance = Math.max(SUN_DISTANCE, box.getBoundingSphere(new THREE.Sphere()).radius + 5);
     this.ground.position.x = this.center.x;
     this.ground.position.z = this.center.z;
     this.placeSun();
     this.invalidateShadows();
+  }
+
+  /**
+   * Sizes what spans the whole scene to `extent`, which may reach past the house: the shadow ground
+   * covers all of it, and a scene larger than a house gets a haze that fades it out before each
+   * camera's far plane, so the edge never cuts off hard. Call after `fitSun`, which centers the ground.
+   */
+  fitScene(extent: THREE.Box3, haze: boolean) {
+    let reach = 0;
+    if (!extent.isEmpty())
+      for (const x of [extent.min.x, extent.max.x]) for (const z of [extent.min.z, extent.max.z])
+        reach = Math.max(reach, Math.hypot(x - this.center.x, z - this.center.z));
+    this.ground.scale.setScalar(Math.max(GROUND_RADIUS, reach + 20) / GROUND_RADIUS);
+    this.haze = haze ? (this.haze ?? new THREE.Fog('#ffffff', 1e8, 1e9)) : null;
+    this.scene.fog = this.haze;
+    // Haze would tint the shadow-only ground; a shadow that far out is faint anyway.
+    (this.ground.material as THREE.ShadowNodeMaterial).fog = !haze;
+    this.applyLight();
+  }
+
+  /** Haze from 60% of the camera's far plane to the plane itself; none in the plan's orthographic view. */
+  private fitHaze() {
+    if (!this.haze) return;
+    const c = this.camera as THREE.PerspectiveCamera;
+    const far = c.isPerspectiveCamera ? c.far : 1e9;
+    this.haze.near = far * 0.6;
+    this.haze.far = far;
   }
 
   /** Even, shadow-free light for the plan view, where sun shadows would hide the drawing. */
@@ -577,6 +632,8 @@ export class Stage {
     // The sky box stays the walk background even before the HDRI fills it (the procedural sky
     // covers it until then), so its shaders compile with everything else at load.
     this.scene.background = bg ?? this.skyBox?.texture ?? null;
+    // The haze fades into what lies behind: the paper, the night sky, or a pale daytime horizon.
+    this.haze?.color.copy(bg ?? HAZE.clone().lerp(new THREE.Color(NIGHT_SKY), 1 - day));
     this.scene.backgroundIntensity = 0.6 * Math.max(day, 0.05);
     this.sky.visible = !this.background && !darkSky && !this.hdri;
   }
@@ -700,6 +757,7 @@ export class Stage {
 
   private draw(labels: boolean) {
     this.syncViewCam();
+    this.fitHaze();
     this.renderer.lighting = this.lightings[this.preset];
     (this.outputKey === 'plan' && this.planPipeline ? this.planPipeline : this.pipeline).render();
     if (labels) this.labels.render(this.scene, this.camera);

@@ -59,7 +59,7 @@ test('unknown levels, cramped storeys and stairs that land nowhere are reported'
 
   const cramped = clone();
   cramped.levels![1].elevation = 1.5;
-  expect(errors(cramped).some((issue) => issue.where === 'level upper')).toBe(true);
+  expect(validatePlan(cramped).some((issue) => issue.where === 'level upper' && issue.level === 'warn')).toBe(true);
 
   const short = clone();
   short.furniture![0].size = [1.1, 3.8, 2.2];
