@@ -11,6 +11,9 @@ Keep this repository independently runnable without accounts or cloud credential
 - Project IDs and checkpoint IDs are portable. Hosted database IDs, accounts,
   customer approvals and publication authority stay in the hosted platform.
 - Local notes are private project context. They never constitute hosted approval.
+- Imported catalog assets live in the store's `library/`, outside Git and outside projects until a
+  project uses them. SimReady search and import reach Hugging Face only on an explicit request;
+  keep CC BY credits with every project that bundles those assets.
 - Keep customer sources, references, stores, credentials and evidence outside Git.
   Use synthetic inputs for verification. The sample house is only a demo fixture.
 - The source build is explicit local code execution, bounded but not sandboxed.

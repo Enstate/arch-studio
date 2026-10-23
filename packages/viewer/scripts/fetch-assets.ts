@@ -8,7 +8,8 @@
  *              occlusion in red and roughness in green, so one texture serves both maps
  *   HDRIs    → hdri/<id>.hdr (2K sky for the window view) and hdri/<id>-env.hdr (1K, sun clipped,
  *              for lighting and reflections), with the sun direction in index.json
- *   models   → models/<id>.glb (deduplicated, webp textures ≤ 1024 px, meshopt-compressed geometry)
+ *   models   → models/<id>.glb (deduplicated, webp textures ≤ 1024 px, meshopt-compressed geometry),
+ *              listed with Poly Haven's name and a category for the edit trays
  * It also copies plans/* into the served folder. Skips anything already there.
  *   bun run fetch-assets [--from <existing library dir>] [--out <dir>]
  */
@@ -23,6 +24,7 @@ import { dedup, prune, weld, textureCompress, getBounds, meshopt } from '@gltf-t
 import { MeshoptEncoder, MeshoptDecoder } from 'meshoptimizer';
 import { FloatType } from 'three';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
+import { pieceCategory } from '../src/plan/categories.ts';
 
 const pkg = resolve(import.meta.dirname, '..');
 const { values: args } = parseArgs({ options: { from: { type: 'string' }, out: { type: 'string' }, 'public-dir': { type: 'string' } } });
@@ -329,10 +331,19 @@ async function deriveModel(id: string) {
   console.log(`✓ ${id}`);
 }
 
+/** What a model is called and which tray category it goes in, from Poly Haven, kept with the originals. */
+async function modelListing(id: string): Promise<{ name: string; category: string }> {
+  const file = join(cache, 'models', `${id}.listing.json`);
+  const listing = existsSync(file) ? readJSON<{ name: string; categories: string[] }>(file) : null;
+  const { name, categories = [] } = listing ?? (await getJSON<{ name: string; categories?: string[] }>(`${API}/info/${id}`));
+  if (!listing) writeFileSync(file, `${JSON.stringify({ name, categories }, null, 2)}\n`);
+  return { name, category: pieceCategory(categories.join(' '), id) };
+}
+
 const index = {
   version: DERIVED,
   textures: {} as Record<string, { size: [number, number]; maps: string[]; res: number[] }>,
-  models: {} as Record<string, { size: [number, number, number]; front: number }>,
+  models: {} as Record<string, { size: [number, number, number]; front: number; name?: string; category?: string }>,
   hdris: {} as Record<string, { sun: number[] }>,
 };
 for (const [id, o] of Object.entries(manifest.textures)) {
@@ -348,7 +359,8 @@ for (const [id, o] of Object.entries(manifest.hdris)) {
 for (const [id, o] of Object.entries(manifest.models)) {
   const m = await fetchModel(id, o.res);
   await deriveModel(id);
-  index.models[id] = { size: m.size, front: m.front ?? 0 };
+  // glTF bounds are x, y (up), z; the library lists [width, depth, height] like plan pieces.
+  index.models[id] = { size: [m.size[0], m.size[2], m.size[1]], front: m.front ?? 0, ...(await modelListing(id)) };
 }
 writeFileSync(join(lib, 'index.json'), `${JSON.stringify(index)}\n`);
 

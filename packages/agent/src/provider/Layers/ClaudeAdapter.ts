@@ -3378,6 +3378,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         }),
         hooks: { PreToolUse: [{ hooks: [requireToolPermission] }] },
+        ...(input.mcpServers
+          ? {
+              mcpServers: Object.fromEntries(
+                Object.entries(input.mcpServers).map(([name, server]) => [name, { type: "http" as const, url: server.url }]),
+              ),
+            }
+          : {}),
         env: claudeEnvironment,
         ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
       };

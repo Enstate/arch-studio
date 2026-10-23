@@ -1,4 +1,5 @@
 import { StudioFailure } from "./studio-failure";
+import { conversationVersions } from "../lib/conversation";
 import type { AgentProvider, AgentProviderStatus } from "@arch/agent";
 import { Button } from "@arch/ui/components/button";
 import { Spinner } from "@arch/ui/components/spinner";
@@ -70,20 +71,21 @@ function useRoundActivity(roundId: string | undefined, live: boolean) {
 }
 
 /** The project's working surface: what was asked, what the agent did and what each round rendered. */
-export function Rounds({projectId, threadId, branch, versions, versionLabel, openVersion, compare, forkFrom, ensureGrant, initialRequest = "", t}: {projectId: string; threadId: string; branch: StudioBranch; versions: StudioVersion[]; versionLabel: (version: StudioVersion) => string; openVersion: (id: string) => void; compare: (base: string, target: string) => void; forkFrom: (checkpointId: string) => void; ensureGrant: (then: () => void) => void; /** A drafted request, such as adopting the hand edits. */ initialRequest?: string; t: Copy}) {
+export function Rounds({projectId, threadId, startedAt, branch, versions, versionLabel, openVersion, compare, forkFrom, ensureGrant, initialRequest = "", t}: {projectId: string; threadId: string; /** When the conversation began; it continues the branch from there. */ startedAt: string; branch: StudioBranch; versions: StudioVersion[]; versionLabel: (version: StudioVersion) => string; openVersion: (id: string) => void; compare: (base: string, target: string) => void; forkFrom: (checkpointId: string) => void; ensureGrant: (then: () => void) => void; /** A drafted request, such as adopting the hand edits. */ initialRequest?: string; t: Copy}) {
   const timeline = useQuery({queryKey: ["studio-rounds", projectId], queryFn: () => roundTimeline({data: {projectId}}), refetchInterval: query => query.state.data?.some(round => round.status === "running") ? 2000 : 5000});
   const lineage = branchVersions(versions, branch.headId);
   const rounds = (timeline.data ?? []).filter(round => round.threadId === threadId);
   const roundCheckpoints = new Set((timeline.data ?? []).map(round => round.checkpointId));
   const attachedTo = new Set(rounds.filter(round => round.attachments.length).map(round => round.parentCheckpointId));
+  const {start, since} = conversationVersions(lineage, startedAt);
+  const hasModel = lineage.some(item => item.hasArtifact);
   // Saved versions without a round came from a manual build, the CLI or an import.
   const entries: Entry[] = [
     ...rounds.map(round => ({kind: "round" as const, round, at: round.startedAt})),
     // Documents attached to a request are saved just before it. The request already lists them.
-    ...lineage.filter(version => !roundCheckpoints.has(version.id) && !(attachedTo.has(version.id) && versionChange(version, versions).kind === "files")).map(version => ({kind: "version" as const, version, at: version.createdAt})),
+    ...since.filter(version => !roundCheckpoints.has(version.id) && !(attachedTo.has(version.id) && versionChange(version, versions).kind === "files")).map(version => ({kind: "version" as const, version, at: version.createdAt})),
   ].sort((a, b) => a.at.localeCompare(b.at));
   const running = rounds.find(round => round.status === "running");
-  const forkPoint = branch.forkedFrom ? versions.find(version => version.id === branch.forkedFrom) : undefined;
   const version = (id: string | null) => versions.find(item => item.id === id);
   // The draft lives here so a critique can become the next request.
   const [draft, setDraft] = useState<{threadId: string; text: string}>({threadId, text: initialRequest});
@@ -99,14 +101,17 @@ export function Rounds({projectId, threadId, branch, versions, versionLabel, ope
   return <div className="flex min-h-0 flex-1 flex-col">
     {/* Reversed flow keeps the newest activity in view while it streams, without scroll effects. */}
     <div className="flex min-h-0 flex-1 flex-col-reverse overflow-y-auto"><div className="mx-auto w-full max-w-3xl px-3 pt-6 pb-4 sm:px-5">
-      {forkPoint && <FoldRow><GitBranchIcon className="size-3" />{t.forkedFrom} {versionLabel(forkPoint)}</FoldRow>}
+      {start && <FoldRow>{start.id === branch.forkedFrom && <GitBranchIcon className="size-3" />}<span className="min-w-0 flex-1 truncate">{start.hasArtifact ? `${t.forkedFrom} ${versionLabel(start)}` : changeText(start)}</span>{start.hasArtifact && <button type="button" className="hover:text-foreground" onClick={() => openVersion(start.id)}>{t.openModel}</button>}</FoldRow>}
       {entries.map(entry => entry.kind === "version"
         ? <FoldRow key={entry.version.id}><span className="min-w-0 flex-1 truncate" title={entry.version.checkpointId.slice(0, 7)}>{changeText(entry.version)}</span>{entry.version.hasArtifact && <button type="button" className="hover:text-foreground" onClick={() => openVersion(entry.version.id)}>{t.openModel}</button>}</FoldRow>
         : <RoundTurn key={entry.round.id} projectId={projectId} round={entry.round} resumable={entry.round.id === rounds.at(-1)?.id && !running} ensureGrant={ensureGrant} version={version(entry.round.checkpointId)} branch={branch} label={versionLabel} openVersion={openVersion} compare={compare} forkFrom={forkFrom} revise={text => setRequest(`${t.reviseRequest}\n\n${text}`)} t={t} />)}
-      {!rounds.length && !timeline.isPending && <div className="grid justify-items-center gap-1 py-16 text-center text-sm">
-        <p className="text-foreground">{t.roundsEmpty}</p><p className="max-w-md text-xs text-muted-foreground">{t.roundsEmptyHint}</p>
-        <div className="mt-4 flex flex-wrap justify-center gap-2">{starters(t).map(starter => <Button key={starter.title} type="button" size="sm" variant="outline" onClick={() => setRequest(starter.request)}><starter.icon />{starter.title}</Button>)}</div>
-      </div>}
+      {!rounds.length && !timeline.isPending && (hasModel
+        // A conversation on a built design picks up from it; the first-model suggestions no longer apply.
+        ? <div className="grid justify-items-center gap-1 py-16 text-center text-sm"><p className="text-foreground">{t.roundsContinue}</p><p className="max-w-md text-xs text-muted-foreground">{t.roundsContinueHint}</p></div>
+        : <div className="grid justify-items-center gap-1 py-16 text-center text-sm">
+          <p className="text-foreground">{t.roundsEmpty}</p><p className="max-w-md text-xs text-muted-foreground">{t.roundsEmptyHint}</p>
+          <div className="mt-4 flex flex-wrap justify-center gap-2">{starters(t).map(starter => <Button key={starter.title} type="button" size="sm" variant="outline" onClick={() => setRequest(starter.request)}><starter.icon />{starter.title}</Button>)}</div>
+        </div>)}
     </div></div>
     <div className="shrink-0 px-3 pb-3 sm:px-5 sm:pb-4">
       <Composer key={threadId} projectId={projectId} threadId={threadId} branch={branch} running={running} request={request} setRequest={setRequest} canCritique={!!lineage.find(item => item.hasArtifact)} ensureGrant={ensureGrant} t={t} />
@@ -332,18 +337,14 @@ function WorkRow({entry, t}: {entry: WorkEntry; t: Copy}) {
 /** Images go to the agent as images. Documents become project references the agent reads. */
 type Attachment = {file: File; url: string | null};
 const imageType = /^image\/(png|jpeg|webp|gif)$/;
-const documentName = /\.(pdf|svg|txt|md|json)$/i;
-function Composer({projectId, threadId, branch, running, request, setRequest, canCritique, ensureGrant, t}: {projectId: string; threadId: string; branch: StudioBranch; running?: RoundSummary; request: string; setRequest: (text: string) => void; canCritique: boolean; ensureGrant: (then: () => void) => void; t: Copy}) {
-  const queryClient = useQueryClient();
-  const file = useRef<HTMLInputElement>(null);
+/**
+ * The agent and model a conversation's next round runs on: the person's choice in the composer,
+ * else the conversation's own, else the first current model of a runnable agent.
+ */
+export function useRoundAgent(projectId: string, threadId: string, chosen?: ModelChoice, chosenSettings?: ModelSettings) {
   const providers = useQuery(agentProvidersQuery);
   const {disabled} = useDisabledAgents();
-  const saved = useQuery({queryKey: ["studio-thread-agent", projectId, threadId], queryFn: () => threadAgent({data: {projectId, threadId}}), staleTime: Infinity});
-  const activity = useRoundActivity(running?.id, true);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [dragging, setDragging] = useState(false);
-  const [chosen, setChosen] = useState<ModelChoice>();
-  const [chosenSettings, setChosenSettings] = useState<ModelSettings>();
+  const saved = useQuery({queryKey: ["studio-thread-agent", projectId, threadId], queryFn: () => threadAgent({data: {projectId, threadId}}), staleTime: Infinity, enabled: !!threadId});
   // A branch with a session keeps its provider, like a T3 Code thread. Other agents start on a new branch.
   const lockedTo = saved.data?.locked ? saved.data.provider : undefined;
   // A conversation already on an agent keeps it even after that agent is switched off in Settings.
@@ -357,6 +358,19 @@ function Composer({projectId, threadId, branch, running, request, setRequest, ca
   const savedSettings = saved.data && selection && saved.data.provider === selection.provider && saved.data.model === selection.model ? saved.data.settings : {};
   const settings = chosenSettings ?? savedSettings;
   const resolvedSettings = Object.fromEntries((selectedModel?.settings ?? []).map(setting => [setting.id, settingValue(setting, settings)]));
+  return {loaded: !!providers.data, lockedTo, pickable, ready, selection, selectedModel, settings, resolvedSettings};
+}
+
+const documentName = /\.(pdf|svg|txt|md|json)$/i;
+function Composer({projectId, threadId, branch, running, request, setRequest, canCritique, ensureGrant, t}: {projectId: string; threadId: string; branch: StudioBranch; running?: RoundSummary; request: string; setRequest: (text: string) => void; canCritique: boolean; ensureGrant: (then: () => void) => void; t: Copy}) {
+  const queryClient = useQueryClient();
+  const file = useRef<HTMLInputElement>(null);
+  const activity = useRoundActivity(running?.id, true);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [dragging, setDragging] = useState(false);
+  const [chosen, setChosen] = useState<ModelChoice>();
+  const [chosenSettings, setChosenSettings] = useState<ModelSettings>();
+  const {loaded, lockedTo, pickable, ready, selection, selectedModel, settings, resolvedSettings} = useRoundAgent(projectId, threadId, chosen, chosenSettings);
   const events = running ? activity.data?.events ?? [] : [];
   const resolved = new Set(events.flatMap(event => event.type === "approval-resolved" ? [event.requestId] : []));
   const approvals = events.filter((event): event is ApprovalEvent => event.type === "approval" && !resolved.has(event.requestId));
@@ -414,9 +428,9 @@ function Composer({projectId, threadId, branch, running, request, setRequest, ca
             </div>
             : <div className="flex min-w-0 flex-nowrap items-center justify-between gap-2 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
               <div className="-m-1 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 [scrollbar-width:none]">
-                {!ready.length && providers.data ? <Button type="button" size="sm" variant="ghost" title={t.setUpAgents} onClick={() => openSettings("agents")} className="shrink-0 gap-2 px-2 text-muted-foreground"><CircleAlertIcon className="size-4" />{t.noProvider}</Button>
+                {!ready.length && loaded ? <Button type="button" size="sm" variant="ghost" title={t.setUpAgents} onClick={() => openSettings("agents")} className="shrink-0 gap-2 px-2 text-muted-foreground"><CircleAlertIcon className="size-4" />{t.noProvider}</Button>
 : <>
-                  {providers.data && <ModelPicker providers={pickable} value={selection} lockedTo={lockedTo} onChange={next => {setChosen(next); setChosenSettings({});}} t={t} />}
+                  {loaded && <ModelPicker providers={pickable} value={selection} lockedTo={lockedTo} onChange={next => {setChosen(next); setChosenSettings({});}} t={t} />}
                   <TraitsPicker model={selectedModel} settings={settings} onChange={setChosenSettings} t={t} />
                 </>}
                 <Button type="button" size="icon-sm" variant="ghost" className="rounded-full text-muted-foreground" aria-label={t.attachFiles} title={t.attachFiles} onClick={() => file.current?.click()}><PaperclipIcon /></Button>

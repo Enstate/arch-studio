@@ -14,13 +14,13 @@ import { useHotkey } from "@arch/ui/hooks/use-hotkey";
 import { useIsMobile } from "@arch/ui/hooks/use-mobile";
 import { UiLabelsProvider } from "@arch/ui/lib/ui-labels";
 import { cn } from "@arch/ui/lib/utils";
-import { ASSET_BASE, ViewerSurface, ViewerLocaleProvider, type ViewerEditing, type ViewerInstance } from "@arch/viewer-ui";
-import { hasEdits, type PlanEdits } from "@arch/viewer/plan/edits";
+import { ViewerSurface, ViewerLocaleProvider, type ViewerEditing, type ViewerInstance } from "@arch/viewer-ui";
+import type { PlanEdits } from "@arch/viewer/plan/edits";
 import { useForm } from "@tanstack/react-form";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpRightIcon, CheckIcon, ChevronsUpDownIcon, HammerIcon, FolderOpenIcon, FolderPlusIcon, MoreHorizontalIcon, MenuIcon, PackageOpenIcon, PanelLeftIcon, PlusIcon, SearchIcon, SettingsIcon, SquarePenIcon } from "lucide-react";
 import { type ReactNode, useCallback, useRef, useState } from "react";
-import { revealInFolder, buildGrant, buildVersion, catalog, projectEdits, saveEdits, createClient, createThread, threadList, updateThread, grantBuilds, makePrimary, openProjectFolder, openVersion, projectDetails, revokeBuilds, saveNote } from "../lib/server";
+import { revealInFolder, startRound, buildGrant, buildVersion, catalog, assetLibrary, importAsset, searchAssets, projectEdits, saveEdits, createClient, createThread, threadList, updateThread, grantBuilds, makePrimary, openProjectFolder, openVersion, projectDetails, revokeBuilds, saveNote } from "../lib/server";
 import { VIEWER_MISMATCH, type StudioProjectSummary, type StudioThread, type StudioVersion } from "../lib/model";
 import { type Locale, studioText } from "../lib/messages";
 import { useStudioFormat, useStudioLocale } from "../lib/locale";
@@ -32,7 +32,7 @@ import { SettingsNav, SettingsPage } from "./settings";
 import { closeSettings, openSettings, useSettingsSection } from "../lib/settings";
 import { dismissOpenedProjectFile, useOpenedProjectFile } from "../lib/opened-project-file";
 import { NewProject } from "./new-project";
-import { Rounds, branchVersions, versionChange } from "./rounds";
+import { Rounds, branchVersions, useRoundAgent, versionChange } from "./rounds";
 import { ProjectHome } from "./project-home";
 import { OpenProject, ShareProject } from "./share-project";
 import { Compare } from "./compare";
@@ -175,7 +175,7 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
   return <><div className="studio-shell"><ProjectLayout sidebar={sidebar} sidebarOpen={sidebarOpen} isMobile={isMobile} mobileOpen={mobileOpen} onMobileOpenChange={setMobileOpen} labels={{skipToContent: t.skipToContent, sidebar: t.sidebar, mobileTitle: t.mobileTitle, mobileDescription: t.mobileDescription}}>
     {settingsSection ? <SettingsPage section={settingsSection} navigation={navigation} locale={locale} changeLocale={changeLocale} restore={() => {setMobileOpen(false); setImportOpen(true);}} t={t} />
       : error ? <ProjectPage title={t.studio} navigation={navigation}><div className="m-auto grid gap-3"><p role="alert">{t.error}</p><Button onClick={() => {void studio.refetch(); void threads.refetch();}}>{t.retry}</Button></div></ProjectPage>
-      : project ? <Project key={`${project.id}:${thread?.id ?? ""}`} project={project} thread={thread} threads={all.filter(item => item.projectId === project.id)} openThread={select} openHome={() => openHome(project.id)} draft={thread && drafts[thread.id]} starting={create.isPending} openVariant={branch => {const existing = all.filter(item => item.projectId === project.id && item.branch === branch).sort((a, b) => recent(b).localeCompare(recent(a)))[0]; if (existing) select(existing); else create.mutate({projectId: project.id, branch});}} t={t} navigation={navigation} section={section} setSection={setSection} newThread={input => create.mutate({projectId: project.id, ...input})} />
+      : project ? <Project key={`${project.id}:${thread?.id ?? ""}`} project={project} thread={thread} threads={all.filter(item => item.projectId === project.id)} openThread={select} openHome={() => openHome(project.id)} draft={thread && drafts[thread.id]} starting={create.isPending} openVariant={branch => {const existing = all.filter(item => item.projectId === project.id && item.branch === branch).sort((a, b) => recent(b).localeCompare(recent(a)))[0]; if (existing) select(existing); else create.mutate({projectId: project.id, branch});}} t={t} navigation={navigation} section={section} setSection={setSection} newThread={input => create.mutate({projectId: project.id, ...input})} showThread={threadId => {visit(thread); forgetDraft(thread); setSelection({threadId, projectId: project.id}); setSections(current => ({...current, [threadId]: "preview"}));}} />
       : <ProjectPage title={t.studio} navigation={navigation}><div className="m-auto grid max-w-sm gap-4 p-6 text-center text-ui"><p>{studio.isPending || threads.isPending ? t.loading : all.length ? t.selectThread : t.noProjects}</p><Button disabled={studio.isPending} onClick={openNewProject}>{t.newProject}</Button><Button variant="outline" onClick={() => setImportOpen(true)}>{t.openProjectFile}</Button></div></ProjectPage>}
   </ProjectLayout></div>
     <NewProject open={newProjectOpen} setOpen={setNewProjectOpen} clients={data?.clients ?? []} defaultClientId={filter.kind === "client" ? filter.id : project?.clientId} created={value => {void queryClient.invalidateQueries({queryKey: ["studio-threads"]}); setSelection(value.threadId ? {threadId: value.threadId, projectId: value.projectId} : {projectId: value.projectId, home: true});}} t={t} />
@@ -205,7 +205,7 @@ function ProjectViews({view, setSection, hasModel, counts, t, className}: {view:
 function ScrollPage({children}: {children: ReactNode}) {
   return <div className="min-h-0 flex-1 overflow-y-auto"><div className="mx-auto grid w-full max-w-3xl content-start gap-8 px-6 py-8 text-ui max-md:px-4 max-md:py-6">{children}</div></div>;
 }
-function Project({project, thread, threads, openThread, openHome, draft, starting, openVariant, t, navigation, section, setSection, newThread}: {project: StudioProjectSummary; thread?: StudioThread; threads: StudioThread[]; openThread: (thread: StudioThread) => void; openHome: () => void; draft?: string; starting: boolean; openVariant: (branch: string) => void; t: Copy; navigation: ReactNode; section: Section; setSection: (section: Section) => void; newThread: (input: {branch?: string; fromCheckpoint?: string; draft?: string}) => void}) {
+function Project({project, thread, threads, openThread, openHome, draft, starting, openVariant, t, navigation, section, setSection, newThread, showThread}: {project: StudioProjectSummary; thread?: StudioThread; threads: StudioThread[]; openThread: (thread: StudioThread) => void; openHome: () => void; draft?: string; starting: boolean; openVariant: (branch: string) => void; t: Copy; navigation: ReactNode; section: Section; setSection: (section: Section) => void; newThread: (input: {branch?: string; fromCheckpoint?: string; draft?: string}) => void; showThread: (threadId: string) => void}) {
   const queryClient = useQueryClient();
   const {locale} = useStudioLocale();
   const details = useQuery({queryKey: ["studio-project", project.id], queryFn: () => projectDetails({data: {projectId: project.id}}), refetchInterval: 5000});
@@ -230,9 +230,8 @@ function Project({project, thread, threads, openThread, openHome, draft, startin
   const build = useMutation({mutationFn: () => buildVersion({data: {sourceId: source!.manifest.id, projectId: project.id, branch: branch!.name, authorizeSourceExecution: true}}), onSuccess: async () => {setVersionId(undefined); setSection("preview"); await queryClient.invalidateQueries();}});
   // Hand edits belong to the branch folder; the viewer edits its latest version only.
   const edits = useQuery({queryKey: ["studio-edits", project.id, branch?.name], queryFn: () => projectEdits({data: {projectId: project.id, branch: branch!.name}}), enabled: !!branch && !!source});
-  // The shared library comes from `bun run fetch-assets`. Without it, editing offers only the project's own pieces.
-  const catalog = useQuery({queryKey: ["viewer-catalog"], queryFn: () => fetch(`${ASSET_BASE}index.json`, {method: "HEAD"}).then(response => response.ok, () => false), staleTime: Infinity});
-  const [drafted, setDrafted] = useState<string>();
+  // The catalog joins the shared library from `bun run fetch-assets` and the SimReady assets this store imported.
+  const library = useQuery({queryKey: ["asset-library"], queryFn: () => assetLibrary(), staleTime: Infinity});
   const storeHandEdits = async (next: PlanEdits) => {
     try {
       await saveEdits({data: {projectId: project.id, branch: branch!.name, edits: next}});
@@ -249,8 +248,33 @@ function Project({project, thread, threads, openThread, openHome, draft, startin
     ensureGrant(() => void storeHandEdits(next));
     throw new Error(t.grantBeforeSaving);
   };
-  const editing: ViewerEditing | undefined = branch && source && edits.data && version?.id === latestVersion?.id ? {saved: edits.data, catalogBase: catalog.data ? ASSET_BASE : undefined, save: saveHandEdits} : undefined;
-  const adopt = edits.data && hasEdits(edits.data) && thread ? () => {setDrafted(t.adoptHandEditsRequest); setSection("rounds");} : undefined;
+  const addAsset = async (piece: {key: string}) => {
+    const added = await importAsset({data: {key: piece.key}});
+    await queryClient.invalidateQueries({queryKey: ["asset-library"]});
+    return added;
+  };
+  // A request about a piece selected in the view starts a round in this conversation, on the agent
+  // and model its composer would use. Without a conversation it starts one on this branch.
+  const roundAgent = useRoundAgent(project.id, thread?.id ?? "");
+  const askAgent = async (request: string) => {
+    const selection = roundAgent.selection;
+    if (!selection || !branch) throw new Error(t.setUpAgents);
+    const send = async () => {
+      const threadId = thread?.id ?? (await createThread({data: {projectId: project.id, branch: branch.name}})).threadId;
+      const data = new FormData();
+      data.set("projectId", project.id); data.set("threadId", threadId); data.set("kind", "request"); data.set("request", request);
+      data.set("provider", selection.provider); data.set("model", selection.model); data.set("settings", JSON.stringify(roundAgent.resolvedSettings));
+      await startRound({data});
+      await queryClient.invalidateQueries({queryKey: ["studio-rounds", project.id]});
+      await queryClient.invalidateQueries({queryKey: ["studio-threads"]});
+      if (!thread) showThread(threadId);
+    };
+    const granted = await buildGrant({data: {projectId: project.id, branch: branch.name}}).then(value => value.granted, () => false);
+    if (granted) return send();
+    // The round waits for build permission like any other, then starts by itself.
+    ensureGrant(() => void send());
+  };
+  const editing: ViewerEditing | undefined = branch && source && edits.data && version?.id === latestVersion?.id ? {saved: edits.data, catalogBase: library.data?.base, pieces: library.data?.pieces, search: query => searchAssets({data: {query}}), add: addAsset, ask: askAgent, save: saveHandEdits} : undefined;
   const grant = useMutation({mutationFn: () => grantBuilds({data: {projectId: project.id, branch: branch!.name}}), onSuccess: () => {const then = grantFor; setGrantFor(null); then?.();}});
   const revoke = useMutation({mutationFn: () => revokeBuilds({data: {projectId: project.id}})});
   const primary = useMutation({mutationFn: () => makePrimary({data: {projectId: project.id, name: branch!.name}}), onSuccess: () => queryClient.invalidateQueries()});
@@ -294,8 +318,8 @@ function Project({project, thread, threads, openThread, openHome, draft, startin
   </>;
   const tool = (content: ReactNode) => <ScrollPage><h2 className="text-lg font-medium">{t[view as typeof toolSections[number]]}</h2>{content}</ScrollPage>;
   const content = details.isError ? <div className="m-auto grid gap-3"><StudioFailure error={details.error} /><Button onClick={() => {void details.refetch();}}>{t.retry}</Button></div>
-    : view === "preview" && version ? <VersionPreview key={version.id} version={version} editing={editing} editsPending={edits.isLoading || catalog.isLoading} adopt={adopt} rebuild={source && branch ? () => ensureGrant(() => build.mutate()) : undefined} rebuilding={build.isPending} t={t} />
-    : view === "rounds" && branch && thread ? <Rounds projectId={project.id} threadId={thread.id} branch={branch} versions={allVersions} versionLabel={versionLabel} openVersion={showVersion} compare={compare} forkFrom={checkpointId => newThread({fromCheckpoint: checkpointId})} ensureGrant={ensureGrant} initialRequest={draft ?? (edits.data && hasEdits(edits.data) ? drafted : undefined)} t={t} />
+    : view === "preview" && version ? <VersionPreview key={version.id} version={version} editing={editing} editsPending={edits.isLoading || library.isLoading} rebuild={source && branch ? () => ensureGrant(() => build.mutate()) : undefined} rebuilding={build.isPending} t={t} />
+    : view === "rounds" && branch && thread ? <Rounds projectId={project.id} threadId={thread.id} startedAt={thread.createdAt} branch={branch} versions={allVersions} versionLabel={versionLabel} openVersion={showVersion} compare={compare} forkFrom={checkpointId => newThread({fromCheckpoint: checkpointId})} ensureGrant={ensureGrant} initialRequest={draft} t={t} />
     : view === "compare" ? <Compare projectId={project.id} versions={versions} base={compared?.base} target={compared?.target} select={(base, target) => setCompared({base, target})} versionLabel={versionLabel} t={t} />
     : details.isPending ? <p role="status" className="m-auto text-ui text-muted-foreground">{t.loading}</p>
     : view === "intake" ? <ScrollPage>
@@ -312,7 +336,7 @@ function Project({project, thread, threads, openThread, openHome, draft, startin
   return <><ProjectPage title={thread ? threadTitle(thread.title, t) : project.name} meta={thread ? <button type="button" title={t.openProjectHome} onClick={openHome} className="truncate hover:text-foreground hover:underline">{project.name}{client ? ` · ${client}` : ""}</button> : undefined} navigation={navigation} actions={actions}>{views("shrink-0 border-b px-2 py-1.5 lg:hidden")}{content}</ProjectPage><Dialog open={exportOpen} onOpenChange={setExportOpen}><DialogContent><DialogHeader><DialogTitle>{t.shareProject}</DialogTitle></DialogHeader><ShareProject key={version?.id} projectId={project.id} checkpointId={version?.checkpointId} t={t} /></DialogContent></Dialog><Dialog open={!!grantFor} onOpenChange={value => {if (!value && !grant.isPending) setGrantFor(null);}}><DialogContent><DialogHeader><DialogTitle>{t.grantTitle}</DialogTitle><DialogDescription>{t.executionConfirmation} {t.grantHint}</DialogDescription></DialogHeader><p className="break-all font-mono text-xs">{branch?.directory}</p>{grant.error && <StudioFailure className="text-destructive" error={grant.error} />}<div className="flex justify-end gap-2"><Button variant="ghost" disabled={grant.isPending} onClick={() => setGrantFor(null)}>{t.cancel}</Button><Button disabled={!branch || grant.isPending} onClick={() => grant.mutate()}>{grant.isPending ? t.loading : t.authorizeBuild}</Button></div></DialogContent></Dialog></>;
 }
 /** `editsPending` holds the viewer back until it is known whether it opens editable; it reads that once. */
-function VersionPreview({version, editing, editsPending, adopt, rebuild, rebuilding, t}: {version: StudioVersion; editing?: ViewerEditing; editsPending: boolean; adopt?: () => void; rebuild?: () => void; rebuilding: boolean; t: Copy}) {
+function VersionPreview({version, editing, editsPending, rebuild, rebuilding, t}: {version: StudioVersion; editing?: ViewerEditing; editsPending: boolean; rebuild?: () => void; rebuilding: boolean; t: Copy}) {
   const preview = useQuery({queryKey: ["studio-preview", version.checkpointId], queryFn: () => openVersion({data: {checkpointId: version.checkpointId}}), staleTime: 60_000, retry: false});
   // Built for a viewer this Studio cannot open: the project folder can be built again here.
   const mismatch = preview.isError && preview.error.message === VIEWER_MISMATCH;
@@ -329,7 +353,8 @@ function VersionPreview({version, editing, editsPending, adopt, rebuild, rebuild
       if (currentViewer.current === viewer) setError(true);
     });
   }, []);
-  const status = <div className="flex items-center gap-2"><p role="status" className="pointer-events-none rounded-lg bg-background/90 px-3 py-2 text-xs shadow-sm">{error ? t.error : ready ? t.ready : t.preparing}</p>{adopt && ready && <Button size="xs" variant="outline" className="pointer-events-auto" onClick={adopt}>{t.adoptHandEdits}</Button>}</div>;
+  // Status shows only while the model opens or when it failed; a model on screen speaks for itself.
+  const status = (error || !ready) && <p role="status" className="pointer-events-none rounded-lg bg-background/90 px-3 py-2 text-xs shadow-sm">{error ? t.error : t.preparing}</p>;
   return <div data-studio-preview={error ? "error" : ready ? "ready" : "pending"} className="relative size-full min-h-0">{preview.data && !editsPending ? <ViewerSurface planUrl={preview.data.planUrl} assetBase={preview.data.assetBase} artifactId={preview.data.artifactHash} onViewer={onViewer} top={status} editing={editing && {...editing, dropped: preview.data.handEditsDropped}} /> : <div className="grid size-full place-items-center p-6"><div className="grid gap-3 text-center text-ui">{preview.isError && !mismatch ? <StudioFailure error={preview.error} /> : <p role={mismatch ? "alert" : "status"}>{mismatch ? t.viewerMismatch : t.preparing}</p>}{mismatch && rebuild ? <Button disabled={rebuilding} onClick={rebuild}>{rebuilding ? t.loading : t.rebuildHere}</Button> : preview.isError && <Button onClick={() => {void preview.refetch();}}>{t.retry}</Button>}</div></div>}</div>;
 }
 function VersionMedia({version, t}: {version: StudioVersion; t: Copy}) {

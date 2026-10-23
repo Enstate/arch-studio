@@ -85,6 +85,38 @@ the working brief and work plan reflect the current project folder.
 For intake and authoring instructions, use
 [arch-generation](.agents/skills/arch-generation/SKILL.md).
 
+## Furnishing and the asset catalog
+
+Choose **Edit** on the latest version to change the design by hand. **In the room** lists what
+stands in the room on show, or on the whole floor: pick a room from the menu or click its name in
+the view, then select a piece to turn, duplicate or remove it. **Add** shows the library with
+pictures, sorted into categories and searchable. Click a piece to put it in the room on show, or
+drag it into place. **Save changes** builds a new version and copies the models it uses into the
+project with their credits.
+
+The library is the CC0 Poly Haven set from `bun run fetch-assets` plus any NVIDIA
+[SimReady](https://huggingface.co/datasets/nvidia/simready-assets) assets you add. Under
+**NVIDIA SimReady** in the Add tray, search the
+[SimReady Central](https://huggingface.co/spaces/nvidia/simready-central) catalog and add a result
+to your library. Studio reaches Hugging Face only when you search or add. It converts the asset's
+OpenUSD into a glTF at real size and keeps it in the store's `library/` folder, outside every
+project, for all projects on this machine. SimReady assets are licensed CC BY 4.0: their credit
+lines travel into each project's `assets/library/CREDITS.md`, so keep that file with deliveries.
+
+Agents get the same catalog as MCP tools. In a request round Studio gives Claude Code or Codex an
+`arch` server for that round only, with `search_catalog`, `import_simready_asset`,
+`add_assets_to_project`, `describe_rooms`, `list_furniture`, `find_spot` and `check_placement`.
+The furniture tools read the last build and check placements against walls, door swings, windows
+and other furniture as the hand editor does. Outside Studio, serve them from a checkout:
+
+```sh
+claude mcp add arch -- bun run --cwd /path/to/arch-studio arch mcp --project /path/to/project
+codex mcp add arch -- bun run --cwd /path/to/arch-studio arch mcp --project /path/to/project
+```
+
+`bun run arch catalog search <words>` and `bun run arch catalog import <simready-asset>` do the same
+from a terminal.
+
 ## Continue on another machine
 
 Choose **Handoff** to export an immutable checkpoint folder. On the other machine,
@@ -118,7 +150,8 @@ The viewer keeps its own package version and exact manifest bytes across tool-on
 releases, so existing projects retain their runtime hash.
 
 `bun run fetch-assets` optionally downloads the CC0 Poly Haven library into
-`apps/studio/public/viewer`. Downloaded assets are excluded from Git. Preserve
+`apps/studio/public/viewer`, with a picture of each model for the edit trays. Run it again after
+updating to pick up pictures and corrected model sizes. Downloaded assets are excluded from Git. Preserve
 the generated `CREDITS.md` when delivering those assets. Imported assets and
 customer projects retain their own rights; the code license does not license them.
 

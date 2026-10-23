@@ -10,6 +10,8 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiMcpTokenRouteImport } from './routes/api.mcp.$token'
+import { Route as ApiCatalogTokenSplatRouteImport } from './routes/api.catalog.$token.$'
 import { Route as ApiExportsExportIdTokenRouteImport } from './routes/api.exports.$exportId.$token'
 import { Route as ApiArtifactsCheckpointIdTokenSplatRouteImport } from './routes/api.artifacts.$checkpointId.$token.$'
 import { Route as ApiReferencesCheckpointIdTokenSplatRouteImport } from './routes/api.references.$checkpointId.$token.$'
@@ -17,6 +19,16 @@ import { Route as ApiReferencesCheckpointIdTokenSplatRouteImport } from './route
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiMcpTokenRoute = ApiMcpTokenRouteImport.update({
+  id: '/api/mcp/$token',
+  path: '/api/mcp/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCatalogTokenSplatRoute = ApiCatalogTokenSplatRouteImport.update({
+  id: '/api/catalog/$token/$',
+  path: '/api/catalog/$token/$',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiExportsExportIdTokenRoute = ApiExportsExportIdTokenRouteImport.update({
@@ -39,12 +51,16 @@ const ApiReferencesCheckpointIdTokenSplatRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api/mcp/$token': typeof ApiMcpTokenRoute
+  '/api/catalog/$token/$': typeof ApiCatalogTokenSplatRoute
   '/api/exports/$exportId/$token': typeof ApiExportsExportIdTokenRoute
   '/api/artifacts/$checkpointId/$token/$': typeof ApiArtifactsCheckpointIdTokenSplatRoute
   '/api/references/$checkpointId/$token/$': typeof ApiReferencesCheckpointIdTokenSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api/mcp/$token': typeof ApiMcpTokenRoute
+  '/api/catalog/$token/$': typeof ApiCatalogTokenSplatRoute
   '/api/exports/$exportId/$token': typeof ApiExportsExportIdTokenRoute
   '/api/artifacts/$checkpointId/$token/$': typeof ApiArtifactsCheckpointIdTokenSplatRoute
   '/api/references/$checkpointId/$token/$': typeof ApiReferencesCheckpointIdTokenSplatRoute
@@ -52,6 +68,8 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api/mcp/$token': typeof ApiMcpTokenRoute
+  '/api/catalog/$token/$': typeof ApiCatalogTokenSplatRoute
   '/api/exports/$exportId/$token': typeof ApiExportsExportIdTokenRoute
   '/api/artifacts/$checkpointId/$token/$': typeof ApiArtifactsCheckpointIdTokenSplatRoute
   '/api/references/$checkpointId/$token/$': typeof ApiReferencesCheckpointIdTokenSplatRoute
@@ -60,18 +78,24 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/api/mcp/$token'
+    | '/api/catalog/$token/$'
     | '/api/exports/$exportId/$token'
     | '/api/artifacts/$checkpointId/$token/$'
     | '/api/references/$checkpointId/$token/$'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/api/mcp/$token'
+    | '/api/catalog/$token/$'
     | '/api/exports/$exportId/$token'
     | '/api/artifacts/$checkpointId/$token/$'
     | '/api/references/$checkpointId/$token/$'
   id:
     | '__root__'
     | '/'
+    | '/api/mcp/$token'
+    | '/api/catalog/$token/$'
     | '/api/exports/$exportId/$token'
     | '/api/artifacts/$checkpointId/$token/$'
     | '/api/references/$checkpointId/$token/$'
@@ -79,6 +103,8 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ApiMcpTokenRoute: typeof ApiMcpTokenRoute
+  ApiCatalogTokenSplatRoute: typeof ApiCatalogTokenSplatRoute
   ApiExportsExportIdTokenRoute: typeof ApiExportsExportIdTokenRoute
   ApiArtifactsCheckpointIdTokenSplatRoute: typeof ApiArtifactsCheckpointIdTokenSplatRoute
   ApiReferencesCheckpointIdTokenSplatRoute: typeof ApiReferencesCheckpointIdTokenSplatRoute
@@ -91,6 +117,20 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/mcp/$token': {
+      id: '/api/mcp/$token'
+      path: '/api/mcp/$token'
+      fullPath: '/api/mcp/$token'
+      preLoaderRoute: typeof ApiMcpTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/catalog/$token/$': {
+      id: '/api/catalog/$token/$'
+      path: '/api/catalog/$token/$'
+      fullPath: '/api/catalog/$token/$'
+      preLoaderRoute: typeof ApiCatalogTokenSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/exports/$exportId/$token': {
@@ -119,6 +159,8 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ApiMcpTokenRoute: ApiMcpTokenRoute,
+  ApiCatalogTokenSplatRoute: ApiCatalogTokenSplatRoute,
   ApiExportsExportIdTokenRoute: ApiExportsExportIdTokenRoute,
   ApiArtifactsCheckpointIdTokenSplatRoute:
     ApiArtifactsCheckpointIdTokenSplatRoute,

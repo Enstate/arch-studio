@@ -164,6 +164,8 @@ The JSON root has version:1, name:string and walls:Wall[] (at least one). Option
 
 Asset paths are relative to the artifact's plan.json: assets/models/chair.glb becomes ./models/chair.glb. No absolute paths, parent traversal, remote URLs or data outside the artifact. Library model syntax is @lib/models/<id>.glb; PBR pbr and environment fields refer to IDs in the bundled library/index.json. The starter index is {version:2,textures:{},models:{},hdris:{}} and supports procedural materials/furniture with no HDRI. Add a library ID only when its actual delivery files are present: models/<id>.glb; textures/<id>/<resolution>/<map>.webp for all indexed maps and resolutions; hdri/<id>-env.hdr and hdri/<id>.hdr. Texture metadata carries size:[width,depth] in metres, maps:[color,normal,orm] as applicable and res:[pixelResolution,...]; model metadata carries size:[width,depth,height] and optional front; HDRI metadata carries sun:[x,y,z]. Keep this index limited to bundled, used assets.
 
+Furnishing from the catalog: Studio rounds have arch MCP tools, and \`bun run arch mcp --project <folder>\` serves the same tools outside Studio. search_catalog finds models in the local library (CC0 Poly Haven and assets imported before) and in NVIDIA SimReady, a CC BY 4.0 library of real-size props searched online. import_simready_asset converts a SimReady asset into the local library; add_assets_to_project copies library models and textures into assets/library with their index entries and their CREDITS.md lines. Place a model as type box with model @lib/models/<id>.glb; it faces +y at rotation 0 and keeps its real size without size. describe_rooms and list_furniture read the last build, hand edits included; find_spot and check_placement test a piece against walls, door swings, windows and other furniture as the hand editor does. Keep every CC BY credit line in assets/library/CREDITS.md for delivery.
+
 The generator's outputs are derived. Author source and assets, then rebuild; preserve plan-relative paths. A plan passing structural validation still needs visual critique against the references and the current brief.
 `;
 
@@ -213,6 +215,8 @@ const retiredRules: Record<"AGENTS.md" | "BUILDERS.md", string[]> = {
     "1e648fd212382aa854239eedda24abb79b6f18ccca5840566e3a905db929b77a",
     // Performance budgets, before the build compressed models itself.
     "3621b651a526b4150f84853d0f6068bd5d1d26fa51f11e9f8077bc7771ef5f22",
+    // Model compression, before the asset catalog and its MCP tools.
+    "9c166e2c568ab0bef3622d0768f85b7a32a4a2d85ddf1b7ff9a6e3609d31ec40",
   ],
 };
 

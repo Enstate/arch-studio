@@ -6,7 +6,8 @@ import { takePrefetched } from '../preload.ts';
 export interface LibraryIndex {
   version: number;
   /** `res`: the sizes on disk in pixels, smallest first. */
-  textures: Record<string, { size: [number, number]; maps: string[]; res: number[] }>;
+  /** `ext`: the map files' type, `webp` unless a set says `jpg`. */
+  textures: Record<string, { size: [number, number]; maps: string[]; res: number[]; ext?: 'webp' | 'jpg' }>;
   models: Record<string, { size: [number, number, number]; front?: number }>;
   hdris: Record<string, { sun: [number, number, number] }>;
 }
@@ -61,6 +62,14 @@ export class Library {
     return this.index;
   }
 
+  /** Reads the shared library's index again, so assets that joined it since loading can be placed. */
+  async reloadCatalog(signal?: AbortSignal): Promise<void> {
+    if (!this.catalog) return;
+    const res = await fetch(new URL('index.json', this.catalog.base), { cache: 'no-store', signal });
+    if (!res.ok) throw new Error(`Viewer library index not found at ${this.catalog.base}index.json (${res.status}).`);
+    this.catalog.index = (await res.json()) as LibraryIndex;
+  }
+
   resolve = (rel: string): string | undefined => {
     if (rel.startsWith('@lib/models/') && this.catalog && !this.index.models[rel.slice(12).replace(/\.glb$/, '')]) return this.catalog.resolve(rel);
     if (rel.startsWith('@lib/')) return this.base + rel.slice(5);
@@ -71,7 +80,7 @@ export class Library {
   swatch(id: string): string | undefined {
     const meta = this.index.textures[id];
     if (!meta?.res?.length || !meta.maps.includes('color')) return this.catalog?.swatch(id);
-    return this.url(`textures/${id}/${meta.res[0]}/color.webp`);
+    return this.url(`textures/${id}/${meta.res[0]}/color.${meta.ext ?? 'webp'}`);
   }
 
   /**
@@ -83,7 +92,7 @@ export class Library {
     if (!meta?.res?.length) return this.catalog?.texture(id, max, progressive);
     const top = meta.res.filter((r) => r <= max).at(-1) ?? meta.res[0];
     const maps = (r: number) => {
-      const url = (m: string) => (meta.maps.includes(m) ? this.url(`textures/${id}/${r}/${m}.webp`) : undefined);
+      const url = (m: string) => (meta.maps.includes(m) ? this.url(`textures/${id}/${r}/${m}.${meta.ext ?? 'webp'}`) : undefined);
       return { color: url('color'), normal: url('normal'), orm: url('orm') };
     };
     return { size: meta.size, first: maps(progressive ? meta.res[0] : top), full: maps(top) };

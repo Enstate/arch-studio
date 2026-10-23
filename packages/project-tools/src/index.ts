@@ -6,7 +6,7 @@ import type { Plan } from "@arch/viewer/plan/schema";
 import { spawn, spawnSync } from "node:child_process";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { z } from "zod";
-import { createReadStream, promises as fs } from "node:fs";
+import { createReadStream, existsSync, promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
@@ -1447,8 +1447,8 @@ async function validatedArtifactPlan(directory:string, files:ArtifactManifest["f
   }
   if(hasLibrary){
     const id=z.string().regex(/^[a-zA-Z0-9_-]+$/);
-    const index=z.object({version:z.number().int().positive(),textures:z.record(id,z.object({res:z.array(z.number().int().positive()).min(1),maps:z.array(id).min(1)})),models:z.record(id,z.unknown()),hdris:z.record(id,z.unknown())}).parse(JSON.parse(await fs.readFile(await safeFile(directory,"outputs/artifact/library/index.json"),"utf8")));
-    for(const name of pbr){id.parse(name);const texture=index.textures[name];if(!texture)throw new Error("Unknown library texture");for(const resolution of texture.res)for(const map of texture.maps)local(`textures/${name}/${resolution}/${map}.webp`,true);}
+    const index=z.object({version:z.number().int().positive(),textures:z.record(id,z.object({res:z.array(z.number().int().positive()).min(1),maps:z.array(id).min(1),ext:z.enum(["webp","jpg"]).optional()})),models:z.record(id,z.unknown()),hdris:z.record(id,z.unknown())}).parse(JSON.parse(await fs.readFile(await safeFile(directory,"outputs/artifact/library/index.json"),"utf8")));
+    for(const name of pbr){id.parse(name);const texture=index.textures[name];if(!texture)throw new Error("Unknown library texture");for(const resolution of texture.res)for(const map of texture.maps)local(`textures/${name}/${resolution}/${map}.${texture.ext??"webp"}`,true);}
     const environment=plan.environment??"suburban_garden";
     if(plan.environment||index.hdris[environment]){id.parse(environment);if(!index.hdris[environment])throw new Error("Unknown library environment");local(`hdri/${environment}.hdr`,true);local(`hdri/${environment}-env.hdr`,true);}
   }
@@ -1524,32 +1524,45 @@ async function libraryIndex(folder: LibraryFolder) {
 }
 /**
  * Copies library models and textures with their index entries into another library folder,
- * skipping files it already holds. The target index is created when missing.
+ * skipping files it already holds. Each ID comes from the first source folder that holds it. The
+ * target index is created when missing, and an entry's `credit` line joins its CREDITS.md.
  */
-export async function bundleLibraryAssets(from: LibraryFolder, to: LibraryFolder, assets: { models: string[]; textures: string[] }): Promise<void> {
+export async function bundleLibraryAssets(from: LibraryFolder | readonly LibraryFolder[], to: LibraryFolder, assets: { models: string[]; textures: string[] }): Promise<void> {
   if (!assets.models.length && !assets.textures.length) return;
-  const source = await libraryIndex(from);
+  const sources = await Promise.all((Array.isArray(from) ? from : [from] as LibraryFolder[]).map(async folder => ({ folder, index: await libraryIndex(folder) })));
   const target = (await libraryIndex(to)) ?? { version: 2, textures: {}, models: {}, hdris: {} };
-  const copy = async (file: string) => {
+  const credits: string[] = [];
+  const copy = async (source: LibraryFolder, file: string) => {
     const destination = await writableFile(to.root, inLibrary(to, file));
     if (await fs.lstat(destination).then(() => true, () => false)) return;
-    await fs.copyFile(await safeFile(from.root, inLibrary(from, file)), destination);
+    await fs.copyFile(await safeFile(source.root, inLibrary(source, file)), destination);
   };
+  const holder = (kind: "models" | "textures", id: string) => sources.find(source => source.index?.[kind][id]);
   for (const id of assets.models) {
     libraryId.parse(id);
-    const entry = target.models[id] ?? source?.models[id];
-    if (!entry) throw new Error(`Hand edits place library model ${id}, which the library they come from does not hold.`);
-    await copy(`models/${id}.glb`);
+    const source = holder("models", id);
+    const entry = target.models[id] ?? source?.index?.models[id];
+    if (!entry) throw new Error(`Library model ${id} is in none of the libraries it could come from.`);
+    if (source) await copy(source.folder, `models/${id}.glb`);
     target.models[id] = entry;
+    const credit = (entry as { credit?: unknown }).credit;
+    if (typeof credit === "string") credits.push(credit);
   }
   for (const id of assets.textures) {
     libraryId.parse(id);
-    const entry = target.textures[id] ?? source?.textures[id];
-    if (!entry) throw new Error(`Hand edits paint with library texture ${id}, which the library they come from does not hold.`);
-    for (const resolution of entry.res) for (const map of entry.maps) await copy(`textures/${id}/${resolution}/${map}.webp`);
+    const source = holder("textures", id);
+    const entry = target.textures[id] ?? source?.index?.textures[id];
+    if (!entry) throw new Error(`Library texture ${id} is in none of the libraries it could come from.`);
+    if (source) for (const resolution of entry.res) for (const map of entry.maps) await copy(source.folder, `textures/${id}/${resolution}/${map}.${(entry as { ext?: string }).ext === "jpg" ? "jpg" : "webp"}`);
     target.textures[id] = entry;
   }
   await atomic(await writableFile(to.root, inLibrary(to, "index.json")), target);
+  if (credits.length) {
+    const file = await writableFile(to.root, inLibrary(to, "CREDITS.md"));
+    const previous = await fs.readFile(file, "utf8").catch(() => "# Asset credits\n\n");
+    const missing = credits.filter(line => !previous.includes(line));
+    if (missing.length) await fs.writeFile(file, `${previous}${missing.join("\n")}\n`);
+  }
 }
 /**
  * Lays a project's hand edits over the plan its generator wrote and bundles the library assets
@@ -1578,10 +1591,14 @@ export async function applyHandEdits(directory: string): Promise<{ dropped: stri
   await atomic(await writableFile(directory, "outputs/artifact/hand-edits.json"), { dropped: merged.dropped });
   return { dropped: merged.dropped };
 }
-/** Saves hand edits beside a project's source, first copying the library assets they use from `library` into `assets/library/`. */
-export async function saveHandEdits(directory: string, edits: PlanEdits, library: string | null): Promise<void> {
+/**
+ * Saves hand edits beside a project's source, first copying the library assets they use into
+ * `assets/library/` from the first of `libraries` that holds each one.
+ */
+export async function saveHandEdits(directory: string, edits: PlanEdits, libraries: string | readonly string[] | null): Promise<void> {
   const checked = planEditsSchema.parse(edits);
-  if (library) await bundleLibraryAssets({ root: await fs.realpath(library), library: "" }, { root: directory, library: "assets/library" }, handEditAssets(checked));
+  const folders = await Promise.all((typeof libraries === "string" ? [libraries] : libraries ?? []).filter(folder => existsSync(path.join(folder, "index.json"))).map(async folder => ({ root: await fs.realpath(folder), library: "" })));
+  if (folders.length) await bundleLibraryAssets(folders, { root: directory, library: "assets/library" }, handEditAssets(checked));
   await atomic(await writableFile(directory, handEditsPath), checked);
 }
 const artifactBuilds=new Set<string>();

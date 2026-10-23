@@ -15,6 +15,7 @@ import { bindOrbitInput, ORBIT_CURSOR } from './viewer/orbit-input.ts';
 import { openingDoors, poseDoor, type Door } from './viewer/doors.ts';
 import { PlanOverlay } from './viewer/overlay.ts';
 import { Library, NON_FLOOR_MAX, type LibraryIndex } from './viewer/library.ts';
+import { piecePicture } from './viewer/picture.ts';
 import { capabilities } from './capabilities.ts';
 import { takePrefetched } from './preload.ts';
 import { buildTourPath, createTour, IDLE_TOUR, OUTSIDE, type Tour, type TourState } from './viewer/tour.ts';
@@ -1193,7 +1194,9 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
           stage.requestRender();
         },
         report: (patch) => setState(patch),
-        catalog: catalog(),
+        catalog,
+        reloadCatalog: () => library.reloadCatalog(signal),
+        picture: (piece) => piecePicture(stage.renderer, stage.scene.environment, piece),
         signal,
       })
     : null;

@@ -6,9 +6,9 @@ import { type ReactNode, useCallback, useId, useMemo, useRef, useState } from "r
 import { useT } from "./locale";
 
 import type { ViewerProject } from "./types";
-import { ControlBar, DesignOptionPicker, focusToggle, LevelPicker, RoomLabel, readStoredFlag, storeFlag, ToolsCard, ViewerHotkeys, NavigationHint, WalkHint } from "./viewer-controls";
+import { ControlBar, DesignOptionPicker, focusToggle, hasNavigated, LevelPicker, RoomLabel, readStoredFlag, rememberNavigated, storeFlag, ToolsCard, ViewerHotkeys, NavigationHint, WalkHint } from "./viewer-controls";
 import { posterFor, rememberedDesignOption, useFullscreen, useViewerState, viewerActions, type ViewerActions, type ViewerInstance } from "./viewer-model";
-import { type DropHandlers, EditButton, EditSession, type ViewerEditing } from "./viewer-editing";
+import { type DropHandlers, EditSession, type ViewerEditing } from "./viewer-editing";
 import { ViewerStage } from "./viewer-stage";
 
 /** The 3D viewer filling its container, or a quiet placeholder while the model is being made. */
@@ -83,6 +83,14 @@ export function ViewerSurface({
   // and the Edit button only takes the house apart in place.
   const [editingOn, setEditingOn] = useState(false);
   const dropTarget = useRef<DropHandlers | null>(null);
+  // Steering the camera in a mode retires its mouse-controls strip, here and on later visits.
+  const [navigated, setNavigated] = useState<ReadonlySet<string>>(() => new Set());
+  const steer = (e: { target: EventTarget }) => {
+    const mode = state?.mode;
+    if (!mode || mode === "walk" || !(e.target instanceof HTMLCanvasElement) || navigated.has(mode)) return;
+    rememberNavigated(mode);
+    setNavigated(new Set(navigated).add(mode));
+  };
   const reportViewer = useCallback((next: ViewerInstance | null) => {
     setViewer(next);
     onViewer?.(next);
@@ -129,8 +137,11 @@ export function ViewerSurface({
     <div
       data-viewer=""
       data-labels={viewer && labelsHidden ? "off" : undefined}
+      onPointerDownCapture={steer}
+      onWheelCapture={steer}
       onDragOver={(e) => dropTarget.current?.onDragOver(e)}
       onDrop={(e) => dropTarget.current?.onDrop(e)}
+      onDragLeave={(e) => dropTarget.current?.onDragLeave(e)}
       className={cn(
         "@container relative size-full min-h-0 overflow-hidden bg-muted",
         // `.arch-room-label` is the class @arch/viewer gives each room label button.
@@ -151,20 +162,19 @@ export function ViewerSurface({
       />
 
       {viewer && state && actions && (
-        <div className="pointer-events-none absolute top-1/2 left-3 flex -translate-y-1/2 flex-col items-start gap-2">
-          {editing && viewer.editor && !editable && <EditButton onStart={() => setEditingOn(true)} />}
+        <div className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2">
           <LevelPicker viewer={viewer} state={state} actions={actions} />
-          <DesignOptionPicker viewer={viewer} state={state} actions={actions} />
         </div>
       )}
 
       <div className="@container pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-3 p-3">
         <div className="flex min-w-0 flex-col items-start gap-2">
           {top}
+          {viewer && state && actions && <DesignOptionPicker viewer={viewer} state={state} actions={actions} />}
           {viewer && state && <RoomLabel viewer={viewer} state={state} />}
         </div>
         {viewer && state && actions && (
-          <ToolsCard viewer={viewer} state={state} actions={actions} labelsHidden={labelsHidden} onToggleLabels={toggleLabels} hidden={rightPanelOpen || toolsHidden || editable} />
+          <ToolsCard viewer={viewer} state={state} actions={actions} labelsHidden={labelsHidden} onToggleLabels={toggleLabels} onEdit={editing && viewer.editor ? () => setEditingOn(true) : undefined} hidden={rightPanelOpen || toolsHidden || editable} />
         )}
       </div>
 
@@ -187,7 +197,7 @@ export function ViewerSurface({
       >
         {viewer && state && actions && (
           <>
-            <NavigationHint state={state} />
+            <NavigationHint state={state} navigated={navigated.has(state.mode) || hasNavigated(state.mode)} />
             <WalkHint state={state} />
             <div
               ref={listenForExpand}

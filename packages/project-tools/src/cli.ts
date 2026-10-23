@@ -29,6 +29,9 @@ Usage: bun run arch <command>
   import <bundle-folder>               Verify a portable package into this store
   brief <checkpoint-id>                Print the continuation brief and review notes
   preview <project-id>                 Serve a capability URL until interrupted
+  catalog search <words>               Search the local library and NVIDIA SimReady
+  catalog import <simready-asset>      Convert a SimReady asset into this store's catalog
+  mcp [--project <folder>]             Serve the asset catalog and furniture tools to an agent over stdio
   --help                               Show this help
 
 ARCH_HOME overrides the local catalog and checkpoint store. No cloud upload or publication occurs.`;
@@ -100,6 +103,18 @@ try {
     };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
+  } else if (command === "catalog" && args[0] === "search" && args.length >= 1) {
+    const { assetCatalog } = await import("./catalog.ts");
+    const { searchSimReady } = await import("./simready.ts");
+    const words = args.slice(1).join(" ");
+    const local = (await assetCatalog()).models.filter(model => words.toLowerCase().split(/\s+/).every(word => `${model.id} ${model.name} ${model.label ?? ""} ${model.category}`.toLowerCase().includes(word)));
+    console.log(JSON.stringify({ library: local, simready: (await searchSimReady(words)).assets }, null, 2));
+  } else if (command === "catalog" && args[0] === "import" && args.length === 2) {
+    const { importSimReady } = await import("./catalog.ts");
+    console.log(JSON.stringify(await importSimReady(args[1]!), null, 2));
+  } else if (command === "mcp") {
+    const { serveArchMcp } = await import("./mcp.ts");
+    await serveArchMcp(args);
   } else throw new Error(`Invalid command or arguments.\n\n${help}`);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));

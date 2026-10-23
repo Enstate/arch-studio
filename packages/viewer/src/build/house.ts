@@ -103,6 +103,8 @@ export interface HouseEditor {
   pieces: Map<string, THREE.Object3D>;
   /** Builds a piece, or builds it again after its look changed, and puts it in the scene. */
   build(piece: Furniture): Promise<THREE.Object3D>;
+  /** Builds a piece on its own, outside the house, with the house's finishes: for a picture of it. */
+  model(piece: Furniture): Promise<THREE.Object3D>;
   remove(id: string): void;
   /** Gives every wall face and floor the finish `plan` names for it now. */
   repaint(plan: Plan): void;
@@ -849,6 +851,10 @@ export async function buildHouse(
       pieceMap.set(piece.id, obj);
       changedApart = true;
       return obj;
+    },
+    async model(piece) {
+      const [obj] = (await buildFurniture({ ...plan, furniture: [{ ...piece, level: undefined }] }, lib, clipLib, opts.resolveUrl, opts.modelInfo, opts.manager)).children;
+      return obj!;
     },
     remove(id) {
       if (!pieceMap.has(id)) return;

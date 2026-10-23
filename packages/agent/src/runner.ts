@@ -34,6 +34,9 @@ async function requireTurnInput(input: AgentTurnInput): Promise<AgentTurnInput> 
     throw new Error("Model settings must be strings or booleans.");
   if (typeof input.instructions !== "string" || !Array.isArray(input.attachments))
     throw new Error("Instructions and attachments are required.");
+  for (const [name, server] of Object.entries(input.mcpServers ?? {}))
+    if (!/^[a-z][a-z0-9_-]{0,40}$/.test(name) || typeof server?.url !== "string" || !/^https?:\/\/[^\s"]+$/.test(server.url))
+      throw new Error("MCP servers need a lowercase name and an HTTP URL.");
   if (
     input.resumeCursor !== null &&
     (typeof input.resumeCursor !== "string" || !input.resumeCursor.trim())
@@ -176,6 +179,7 @@ export async function startTurn(uncheckedInput: AgentTurnInput): Promise<AgentTu
             modelSelection,
             runtimeMode: input.permission === "full" ? "full-access" : input.permission === "edit" ? "auto-accept-edits" : "approval-required",
             instructions: input.instructions,
+            ...(input.mcpServers && Object.keys(input.mcpServers).length ? { mcpServers: input.mcpServers } : {}),
             ...(input.resumeCursor
               ? {
                   resumeCursor:
