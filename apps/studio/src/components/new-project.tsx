@@ -1,5 +1,5 @@
 import type { ProjectFacts, ProjectKind } from "@arch/project";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@arch/ui/components/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@arch/ui/components/dialog";
 import { Questionnaire, QuestionnaireActions, QuestionnaireChoice, QuestionnaireChoiceDescription, QuestionnaireChoices, QuestionnaireDescription, QuestionnaireError, QuestionnaireInput, QuestionnaireItem, QuestionnaireNext, QuestionnairePrevious, QuestionnaireProgress, QuestionnaireSkip, QuestionnaireSubmit, QuestionnaireTitle } from "@arch/ui/components/questionnaire";
 import { type UseMutationResult, useMutation, useQueryClient } from "@tanstack/react-query";
 import { HouseIcon, LandmarkIcon, LandPlotIcon, type LucideIcon, ShapesIcon, SofaIcon, TreesIcon } from "lucide-react";
@@ -45,7 +45,7 @@ export function NewProject({open, setOpen, defaultClientId, created, t}: {open: 
     setOpen(value);
   };
   // The questions unmount with the closed dialog, so every opening starts fresh.
-  return <Dialog open={open} onOpenChange={change}><DialogContent className="sm:max-w-lg"><DialogHeader><DialogTitle>{t.newProject}</DialogTitle><DialogDescription>{t.newProjectHint}</DialogDescription></DialogHeader>
+  return <Dialog open={open} onOpenChange={change}><DialogContent className="sm:max-w-lg"><DialogHeader><DialogTitle>{t.newProject}</DialogTitle></DialogHeader>
     <Questions create={create} t={t} />
   </DialogContent></Dialog>;
 }
