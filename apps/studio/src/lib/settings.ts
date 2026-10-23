@@ -1,5 +1,5 @@
 import type { AgentProvider, AgentProviderStatus } from "@arch/agent";
-import { queryOptions } from "@tanstack/react-query";
+import { type QueryClient, queryOptions } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 import { agentProviders } from "./server";
 
@@ -7,6 +7,11 @@ export const settingsSections = ["general", "appearance", "agents", "about"] as 
 export type SettingsSection = (typeof settingsSections)[number];
 
 export const agentProvidersQuery = queryOptions({queryKey: ["studio-agent-providers"], queryFn: () => agentProviders({data: {refresh: false}}), staleTime: 30_000});
+/** Checks the agents again now, skipping the server's 30-second cache, after a change such as an install. */
+export async function refreshAgentProviders(queryClient: QueryClient) {
+  try {queryClient.setQueryData(agentProvidersQuery.queryKey, await agentProviders({data: {refresh: true}}));}
+  catch {await queryClient.invalidateQueries({queryKey: agentProvidersQuery.queryKey});}
+}
 
 const listeners = new Set<() => void>();
 const notify = () => {for (const listener of listeners) listener();};

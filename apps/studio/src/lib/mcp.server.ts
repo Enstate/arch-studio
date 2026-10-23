@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { archMcpResponse } from "@arch/project-tools/mcp";
 import { studioOrigin } from "./local-session";
+import { recordFailure } from "./studio-log.server";
 
 /**
  * Studio serves Arch's MCP to the agents of its own rounds over loopback HTTP. Each round gets a
@@ -27,6 +28,7 @@ export async function mcpResponse(request: Request, token: string) {
     return await archMcpResponse(request, { project: grant.project });
   } catch (error) {
     console.error(`MCP request failed: ${error instanceof Error ? error.message : String(error)}`);
+    void recordFailure("mcp request", error);
     return new Response(null, { status: 404 });
   }
 }

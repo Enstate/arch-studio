@@ -8,7 +8,7 @@ import { levelAt, levelOf, levelPlan } from './plan/levels.ts';
 import { shownInOption } from './plan/options.ts';
 import { MaterialLibrary } from './build/materials.ts';
 import { buildHouse, CUT_HEIGHT, NO_CUT, type BuiltHouse, type BuiltLevel } from './build/house.ts';
-import { Stage, sunElevation } from './viewer/stage.ts';
+import { Stage } from './viewer/stage.ts';
 import { Walker } from './viewer/walk.ts';
 import { FlyCamera } from './viewer/fly.ts';
 import { bindOrbitInput, ORBIT_CURSOR } from './viewer/orbit-input.ts';
@@ -321,7 +321,6 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   orbit.dampingFactor = 0.08;
   orbit.maxPolarAngle = Math.PI * 0.47;
   orbit.minDistance = 2;
-  orbit.maxDistance = 80;
   // Explicit mouse buttons stay consistent over both the house and its surroundings.
   orbit.screenSpacePanning = false;
   orbit.panSpeed = 0.65;
@@ -419,7 +418,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   /** Room under a point, among the rooms on the storey at height `y`. */
   const roomHere = (x: number, z: number, y: number) => roomAt(storeyPlans.get(levelHere(y).level.id)!, [x, z]);
 
-  stage.scene.add(house.root);
+  stage.scene.add(house.root, house.ground);
   for (const o of [...house.daylight.children, ...house.lights.children]) o.userData.intensity = (o as THREE.Light).intensity;
   walker.setWorld(house.colliders);
 
@@ -495,17 +494,38 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
 
   const b = house.bounds;
   const pad = 0.5;
-  const houseBox = new THREE.Box3(
-    new THREE.Vector3(b.minX - pad, -0.35, b.minY - pad),
-    new THREE.Vector3(b.maxX + pad, Math.max(...house.levels.map(({ level }) => {
-      const storey = storeyPlans.get(level.id)!;
-      return level.elevation + Math.max(...storey.walls.map((w) => w.height ?? withDefaults(storey).wallHeight));
-    })) + 0.2, b.maxY + pad),
-  );
-  stage.fitSun(houseBox);
+  const wallTops = house.levels.flatMap(({ level }) => {
+    const storey = storeyPlans.get(level.id)!;
+    return storey.walls.map((w) => level.elevation + (w.height ?? withDefaults(storey).wallHeight));
+  });
+  // The sun's shadow covers the house and the ground it stands on; a plan without walls, all of it.
+  const groundBox = new THREE.Box3().setFromObject(house.ground);
+  const sunBox = wallTops.length
+    ? new THREE.Box3(
+        new THREE.Vector3(b.minX - pad, -0.35, b.minY - pad),
+        new THREE.Vector3(b.maxX + pad, Math.max(...wallTops) + 0.2, b.maxY + pad),
+      ).union(groundBox)
+    : house.extent.clone().expandByScalar(pad);
+  /** Plan area of the house and its ground: what the plan grid covers and panning stays near. */
+  const site = {
+    minX: Math.min(b.minX, groundBox.min.x), minY: Math.min(b.minY, groundBox.min.z),
+    maxX: Math.max(b.maxX, groundBox.max.x), maxY: Math.max(b.maxY, groundBox.max.z),
+  };
+  // The scene sizes itself to everything built. A house keeps the sizes it always had, as minimums.
+  const extent = house.extent.isEmpty() ? sunBox : house.extent;
+  const size = extent.getSize(new THREE.Vector3());
+  const span = Math.max(size.x, size.y, size.z), reach = size.length();
+  orbit.maxDistance = Math.max(80, span * 2);
+  orbitCam.far = Math.max(500, (orbit.maxDistance + reach) * 1.5);
+  walker.camera.far = Math.max(200, reach * 1.5);
+  const planHeight = Math.max(40, extent.max.y + 20);
+  planCam.far = Math.max(100, planHeight - extent.min.y + 10);
+  stage.fitSun(sunBox);
+  stage.fitScene(extent, orbitCam.far > 500 || walker.camera.far > 200);
   stage.north = plan.north ?? 0;
+  stage.latitude = plan.latitude ?? null;
   stage.setTimeOfDay(state.time);
-  state = { ...state, night: sunElevation(state.time) < 0 };
+  state = { ...state, night: stage.elevation < 0 };
 
   // ---------- labels ----------
 
@@ -540,7 +560,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       cleanup.push(() => anchor.remove());
     }
   }
-  await overlay.build(plan, plan.source ? library.resolve(plan.source.image) : undefined);
+  await overlay.build(plan, plan.source ? library.resolve(plan.source.image) : undefined, site);
   check();
 
   // ---------- cameras ----------
@@ -556,7 +576,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   }
 
   function framePlan() {
-    planCam.position.set(b.cx, 40, b.cy);
+    planCam.position.set(b.cx, planHeight, b.cy);
     planCam.up.set(0, 0, -1);
     planCam.lookAt(b.cx, 0, b.cy);
     planControls.target.set(b.cx, 0, b.cy);
@@ -573,7 +593,15 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
   };
   const placeAtCamera = (c: NonNullable<Plan['cameras']>[number]) =>
     walker.place(c.position[0], c.position[1], c.lookAt[0], c.lookAt[1], builtLevel(c.level).level.elevation);
-  const placeInRoom = (r: BuiltHouse['rooms'][number]) => walker.place(r.center.x, r.center.z, r.center.x + 1, r.center.z, r.center.y);
+  const groundRay = new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(0, -1, 0));
+  /** Height to stand at plan point (x, z): a floor at `y`, or the ground where it rises above that. */
+  const standOn = (x: number, z: number, y = 0) => {
+    if (!house.ground.children.length) return y;
+    groundRay.ray.origin.set(x, extent.max.y + 1, z);
+    const hit = groundRay.intersectObject(house.ground, true).find((h) => isShown(h.object));
+    return hit ? Math.max(y, hit.point.y) : y;
+  };
+  const placeInRoom = (r: BuiltHouse['rooms'][number]) => walker.place(r.center.x, r.center.z, r.center.x + 1, r.center.z, standOn(r.center.x, r.center.z, r.center.y));
 
   /** Stands the walker on a storey: at its first camera, else the middle of its largest room. */
   function placeWalkerOn(level: BuiltLevel) {
@@ -581,7 +609,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     if (cam) return placeAtCamera(cam);
     const big = house.rooms.filter((r) => r.level === level.level).sort((x, y) => y.netArea - x.netArea)[0];
     if (big) return placeInRoom(big);
-    walker.place(b.cx, b.cy, b.cx + 1, b.cy, level.level.elevation);
+    walker.place(b.cx, b.cy, b.cx + 1, b.cy, standOn(b.cx, b.cy, level.level.elevation));
   }
 
   function placeWalkerAtStart() {
@@ -603,7 +631,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     }
     const big = [...house.rooms].sort((x, y) => y.netArea - x.netArea)[0];
     if (big) return placeInRoom(big);
-    walker.place(b.cx, b.cy, b.cx + 1, b.cy);
+    walker.place(b.cx, b.cy, b.cx + 1, b.cy, standOn(b.cx, b.cy));
   }
 
   let fly: { cam: THREE.Camera; controls: OrbitControls; from: [THREE.Vector3, THREE.Vector3]; to: [THREE.Vector3, THREE.Vector3]; start: number; onDone?: () => void } | null = null;
@@ -664,7 +692,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
         if (!reducedMotion() && state.mode === 'dollhouse') spin = { target, offset: off, start: performance.now() };
       });
     } else {
-      flyTo(planCam, planControls, new THREE.Vector3(r.center.x, 40, r.center.z), new THREE.Vector3(r.center.x, 0, r.center.z));
+      flyTo(planCam, planControls, new THREE.Vector3(r.center.x, planHeight, r.center.z), new THREE.Vector3(r.center.x, 0, r.center.z));
     }
     setState({ room: id });
   }
@@ -864,7 +892,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       tourCam.aspect = (host.clientWidth || 1) / (host.clientHeight || 1);
       // Clip planes follow the distance: the opening shot sits hundreds of metres up.
       tourCam.near = THREE.MathUtils.clamp(0.02 * f.focus, 0.05, 20);
-      tourCam.far = Math.max(200, f.focus * 4);
+      tourCam.far = Math.max(walker.camera.far, f.focus * 4);
       tourCam.updateProjectionMatrix();
       house.clipPlane.constant = f.cut;
       // Caps match the wall section only below the lowest lintel.
@@ -1083,13 +1111,18 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     for (; o; o = o.parent) if (!o.visible) return false;
     return true;
   };
+  /** Ground stands outside the cut, so a ray meets it above the cut height too. */
+  const onGround = (o: THREE.Object3D | null) => {
+    for (; o; o = o.parent) if (o === house.ground) return true;
+    return false;
+  };
   const partOf = (o: THREE.Object3D | null) => {
     for (; o && o !== house.root; o = o.parent) if (o.userData.part) return o.userData.part as string;
     return null;
   };
 
   /** What lies under the cursor, or under the crosshair while the pointer is locked. */
-  function aim(clientX: number, clientY: number, center: boolean, far = Infinity, targets: THREE.Object3D[] = [house.root]) {
+  function aim(clientX: number, clientY: number, center: boolean, far = Infinity, targets: THREE.Object3D[] = [house.root, house.ground]) {
     const rect = canvas.getBoundingClientRect();
     const ndc = center
       ? new THREE.Vector2(0, 0)
@@ -1099,7 +1132,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     const cut = house.clipPlane.constant + 0.01;
     const hit = raycaster
       .intersectObjects(targets, true)
-      .find((h) => h.point.y <= cut && (h.object as THREE.Mesh).isMesh && isShown(h.object));
+      .find((h) => (h.point.y <= cut || onGround(h.object)) && (h.object as THREE.Mesh).isMesh && isShown(h.object));
     raycaster.far = Infinity;
     return hit;
   }
@@ -1252,8 +1285,8 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
 
   // Keeps panning from dragging the house out of view: the pivot stays over the house or near it,
   // or wherever free look last went.
-  const PAN_MARGIN = Math.max(6, Math.max(b.w, b.h) / 2);
-  const panArea = new THREE.Box2(new THREE.Vector2(b.minX - PAN_MARGIN, b.minY - PAN_MARGIN), new THREE.Vector2(b.maxX + PAN_MARGIN, b.maxY + PAN_MARGIN));
+  const PAN_MARGIN = Math.max(6, Math.max(site.maxX - site.minX, site.maxY - site.minY) / 2);
+  const panArea = new THREE.Box2(new THREE.Vector2(site.minX - PAN_MARGIN, site.minY - PAN_MARGIN), new THREE.Vector2(site.maxX + PAN_MARGIN, site.maxY + PAN_MARGIN));
   const clampShift = new THREE.Vector3();
   function clampOrbit() {
     const t = orbit.target;
@@ -1374,11 +1407,12 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
     let meshes = 0, triangles = 0;
     const materials = new Set<THREE.Material>();
     const cut = house.clipPlane.constant;
-    house.root.traverseVisible((o) => {
+    // The cut never clips the ground.
+    for (const [group, clipped] of [[house.root, true], [house.ground, false]] as const) group.traverseVisible((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
       const box = (mesh.geometry.boundingBox ?? (mesh.geometry.computeBoundingBox(), mesh.geometry.boundingBox))!;
-      if (box.min.y + mesh.matrixWorld.elements[13] > cut) return;
+      if (clipped && box.min.y + mesh.matrixWorld.elements[13] > cut) return;
       meshes++;
       const g = mesh.geometry;
       triangles += (g.index ? g.index.count : g.attributes.position.count) / 3 * ((mesh as THREE.InstancedMesh).count ?? 1);
@@ -1500,7 +1534,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions): Prom
       setState({ mode });
       applyMode(mode);
       // The eye stands 1.6 m above the floor it is on.
-      if (mode === 'walk') walker.place(position[0], position[2], target[0], target[2], levelHere(position[1] - 1.6).level.elevation);
+      if (mode === 'walk') walker.place(position[0], position[2], target[0], target[2], standOn(position[0], position[2], levelHere(position[1] - 1.6).level.elevation));
       else if (mode === 'plan') flyTo(planCam, planControls, new THREE.Vector3(...position), new THREE.Vector3(...target));
       else flyTo(orbitCam, orbit, new THREE.Vector3(...position), new THREE.Vector3(...target));
     },

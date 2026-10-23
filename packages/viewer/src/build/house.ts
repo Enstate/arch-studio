@@ -3,7 +3,7 @@ import type { Furniture, Level, Plan, Wall, Opening, Room, Vec2 } from '../plan/
 import { withDefaults } from '../plan/schema.ts';
 import {
   wallDir, wallLength, wallThickness, wallHeight, wallEndExtensions, roomAt, pointSegment, EPS,
-  planBounds, polygonCentroid, roomNetArea, pointInPolygon, ceilingAt,
+  planBounds, polygonCentroid, roomNetArea, pointInPolygon, ceilingAt, hasCeiling,
 } from '../plan/geom.ts';
 import { levelOf, levelPlan, levels, stairFlights, type StairFlight } from '../plan/levels.ts';
 import { defaultDesignOption, shownInOption } from '../plan/options.ts';
@@ -76,6 +76,11 @@ export interface BuiltHouse {
   collidersFixed: THREE.Group;
   /** Roofs the plan supplies (`roof: true`); empty when the viewer adds its own slab. */
   roofs: THREE.Group;
+  /**
+   * Terrain and site ground the plan supplies (`ground: true`). It stands beside `root`, outside the
+   * cut, so a section never clips it; the walker meets its triangles, never a box around it.
+   */
+  ground: THREE.Group;
   /** The design option on show; null for a plan without options. */
   readonly designOption: string | null;
   /** Shows another design option: its finishes and furniture replace the current ones in place. */
@@ -89,7 +94,10 @@ export interface BuiltHouse {
   parts: PickPart[];
   /** Horizontal cut plane, owned by the root ClippingGroup so every pass sees the same cut. */
   clipPlane: THREE.Plane;
+  /** Plan footprint the views frame: the walls, or everything built when the plan has none. */
   bounds: ReturnType<typeof planBounds>;
+  /** World box of everything built, models included, `root` and `ground` together. */
+  extent: THREE.Box3;
   dispose(): void;
 }
 
@@ -347,11 +355,12 @@ function buildFloorsAndCeilings(plan: Plan, lib: MaterialLibrary, elevation: num
       const sg = new THREE.ExtrudeGeometry(shapeFrom(r.polygon, true, arriving), { depth: SLAB, bevelEnabled: false });
       sg.rotateX(-Math.PI / 2);
       sg.translate(0, -SLAB - 0.002, 0);
-      const under = new THREE.Mesh(sg, lib.get(r.ceiling ?? d.ceiling));
+      const under = new THREE.Mesh(sg, lib.get(r.ceiling || d.ceiling));
       under.receiveShadow = under.castShadow = true;
       floors.add(under);
     }
 
+    if (!hasCeiling(plan, r)) continue;
     const cg = new THREE.ShapeGeometry(shapeFrom(r.polygon, false, leaving));
     cg.rotateX(Math.PI / 2); // normal faces down
     // 1 cm below the wall tops, so the ceiling tucks into the walls and no seam can open. A sloped
@@ -359,7 +368,7 @@ function buildFloorsAndCeilings(plan: Plan, lib: MaterialLibrary, elevation: num
     const position = cg.attributes.position;
     for (let i = 0; i < position.count; i++) position.setY(i, ceilingAt(plan, r, [position.getX(i), position.getZ(i)]) - 0.01);
     if (r.ceilingSlope) cg.computeVertexNormals();
-    const ceil = new THREE.Mesh(cg, lib.get(r.ceiling ?? d.ceiling));
+    const ceil = new THREE.Mesh(cg, lib.get(r.ceiling || d.ceiling));
     ceil.receiveShadow = true;
     // Downward winding blocks the head without becoming upward-facing step support.
     ceil.userData.collide = true;
@@ -445,6 +454,8 @@ function buildLights(plan: Plan, lib: MaterialLibrary, shadows: boolean) {
     light.position.set(c[0], h - 0.25, c[1]);
     light.userData.room = r.id;
     lights.add(light);
+    // Without a ceiling the light stays, but no fixture hangs in mid-air.
+    if (!hasCeiling(plan, r)) continue;
     const fixture = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.03, 32), lib.get('bulb'));
     fixture.position.set(c[0], h - 0.015, c[1]);
     lights.add(fixture);
@@ -672,7 +683,7 @@ export async function buildHouse(
   const pieces = [...furniture.children];
   const fixtures = new THREE.Group();
   const loose = new THREE.Group();
-  const roofs = group('roofs');
+  const roofs = group('roofs'), ground = group('ground');
   fixtures.name = 'fixtures';
   loose.name = 'loose';
   // Pieces and decor of a design option go in a group per set of options, shown with any of them.
@@ -691,7 +702,9 @@ export async function buildHouse(
     }
     return g;
   };
-  for (const o of pieces) (o.userData.roof ? roofs : inOptions(o, o.userData.loose ? loose : fixtures)).add(o);
+  /** The group a piece belongs in: ground, roofs, fixtures or loose furniture. */
+  const home = (o: THREE.Object3D) => (o.userData.ground ? inOptions(o, ground) : o.userData.roof ? roofs : inOptions(o, o.userData.loose ? loose : fixtures));
+  for (const o of pieces) home(o).add(o);
   for (const o of [...dressing.children]) {
     if (o.userData.loose) inOptions(o, loose).add(o);
     else if (o.userData.ceiling) ceilings.add(o);
@@ -700,12 +713,11 @@ export async function buildHouse(
   root.add(floors, walls, caps, openings, ceilings, furniture, roofs, dressing, lights, daylight);
 
   // Slab and plinth so the house does not float on the ground plane.
-  const b = planBounds(plan);
   const d = withDefaults(plan);
   const pad = d.exteriorThickness / 2 + 0.05;
-  const roofLevel = storeys[storeys.length - 1];
-  const roofPlan = levelPlan(plan, roofLevel);
-  const rb = planBounds(roofPlan);
+  // The roof covers the highest storey with walls; a plan without walls gets no slab, roof or plinth.
+  const roofLevel = [...storeys].reverse().find((l) => levelPlan(plan, l).walls.length);
+  const roofPlan = roofLevel && levelPlan(plan, roofLevel);
   // A solid roof slab above the ceilings. It travels with the ceilings (walk mode only) and
   // gives the sun's shadow a solid caster; a zero-thickness ceiling leaks sunlight along wall tops.
   const roofMat = lib.get('slab').clone();
@@ -713,7 +725,8 @@ export async function buildHouse(
   // tops; with shadow bias that left the top of every wall sunlit. Store the top face instead.
   roofMat.shadowSide = THREE.FrontSide;
   // A plan with its own roofs gets no generated slab: it would stand above a pitched roof's low eave.
-  if (!roofs.children.length) {
+  if (!roofs.children.length && roofLevel && roofPlan) {
+    const rb = planBounds(roofPlan);
     const roof = new THREE.Mesh(new THREE.BoxGeometry(rb.w + pad * 2, 0.3, rb.h + pad * 2), roofMat);
     // Bottom sits 5 mm into the wall tops so there is no slot between walls and roof.
     roof.position.set(rb.cx, roofLevel.elevation + withDefaults(roofPlan).wallHeight + 0.145, rb.cy);
@@ -721,18 +734,41 @@ export async function buildHouse(
     roof.userData.collide = true;
     ceilings.add(roof);
   }
-  const slab = new THREE.Mesh(new THREE.BoxGeometry(b.w + pad * 2, 0.3, b.h + pad * 2), lib.get('slab'));
-  slab.position.set(b.cx, -0.151, b.cy);
-  slab.receiveShadow = true;
-  slab.userData.collide = true;
-  root.add(slab);
+  if (plan.walls.length) {
+    const b = planBounds(plan);
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(b.w + pad * 2, 0.3, b.h + pad * 2), lib.get('slab'));
+    slab.position.set(b.cx, -0.151, b.cy);
+    slab.receiveShadow = true;
+    slab.userData.collide = true;
+    root.add(slab);
+  }
 
   root.updateMatrixWorld(true);
+  ground.updateMatrixWorld(true);
+  // Measured before merging, while every piece and model still has its own geometry.
+  const extent = new THREE.Box3().setFromObject(root).union(new THREE.Box3().setFromObject(ground));
+  const b = plan.walls.length || extent.isEmpty()
+    ? planBounds(plan)
+    : { minX: extent.min.x, minY: extent.min.z, maxX: extent.max.x, maxY: extent.max.z, w: extent.max.x - extent.min.x, h: extent.max.z - extent.min.z, cx: (extent.min.x + extent.max.x) / 2, cy: (extent.min.z + extent.max.z) / 2 };
   // Every collider, tagged with the design options of its piece; each option's world is cut from it.
   const colliders = new THREE.Group();
   // Furniture collides as one box per piece; per-triangle collision on cushions only slows the walker.
   const collidersFixed = new THREE.Group();
   for (const f of pieces) {
+    if (f.userData.ground) {
+      // Terrain collides as its own triangles, so the walker climbs and descends its surface.
+      f.traverse((o) => {
+        if (!(o as THREE.Mesh).isMesh) return;
+        const col = new THREE.Mesh((o as THREE.Mesh).geometry);
+        col.matrixAutoUpdate = false;
+        col.matrix.copy(o.matrixWorld);
+        col.matrixWorld.copy(o.matrixWorld);
+        if (f.userData.designOptions) col.userData.designOptions = f.userData.designOptions;
+        colliders.add(col);
+        collidersFixed.add(col.clone());
+      });
+      continue;
+    }
     if (!f.userData.collide) continue;
     if (f.userData.type === 'stairs') {
       // One solid block per tread, so the walker climbs them like any other step.
@@ -789,14 +825,14 @@ export async function buildHouse(
     }
   }
   floors.userData.part = 'floor';
-  // A picked roof reports the plan piece it is, like any other furniture.
-  roofs.userData.part = 'furniture';
+  // A picked roof or ground reports the plan piece it is, like any other furniture.
+  roofs.userData.part = ground.userData.part = 'furniture';
   walls.userData.part = caps.userData.part = 'wall';
 
   const editable = opts.editable ?? false;
   for (const g of [...caps.children, openings, ceilings, dressing]) mergeStatic(g);
   // What editing takes apart. An editable house keeps the meshes it merged, to take them apart again.
-  const editableGroups = () => [floors, walls, ...optionGroups.values(), fixtures, loose, roofs];
+  const editableGroups = () => [floors, walls, ...optionGroups.values(), fixtures, loose, roofs, ground];
   let merges: Merge[] | null = editableGroups().map(mergeStatic);
   if (!editable) merges = null;
   /** Taken apart for editing, and whether anything changed since. */
@@ -846,7 +882,7 @@ export async function buildHouse(
       obj.position.y += level.elevation;
       obj.userData.piece = piece;
       editor!.remove(piece.id);
-      (obj.userData.roof ? roofs : inOptions(obj, obj.userData.loose ? loose : fixtures)).add(obj);
+      home(obj).add(obj);
       for (const o of [obj, ...optionGroups.values()]) if (o.userData.optionGroup) o.visible = shownInOption(o.userData, designOption);
       pieceMap.set(piece.id, obj);
       changedApart = true;
@@ -910,7 +946,7 @@ export async function buildHouse(
   } : null;
 
   return {
-    root, walls, floors, caps, ceilings, lights, daylight, furniture, looseFurniture: loose, roofs, rooms, levels: builtLevels, parts, clipPlane, bounds: b, editor,
+    root, walls, floors, caps, ceilings, lights, daylight, furniture, looseFurniture: loose, roofs, ground, rooms, levels: builtLevels, parts, clipPlane, bounds: b, extent, editor,
     get colliders() {
       return world(colliders, designOption);
     },
@@ -934,7 +970,7 @@ export async function buildHouse(
       showOption();
     },
     dispose() {
-      root.traverse((o) => {
+      for (const g of [root, ground]) g.traverse((o) => {
         const m = o as THREE.Mesh;
         if (m.isMesh) m.geometry.dispose();
       });

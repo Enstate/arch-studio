@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import * as THREE from 'three/webgpu';
 import { Octree } from 'three/examples/jsm/math/Octree.js';
-import type { Capsule } from 'three/examples/jsm/math/Capsule.js';
+import { Capsule } from 'three/examples/jsm/math/Capsule.js';
 import { buildHouse } from '../src/build/house.ts';
 import { BUILTIN, MaterialLibrary } from '../src/build/materials.ts';
 import type { Plan } from '../src/plan/schema.ts';
-import { Walker } from '../src/viewer/walk.ts';
+import { colliderTree, Walker } from '../src/viewer/walk.ts';
 
 const originals = new Map<string, PropertyDescriptor | undefined>();
 const walkers: Walker[] = [];
@@ -150,6 +150,21 @@ for (const degrees of [20, 30]) {
     expect(f.feet()).toBeCloseTo(0.301, 3);
   });
 }
+
+test('a stair of nested boxes builds a small collision tree that still blocks', () => {
+  // Each step runs to the back of the stair, so twelve boxes share their top and side faces. three's
+  // own Octree keeps splitting those cells to level 16 and runs the page out of memory.
+  const steps = Array.from({ length: 12 }, (_, i) => box(0, 3, -0.05, (i + 1) * 0.17, i * 0.3, 3.6));
+  const started = performance.now();
+  const tree = colliderTree(world(...steps));
+  const cells = (node: Octree): number => 1 + node.subTrees.reduce((sum, child) => sum + cells(child), 0);
+  expect(performance.now() - started).toBeLessThan(2000);
+  expect(cells(tree)).toBeLessThan(2_000);
+  const inside = new Capsule(new THREE.Vector3(1.5, 1, 2), new THREE.Vector3(1.5, 2, 2), 0.25);
+  expect(tree.capsuleIntersect(inside)).not.toBe(false);
+  const above = new Capsule(new THREE.Vector3(1.5, 2.6, 2), new THREE.Vector3(1.5, 3.6, 2), 0.25);
+  expect(tree.capsuleIntersect(above)).toBe(false);
+});
 
 test('0.18m stairs climb while sliding against a side wall at 120Hz', () => {
   const stairs = Array.from({ length: 5 }, (_, i) => box(i * 0.3, i === 4 ? 5 : (i + 1) * 0.3, 0, (i + 1) * 0.18));

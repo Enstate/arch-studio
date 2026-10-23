@@ -2,9 +2,9 @@ import { expect, test } from "bun:test";
 import { viewerSupportsRuntime } from "@arch/project";
 import { viewerRuntimeHash } from "../src/index.ts";
 
-test("the installed sharpness runtime explicitly supports its reviewed predecessor", async () => {
+test("the installed site runtime explicitly supports its reviewed predecessor", async () => {
   const current = await viewerRuntimeHash();
-  const previous = "965f4dc2b58b7fae7bfcca230854b8731ffcdd03f109c8b3dbccd8abc12cd6c5";
+  const previous = "9dd05dcfcdf28f7fbecd9c31501285e442f5d907a8bd6f0b4957c7781a65b04f";
   expect(viewerSupportsRuntime(current, current)).toBe(true);
   expect(viewerSupportsRuntime(current, previous)).toBe(true);
   expect(viewerSupportsRuntime(previous, current)).toBe(false);

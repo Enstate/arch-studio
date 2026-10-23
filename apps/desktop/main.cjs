@@ -5,11 +5,13 @@ const { existsSync } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createDesktopUpdates } = require('./updates.cjs');
-const { menuLabels } = require('./menu-labels.cjs');
+const { menuLabels, menuLocale } = require('./menu-labels.cjs');
+const { createAgentSetup } = require('./agent-setup.cjs');
 app.setName('Arch Studio');
 let server;
 let quitting = false;
 let updates;
+let agentSetup;
 const windows = process.platform === 'win32';
 const executable = name => windows ? `${name}.exe` : name;
 function stopServer() {
@@ -54,17 +56,27 @@ function windowsCliDirectories() {
     USERPROFILE && path.join(USERPROFILE, 'scoop', 'shims'),
   ].filter(directory => directory && existsSync(directory)).join(';');
 }
-async function serverEnvironment(resources) {
+// Claude Code's native installer puts `claude` here. It stays on PATH even before it exists,
+// so an install from Settings is found by the running server without a restart.
+const claudeInstallDirectory = () => path.join(os.homedir(), '.local', 'bin');
+// PATH and agent settings shared by the server, the Claude Code installer and its sign-in.
+async function userEnvironment() {
   const env = {};
   for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'TMP', 'TEMP', 'APPDATA', 'LOCALAPPDATA', 'SystemRoot', 'windir', 'USERPROFILE', 'USERNAME', 'HOMEDRIVE', 'HOMEPATH', 'PATHEXT', 'ComSpec', 'SystemDrive', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'ProgramData', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', ...agentKeys]) {
     if (process.env[key]) env[key] = process.env[key];
   }
-  if (windows) env.PATH = mergePaths(';', env.PATH, windowsCliDirectories());
+  if (windows) env.PATH = mergePaths(';', env.PATH, windowsCliDirectories(), claudeInstallDirectory());
   else {
     const shell = await loginShellEnvironment();
     for (const key of agentKeys) if (!env[key] && shell[key]) env[key] = shell[key];
-    env.PATH = mergePaths(':', shell.PATH, env.PATH);
+    env.PATH = mergePaths(':', shell.PATH, env.PATH, claudeInstallDirectory());
   }
+  return env;
+}
+let userEnvironmentReady;
+const sharedUserEnvironment = () => userEnvironmentReady ??= userEnvironment();
+async function serverEnvironment(resources) {
+  const env = await sharedUserEnvironment();
   if (process.env.ARCH_HOME && !path.isAbsolute(process.env.ARCH_HOME)) throw new Error('ARCH_HOME must be absolute');
   return { ...env, ...(process.env.ARCH_HOME ? { ARCH_HOME: process.env.ARCH_HOME } : {}), ARCH_VIEWER_ROOT: path.join(resources, 'viewer'), ARCH_BUN: path.join(resources, executable('bun')), ARCH_CLIENT_ROOT: path.join(resources, 'client'), ARCH_STUDIO_PORT: '0', ARCH_STUDIO_PARENT_PIPE: '1' };
 }
@@ -112,7 +124,7 @@ if (process.platform !== 'darwin') {
   app.on('second-instance', (_event, argv) => { for (const file of argv.slice(1)) receiveProjectFile(file); });
   for (const file of process.argv.slice(1)) receiveProjectFile(file);
 }
-app.on('before-quit', () => { quitting = true; updates?.dispose(); stopServer(); });
+app.on('before-quit', () => { quitting = true; updates?.dispose(); agentSetup?.dispose(); stopServer(); });
 app.on('window-all-closed', () => app.quit());
 app.whenReady().then(async () => {
   // Every permission is refused except pointer lock for Studio's own page: walk mode and the
@@ -196,11 +208,42 @@ app.whenReady().then(async () => {
       return updates[method]();
     });
   }
+  agentSetup = createAgentSetup({
+    environment: sharedUserEnvironment,
+    publish: state => {
+      if (window.isDestroyed()) return;
+      try { if (new URL(window.webContents.mainFrame.url).origin === origin) window.webContents.send('desktop:agent-setup', state); } catch {}
+    },
+    openExternal: url => shell.openExternal(url),
+    openPath: file => shell.openPath(file),
+  });
+  const agentRequest = (event, args, count, valid = () => true) => {
+    if (!trustedFrame(event) || args.length !== count || !valid(...args)) throw new Error('Agent setup requires the local Studio main frame and valid arguments');
+  };
+  const supportedAgent = provider => provider === 'claude';
+  ipcMain.handle('desktop:agent-setup-state', (event, ...args) => { agentRequest(event, args, 0); return agentSetup.getState(); });
+  ipcMain.handle('desktop:agent-install', (event, ...args) => { agentRequest(event, args, 1, supportedAgent); return agentSetup.install(args[0]); });
+  ipcMain.handle('desktop:agent-sign-in', (event, ...args) => { agentRequest(event, args, 1, supportedAgent); return agentSetup.signIn(args[0]); });
+  ipcMain.handle('desktop:agent-sign-in-code', (event, ...args) => { agentRequest(event, args, 1, code => typeof code === 'string' && code.length <= 4096); return agentSetup.submitCode(args[0]); });
+  ipcMain.handle('desktop:agent-sign-in-open', (event, ...args) => { agentRequest(event, args, 0); return agentSetup.openSignInPage(); });
+  ipcMain.handle('desktop:agent-sign-in-cancel', (event, ...args) => { agentRequest(event, args, 0); return agentSetup.cancelSignIn(); });
   const systemLanguages = [...app.getPreferredSystemLanguages(), app.getLocale()];
+  // Windows and Linux spell-check in the chosen languages. macOS detects the language itself.
+  const spellingLanguages = { en: ['en-US', 'en-GB', 'en'], de: ['de-DE', 'de'], es: ['es-ES', 'es-419', 'es-MX', 'es'], pt: ['pt-BR', 'pt-PT', 'pt'] };
+  const applySpellingLanguage = locale => {
+    if (process.platform === 'darwin') return;
+    const available = new Set(session.defaultSession.availableSpellCheckerLanguages);
+    const language = spellingLanguages[locale].find(code => available.has(code));
+    if (language) session.defaultSession.setSpellCheckerLanguages([language]);
+  };
+  let currentLocale;
   let currentMenuLabels;
-  const applyMenuLabels = labels => {
-    if (labels === currentMenuLabels || window.isDestroyed()) return;
-    currentMenuLabels = labels;
+  const applyMenuLocale = locale => {
+    if (locale === currentLocale || window.isDestroyed()) return;
+    currentLocale = locale;
+    currentMenuLabels = menuLabels(locale);
+    const labels = currentMenuLabels;
+    applySpellingLanguage(locale);
     const checkForUpdates = { label: labels.checkForUpdates, click: () => { void updates.check(); } };
     const settings = { label: labels.settings, accelerator: 'CmdOrCtrl+,', click: () => { if (!window.isDestroyed()) window.webContents.send('desktop:open-settings'); } };
     const appMenu = process.platform === 'darwin' ? [
@@ -226,7 +269,7 @@ app.whenReady().then(async () => {
   const refreshMenuLocale = async () => {
     const revision = ++localeRevision;
     const preferences = await cookies.get({ url: `${localeUrl}/`, name: 'arch-locale' }).catch(() => []);
-    if (revision === localeRevision) applyMenuLabels(menuLabels(preferences[0]?.value, systemLanguages));
+    if (revision === localeRevision) applyMenuLocale(menuLocale(preferences[0]?.value, systemLanguages));
   };
   const localeChanged = (_event, cookie) => {
     if (cookie.name === 'arch-locale' && cookie.domain.replace(/^\./, '') === new URL(localeUrl).hostname && cookie.path === '/') {
@@ -235,8 +278,32 @@ app.whenReady().then(async () => {
   };
   cookies.on('changed', localeChanged);
   window.once('closed', () => { ++localeRevision; cookies.removeListener('changed', localeChanged); });
-  applyMenuLabels(menuLabels(undefined, systemLanguages));
+  applyMenuLocale(menuLocale(undefined, systemLanguages));
   await refreshMenuLocale();
+  // Spelling suggestions and editing commands for Studio's own page. Other frames, such as the
+  // PDF viewer, keep no menu. A page that handles right-click itself never reaches this.
+  window.webContents.on('context-menu', (_event, params) => {
+    try { if (!origin || new URL(params.pageURL).origin !== origin || new URL(params.frameURL || params.pageURL).origin !== origin) return; }
+    catch { return; }
+    const labels = currentMenuLabels;
+    const { editFlags } = params;
+    const items = [];
+    if (params.isEditable && params.misspelledWord) {
+      for (const suggestion of params.dictionarySuggestions.slice(0, 6)) items.push({ label: suggestion, click: () => { if (!window.isDestroyed()) window.webContents.replaceMisspelling(suggestion); } });
+      if (!items.length) items.push({ label: labels.noSuggestions, enabled: false });
+      items.push({ type: 'separator' }, { label: labels.addToDictionary, click: () => session.defaultSession.addWordToSpellCheckerDictionary(params.misspelledWord) }, { type: 'separator' });
+    }
+    if (params.isEditable) {
+      items.push(
+        { role: 'cut', label: labels.cut, enabled: editFlags.canCut },
+        { role: 'copy', label: labels.copy, enabled: editFlags.canCopy },
+        { role: 'paste', label: labels.paste, enabled: editFlags.canPaste },
+        { type: 'separator' },
+        { role: 'selectAll', label: labels.selectAll, enabled: editFlags.canSelectAll },
+      );
+    } else if (params.selectionText.trim()) items.push({ role: 'copy', label: labels.copy, enabled: editFlags.canCopy });
+    if (items.length) Menu.buildFromTemplate(items).popup({ window });
+  });
   window.webContents.on('will-navigate', (event, url) => { if (new URL(url).origin !== origin) event.preventDefault(); });
   window.webContents.on('will-redirect', (event, url) => { if (new URL(url).origin !== origin) event.preventDefault(); });
   window.webContents.setWindowOpenHandler(({url}) => {
@@ -257,6 +324,20 @@ app.whenReady().then(async () => {
   window.webContents.on('will-frame-navigate', event => { const target = new URL(event.url); if (target.origin !== origin && !pdfViewer(target)) event.preventDefault(); });
   window.webContents.on('will-navigate', (event, url) => {
     if (new URL(url).protocol === 'https:') { event.preventDefault(); }
+  });
+  // A page that runs out of memory, such as on a model too heavy to open, reloads with its session.
+  // A second crash within a minute asks first, so a page that keeps crashing cannot loop.
+  let lastCrash = -Infinity;
+  window.webContents.on('render-process-gone', async (_event, details) => {
+    if (quitting || window.isDestroyed() || details.reason === 'clean-exit') return;
+    const repeated = Date.now() - lastCrash < 60_000;
+    lastCrash = Date.now();
+    if (repeated) {
+      const labels = currentMenuLabels;
+      const { response } = await dialog.showMessageBox(window, { type: 'warning', message: labels.pageCrashed, detail: labels.pageCrashedDetail, buttons: [labels.reopen, labels.quit], defaultId: 0, cancelId: 1 });
+      if (response === 1) { app.quit(); return; }
+    }
+    if (!window.isDestroyed()) window.webContents.reload();
   });
   await window.loadURL(bootstrapUrl);
   void updates.start();

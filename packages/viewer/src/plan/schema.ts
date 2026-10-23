@@ -23,6 +23,7 @@ export interface Plan {
    * anything without one stands on the lowest. Omit for a single-storey plan.
    */
   levels?: Level[];
+  /** May be empty: a plaza, a landscape or a site plan needs no walls. */
   walls: Wall[];
   openings?: Opening[];
   rooms?: Room[];
@@ -45,6 +46,8 @@ export interface Plan {
    * Sets where the sun rises, peaks and sets, so the right rooms get sun.
    */
   north?: number;
+  /** Site latitude in degrees, −90 to 90, from the project facts: the sun follows an equinox day there. */
+  latitude?: number;
 }
 
 export interface PlanSource {
@@ -153,7 +156,8 @@ export interface Room {
   /** Closed polygon along the inside faces or wall centerlines. Do not repeat the first point. */
   polygon: Vec2[];
   floor?: string;
-  ceiling?: string;
+  /** Ceiling finish, or false for no ceiling. Rooms get one only on a storey with walls. */
+  ceiling?: string | false;
   wallFinish?: string;
   /** Finishes of single walls on this room's side, by wall id, in place of `wallFinish`. */
   wallFinishes?: Record<string, string>;
@@ -217,6 +221,8 @@ export interface Furniture {
    * in 3D, and replace the flat slab the viewer would otherwise add over the top storey.
    */
   roof?: boolean;
+  /** Terrain or site ground, usually a `model`: the walker follows its surface and sections never cut it. */
+  ground?: boolean;
   /** Design options that show this piece. Omit for a piece every option shares. */
   designOptions?: string[];
 }

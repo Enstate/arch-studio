@@ -51,7 +51,7 @@ async function verifyLanguages(page:Page){
    await page.getByRole('button',{name:studioText[locale].addProject,exact:true}).click();
    await page.getByRole('menuitem',{name:studioText[locale].newProject,exact:true}).click();
    const dialog=page.getByRole('dialog');
-   await dialog.getByText(studioText[locale].newProjectHint,{exact:true}).waitFor();
+   await dialog.getByRole('heading',{name:studioText[locale].newProject,exact:true}).waitFor();
    await dialog.getByRole('button',{name:studioText[locale].close,exact:true}).waitFor();
    assert.ok(await dialog.evaluate(node=>node.scrollWidth<=node.clientWidth),'Translated dialog must fit its width');
    await mkdir(evidence,{recursive:true});

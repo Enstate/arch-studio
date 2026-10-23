@@ -77,7 +77,32 @@ const legacyProjectManifestSchema = z
   })
   .strict();
 export const viewerRuntimeSchema = z.object({ name: z.literal("arch-viewer"), version: z.literal("0.1.0"), threeVersion: z.literal("0.186.1") }).strict();
-export const viewerProjectManifestSchema = legacyProjectManifestSchema.extend({ schemaVersion: z.literal(2), runtime: viewerRuntimeSchema });
+/** What a project is. It picks the authoring guide its BUILDERS.md carries. */
+export const projectKindSchema = z.enum(["building", "interior", "public-space", "landscape", "site", "other"]);
+export type ProjectKind = z.infer<typeof projectKindSchema>;
+/**
+ * What the user confirmed about a project, at creation or later in Studio. Agents build on these and
+ * never overwrite them. Lengths are metres; north is degrees clockwise from the top of the plan.
+ */
+export const projectFactsSchema = z
+  .object({
+    kind: projectKindSchema.optional(),
+    location: z
+      .object({
+        label: z.string().min(1).max(240),
+        latitude: z.number().min(-90).max(90),
+        longitude: z.number().min(-180).max(180),
+      })
+      .strict()
+      .optional(),
+    storeyHeight: z.number().min(2).max(10).optional(),
+    north: z.number().min(0).lt(360).optional(),
+  })
+  .strict();
+export type ProjectFacts = z.infer<typeof projectFactsSchema>;
+export const viewerProjectManifestSchema = legacyProjectManifestSchema.extend({ schemaVersion: z.literal(2), runtime: viewerRuntimeSchema, facts: projectFactsSchema.optional() });
+/** File types a project accepts as references. Agents read them; nothing executes them. DXF, CSV and GeoJSON carry survey data. */
+export const referenceExtensions = [".pdf", ".png", ".jpg", ".jpeg", ".webp", ".svg", ".txt", ".md", ".json", ".dxf", ".csv", ".geojson"] as const;
 export const projectManifestSchema = z.discriminatedUnion("schemaVersion", [legacyProjectManifestSchema, viewerProjectManifestSchema]);
 export const artifactManifestSchema = z.object({
  schemaVersion: z.literal(1), projectId, runtime: viewerRuntimeSchema, runtimeHash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -159,6 +184,29 @@ export type PreviewSession = { url: string; projectId: string };
 
 /** Older artifact runtimes each reviewed viewer renders. Plan, geometry, asset and runtime contracts are unchanged. */
 const rendersOlder: Record<string, string[]> = {
+  // Sites as well as houses: walls are optional, ground models are walked on and never cut, the scene
+  // sizes itself to everything in it with a far haze, the sun follows the latitude, plan view shows north,
+  // building checks warn instead of failing, and overlapping faces no longer grow the walk octree without bound.
+  "d6e4b57987d06bb1c323abee253bc0bbbbffb47f8395152059d27fe32ed2412e": [
+    "9dd05dcfcdf28f7fbecd9c31501285e442f5d907a8bd6f0b4957c7781a65b04f",
+    "3d2f4eab1837b91a0fb4aec7ca88c1d172d956962c12bed02cd67a85847de469",
+    "ae5b2da9f022bd8d3f2e3bbe43a5760eb53d6ecb6dc3fee4f9c7b3dfb86f04c5",
+    "f510060e49cbf9ad0dd8bd3731f2bac390fadb0d67c306805399951f2e33771f",
+    "965f4dc2b58b7fae7bfcca230854b8731ffcdd03f109c8b3dbccd8abc12cd6c5",
+    "0b4d696417db45abd588ea0c6806a9041e210363c47cdf50ef880433646bd7f2",
+    "1d0838bcb131e259ce7cbdbb67d4d3b075e76d9cd8c18384af697598f3c951ab",
+    "4df83644b7926264bd8dc2585ed16d3cf9e2b93b362ce3b68f41712238d01fb4",
+    "d26ba79ff81a31651e7bc5ff3c9172999d85b98ecacaea7c655970ca5d0d245c",
+    "bcf2044d3a9ecdc1b91e204e49bccecc5bd20a0325b2bb198c0d1b20da3e925c",
+    "3854b01658e1aebb6f510c783fd5398fa1c2b9525ee1b96c16cc7d1389f03661",
+    "5df7b415cee927487dce7dea5e1efb743d1a75b5fda7088e853da2e892bdf4b7",
+    "de3c67b050403fefe07d3a9486fb3e8ce0c791a33d89f303936b00ca967b1c90",
+    "6104e28e993e9c1062fb035185c4457487e1aba344eb08e4036f2b917d7f6204",
+    "b877cd74cb32faf79999cca0a2a56115c0f8fad641898c008f06ec6af2ce2906",
+    "9bbdf58f9b2c183f69bdd3034dbd521ea11d632b42c0ce0b8069afec74e6710c",
+    "7e0436bc1b36dfca102c35f11b40a4be9a22d8c1fdbf0ea136cd06853b5445fd",
+    "9347181d703461bfd63873589a89afda5a89e3a8ede79d6cba4ff13e46e22199",
+  ],
   // An editable viewer reads its shared library again when assets join it, takes pictures of pieces for its trays, and carries a new piece under the pointer while it is dragged in; the editor and agent tools share one free-spot search, and plan pieces gain catalog categories and finishes material categories; library textures may be JPEG. Saved artifact contracts are unchanged.
   "9dd05dcfcdf28f7fbecd9c31501285e442f5d907a8bd6f0b4957c7781a65b04f": [
     "3d2f4eab1837b91a0fb4aec7ca88c1d172d956962c12bed02cd67a85847de469",

@@ -1,0 +1,23 @@
+# Building guide
+
+Arch writes this guide into the BUILDERS.md of every project of this kind, after the core standards. Its source is packages/project-tools/src/rules.ts: change it there, and a test keeps this copy equal.
+
+A building has walls, openings, rooms and storeys, usually under a roof. Identify ceiling heights, openings, door swings, stair and void positions and the orientation from the drawings, unless the facts already hold storeyHeight or north. Door swings stay as drawn, whatever a camera or walking route would prefer. The building stands on flat ground unless the references show a slope. Then give the plot a ground:true terrain model the generator writes from the survey, as "Dependencies" in BUILDERS.md describes, and keep each storey's floor level.
+
+### Storeys and stairs
+
+All storeys of a building live in one plan. List them in levels, bottom to top, and give every wall, room, furniture piece and camera its level; openings follow their wall. Author each storey as if it stood on the ground: wall height, ceilingHeight, furniture elevation and camera height all count from that storey's floor. Set each level's height to the floor-to-floor height from facts.storeyHeight or the sections, so its walls meet the slab above.
+
+Draw a straight flight as one stairs piece on the storey it starts from, inside one room, with size [width, run, rise] and the rise equal to the height of the floor it reaches. At rotation 0 the bottom step faces +plan-y and the flight climbs toward -plan-y. A stair with a half landing is two flights and a box landing piece: the upper flight's elevation is the landing height. Studio cuts each flight out of the ceiling above it and the floor it reaches, guards that opening on the upper floor and lets walk mode climb it. Keep ordinary ceiling heights in the stair room; do not raise ceilings or walls to fake a void.
+
+Never fake an upper storey of a building with raised furniture, a storey-sized model, tall walls or one floor plane. When a project already does, convert it in one bounded change: create levels, move that storey's walls, openings, rooms, furniture and cameras onto its level with heights measured from its floor, rebuild the storey as real walls and rooms instead of a model, replace the stair with flights as above, and remove workarounds such as tall stair-room ceilings, raised wall heights or camera heights that add the floor elevation. Keep IDs of unchanged elements, record the conversion in arch.context.json, and keep the existing palette and furniture choices unless the user asks otherwise.
+
+Fix every validator warning about stairs before review: a flight that lands where no storey has its floor, or that does not fit inside one room. Then check each storey with the viewer's floor picker in plan, 3D and walk, and climb each flight in walk mode.
+
+### Roofs and sloped ceilings
+
+A room under a pitched roof keeps a ceiling of its own: set ceilingHeight to the low side and ceilingSlope to {rise, toward, from?}. rise is metres per metre (0.12 for 12%), toward is the direction the ceiling rises in degrees clockwise from the top of the plan (90 rises to the right), and from is the plan point where the ceiling equals ceilingHeight, by default the room's lowest corner. Take both from the sections. The viewer slopes the walk-mode ceiling, the ceiling lamp and the recessed lights with it, and curtains hang below it. Never model a ceiling as a custom surface or raise ceilingHeight to clear one. Walls under a sloped ceiling stay flat-topped, so draw those rooms' polygons on wall centrelines, which closes each ceiling over the wall tops, and keep any sloped wall-top infill a wall needs to reach the ceiling.
+
+Model each roof as a piece with roof:true, usually a model on the storey it covers, with its real eaves and pitch. Roofs never collide; the ceilings are what a walker meets. As soon as a plan has one roof piece, the viewer stops adding its own flat slab over the top storey, so give every covered part of the building a roof piece, including single-storey wings and porches. Viewers can hide roofs in 3D with the roof toggle; walk mode always shows them.
+
+When a project already builds sloped ceilings as models or uses placeholder ceiling heights, convert it in one bounded change: replace each ceiling model with ceilingHeight and ceilingSlope on the rooms below it, mark the roof models roof:true, and remove the placeholders. Check every storey in 3D with the roof on and off, and in walk mode by day and in the evening: no lights above the roof or hanging below the slope, and no slab above the eaves.

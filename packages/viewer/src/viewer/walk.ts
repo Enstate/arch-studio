@@ -13,6 +13,53 @@ const JUMP_SPEED = 5.5;
 const SKIN = 0.001;
 const CLEARANCE = 0.00001;
 const EMPTY_BLOCKERS: THREE.Box3[] = [];
+/** Smallest collision cell worth dividing, about the walker's radius: finer cells speed up nothing. */
+const MIN_CELL = 0.25;
+
+/**
+ * Octree over every collider triangle. three's own split keeps dividing a cell while it holds more
+ * than 8 triangles, so faces that lie on top of each other, such as a stair modelled as nested boxes,
+ * never thin out and the tree grows fourfold per level until the page runs out of memory. Here a
+ * cell stops dividing once dividing no longer separates its triangles or the cell is about the
+ * walker's size, and the tree has a budget.
+ */
+export function colliderTree(colliders: THREE.Object3D) {
+  const tree = new Octree();
+  // Collect the triangles only; the split below replaces Octree.build.
+  tree.build = () => tree;
+  tree.fromGraphNode(colliders);
+  delete (tree as Partial<Octree>).build;
+  if (!tree.triangles.length) return tree;
+  tree.calcBox();
+  let budget = Math.max(200_000, tree.triangles.length * 16);
+  const half = new THREE.Vector3();
+  const corner = new THREE.Vector3();
+  const split = (node: Octree, level: number) => {
+    const box = node.box!;
+    half.subVectors(box.max, box.min).multiplyScalar(0.5);
+    const cells: Octree[] = [];
+    for (let x = 0; x < 2; x++) for (let y = 0; y < 2; y++) for (let z = 0; z < 2; z++) {
+      const cell = new THREE.Box3();
+      cell.min.copy(box.min).add(corner.set(x, y, z).multiply(half));
+      cell.max.copy(cell.min).add(half);
+      cells.push(new Octree(cell));
+    }
+    for (const triangle of node.triangles) for (const cell of cells) if (cell.box!.intersectsTriangle(triangle)) cell.triangles.push(triangle);
+    const held = node.triangles.length;
+    node.triangles = [];
+    for (const cell of cells) {
+      const count = cell.triangles.length;
+      if (!count) continue;
+      budget -= count;
+      node.subTrees.push(cell);
+      const { min, max } = cell.box!;
+      const size = Math.max(max.x - min.x, max.y - min.y, max.z - min.z);
+      if (count > cell.trianglesPerLeaf && count < held && size > MIN_CELL && level < cell.maxLevel && budget > 0) split(cell, level + 1);
+    }
+  };
+  split(tree, 0);
+  return tree;
+}
 
 /**
  * First-person walker: capsule against an octree of the house, mouse look
@@ -66,8 +113,7 @@ export class Walker {
   setWorld(colliders: THREE.Object3D) {
     let o = this.worlds.get(colliders);
     if (!o) {
-      o = new Octree();
-      o.fromGraphNode(colliders);
+      o = colliderTree(colliders);
       this.worlds.set(colliders, o);
     }
     this.octree = o;
@@ -399,7 +445,8 @@ export class Walker {
       }
     }
     // Fell out of the house (bad plan, open edge): return to the last floor spot, keeping the view.
-    if (this.capsule.start.y < -5) {
+    // Terrain may lie lower than a house's floor, so the limit follows the lowest surface of the world.
+    if (this.capsule.start.y < Math.min(-5, this.octree.bounds.min.y - 1)) {
       const { yaw, pitch } = this;
       const { x, y, z } = this.safe;
       this.place(x, z, x - Math.sin(yaw), z - Math.cos(yaw), y);

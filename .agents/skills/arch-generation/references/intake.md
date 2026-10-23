@@ -1,6 +1,6 @@
 # Intake
 
-Read this when a project starts from a documents folder, when `source/intake.json` has `unresolved` documents, or when the user asks to plan or organize inputs. Intake classifies what the customer supplied and plans the pieces. It authors no geometry and starts no model.
+Read this when a project starts from a documents folder, when `source/intake.json` has `unresolved` documents, or when the user asks to plan or organize inputs. Intake classifies what the customer supplied, drawings and survey data alike, and plans the pieces. It authors no geometry and starts no model. The facts in `arch.project.json` are confirmed by the user: intake never changes them, and a reference that contradicts one becomes an unresolved question naming the fact.
 
 ## The file
 
@@ -20,8 +20,8 @@ Read this when a project starts from a documents folder, when `source/intake.jso
 
 ## Classifying
 
-1. Look at every page of every reference. Render each PDF page and read it. A filename or first page tells you nothing about page 7. Keep page renders outside the project; `reference/` keeps the customer's exact bytes, never renamed, converted or re-saved.
-2. Read the title block of each sheet: project, building, level, sheet title, revision, date and scale. Group sheets by what the title blocks say, not by file or folder name.
+1. Look at every page of every reference. Render each PDF page and read it. A filename or first page tells you nothing about page 7. Keep page renders outside the project; `reference/` keeps the customer's exact bytes, never renamed, converted or re-saved. A survey file (DXF, CSV or GeoJSON) is one document, page 1. Read it as data, never run it, and record its units, coordinate system, height datum and extents in `arch.context.json` decisions.
+2. Read the title block of each sheet: project, building or area, level, sheet title, revision, date and scale. Group sheets by what the title blocks say, not by file or folder name.
 3. Give each page exactly one document entry with a role:
    - `primary`: the sheet a piece is built from.
    - `supporting`: context such as sections, details, schedules, moodboards or an earlier revision that the title blocks show is superseded.
@@ -31,7 +31,7 @@ Read this when a project starts from a documents folder, when `source/intake.jso
 
 ## Levels
 
-Plan v1 stacks storeys with `levels`. An intake project groups every storey of a building, and the authored plan keeps them together. List each storey in `levels` with its floor elevation and floor-to-floor height, then give each wall, room, furniture piece and camera its `level`. Heights on a storey count from its own floor. Draw each flight as one `stairs` piece on its lower storey, inside one room, rising to the floor above; the viewer opens the ceiling and floor over it, and walk mode climbs it. Take stair and void positions from the drawings, keep pieces within one storey so builders stay bounded, and never flatten storeys into one floor. A project that already fakes an upper storey with raised furniture or a storey-sized model gets one conversion piece, owned by the lead, before other pieces continue.
+Plan v1 stacks storeys and terraces with `levels`, and everything in a project shares one plan. List each storey or terrace in `levels` with its floor elevation and, for a building, its floor-to-floor height, then give each wall, room, furniture piece and camera its `level`. Heights on a level count from its own floor. Draw each flight as one `stairs` piece on its lower level, inside one room, rising to the floor above; the viewer opens the ceiling and floor over it, and walk mode climbs it. Take stair, void, step and ramp positions from the drawings and keep pieces within one level so builders stay bounded. Never flatten a building's storeys into one floor. A building that already fakes an upper storey with raised furniture or a storey-sized model gets one conversion piece, owned by the lead, before other pieces continue. Sloping ground is not a level: it is a `ground: true` terrain model, as the guide for the project's kind describes.
 
 ## Done
 

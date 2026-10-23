@@ -2,9 +2,10 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { Inflate, Zip, ZipDeflate, ZipPassThrough } from "fflate";
 
-/** One ZIP entry: a JSON document, or a content-addressed file streamed from disk. */
+/** One ZIP entry: a JSON document, a short text, or a content-addressed file streamed from disk. */
 export type ArchiveEntry =
   | { name: string; json: unknown }
+  | { name: string; text: string }
   | { name: string; file: string; sha256: string; size: number };
 
 const chunkBytes = 1 << 20;
@@ -53,11 +54,11 @@ export async function writeArchive(file: string, entries: Iterable<ArchiveEntry>
   };
   try {
     for (const entry of entries) {
-      if ("json" in entry) {
+      if ("json" in entry || "text" in entry) {
         const stream = new ZipDeflate(entry.name, { level: 6 });
         stream.mtime = mtime;
         zip.add(stream);
-        stream.push(new TextEncoder().encode(JSON.stringify(entry.json)), true);
+        stream.push(new TextEncoder().encode("json" in entry ? JSON.stringify(entry.json) : entry.text), true);
         await flush();
         continue;
       }

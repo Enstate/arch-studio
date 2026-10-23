@@ -159,6 +159,11 @@ export function ceilingAt(plan: Plan, room: Room, p: Vec2) {
   return base + slope.rise * (run(p) - from);
 }
 
+/** A room has a ceiling only on a storey with walls, unless it opts out; `plan` is that storey. */
+export function hasCeiling(plan: Plan, room: Room) {
+  return plan.walls.length > 0 && room.ceiling !== false;
+}
+
 /** Which room, if any, contains a point. Smallest room wins so nested polygons work. */
 export function roomAt(plan: Plan, p: Vec2) {
   let best: { id: string; area: number } | null = null;

@@ -48,6 +48,18 @@ contextBridge.exposeInMainWorld('archDesktop', {
     for (const file of projectFileBacklog.splice(0)) listener(file);
     return () => projectFileListeners.delete(listener);
   },
+  // Claude Code install and sign-in. The provider is the only choice; main owns the commands.
+  getAgentSetup: () => ipcRenderer.invoke('desktop:agent-setup-state'),
+  installAgent: provider => ipcRenderer.invoke('desktop:agent-install', provider),
+  signInAgent: provider => ipcRenderer.invoke('desktop:agent-sign-in', provider),
+  submitAgentSignInCode: code => ipcRenderer.invoke('desktop:agent-sign-in-code', code),
+  openAgentSignInPage: () => ipcRenderer.invoke('desktop:agent-sign-in-open'),
+  cancelAgentSignIn: () => ipcRenderer.invoke('desktop:agent-sign-in-cancel'),
+  onAgentSetup: listener => {
+    const receive = (_event, state) => listener(state);
+    ipcRenderer.on('desktop:agent-setup', receive);
+    return () => ipcRenderer.removeListener('desktop:agent-setup', receive);
+  },
   onUpdateState: listener => {
     const receive = (_event, state) => listener(state);
     ipcRenderer.on('desktop:update-state', receive);

@@ -16,6 +16,7 @@ import type { RoundActivity, RoundEvent, RoundSummary, StudioBranch, StudioVersi
 import type { studioText } from "../lib/messages";
 import { useStudioFormat } from "../lib/locale";
 import { agentProvidersQuery, agentRunnable, openSettings, useDisabledAgents } from "../lib/settings";
+import { type ComposerDraft, type DraftAttachment, clearComposerDraft, useComposerDraft } from "../lib/composer-draft";
 import { type ModelChoice, type ModelSettings, ModelPicker, settingValue, TraitsPicker } from "./model-picker";
 
 // The timeline and composer follow T3 Code's MessagesTimeline and ChatComposer
@@ -71,7 +72,7 @@ function useRoundActivity(roundId: string | undefined, live: boolean) {
 }
 
 /** The project's working surface: what was asked, what the agent did and what each round rendered. */
-export function Rounds({projectId, threadId, startedAt, branch, versions, versionLabel, openVersion, compare, forkFrom, ensureGrant, initialRequest = "", t}: {projectId: string; threadId: string; /** When the conversation began; it continues the branch from there. */ startedAt: string; branch: StudioBranch; versions: StudioVersion[]; versionLabel: (version: StudioVersion) => string; openVersion: (id: string) => void; compare: (base: string, target: string) => void; forkFrom: (checkpointId: string) => void; ensureGrant: (then: () => void) => void; /** A drafted request, such as adopting the hand edits. */ initialRequest?: string; t: Copy}) {
+export function Rounds({projectId, threadId, startedAt, branch, versions, versionLabel, openVersion, compare, forkFrom, ensureGrant, t}: {projectId: string; threadId: string; /** When the conversation began; it continues the branch from there. */ startedAt: string; branch: StudioBranch; versions: StudioVersion[]; versionLabel: (version: StudioVersion) => string; openVersion: (id: string) => void; compare: (base: string, target: string) => void; forkFrom: (checkpointId: string) => void; ensureGrant: (then: () => void) => void; t: Copy}) {
   const timeline = useQuery({queryKey: ["studio-rounds", projectId], queryFn: () => roundTimeline({data: {projectId}}), refetchInterval: query => query.state.data?.some(round => round.status === "running") ? 2000 : 5000});
   const lineage = branchVersions(versions, branch.headId);
   const rounds = (timeline.data ?? []).filter(round => round.threadId === threadId);
@@ -87,10 +88,9 @@ export function Rounds({projectId, threadId, startedAt, branch, versions, versio
   ].sort((a, b) => a.at.localeCompare(b.at));
   const running = rounds.find(round => round.status === "running");
   const version = (id: string | null) => versions.find(item => item.id === id);
-  // The draft lives here so a critique can become the next request.
-  const [draft, setDraft] = useState<{threadId: string; text: string}>({threadId, text: initialRequest});
-  const request = draft.threadId === threadId ? draft.text : "";
-  const setRequest = (text: string) => setDraft({threadId, text});
+  // The conversation's unsent request, kept across tabs and restarts. A critique can become it.
+  const draft = useComposerDraft(projectId, threadId);
+  const setRequest = draft.setText;
   const changeText = (item: StudioVersion) => {
     const change = versionChange(item, versions);
     return change.kind === "model" ? `${t.modelBuilt} · ${versionLabel(item)}`
@@ -114,7 +114,7 @@ export function Rounds({projectId, threadId, startedAt, branch, versions, versio
         </div>)}
     </div></div>
     <div className="shrink-0 px-3 pb-3 sm:px-5 sm:pb-4">
-      <Composer key={threadId} projectId={projectId} threadId={threadId} branch={branch} running={running} request={request} setRequest={setRequest} canCritique={!!lineage.find(item => item.hasArtifact)} ensureGrant={ensureGrant} t={t} />
+      <Composer key={threadId} projectId={projectId} threadId={threadId} branch={branch} running={running} draft={draft} canCritique={!!lineage.find(item => item.hasArtifact)} ensureGrant={ensureGrant} t={t} />
     </div>
   </div>;
 }
@@ -335,7 +335,6 @@ function WorkRow({entry, t}: {entry: WorkEntry; t: Copy}) {
 }
 
 /** Images go to the agent as images. Documents become project references the agent reads. */
-type Attachment = {file: File; url: string | null};
 const imageType = /^image\/(png|jpeg|webp|gif)$/;
 /**
  * The agent and model a conversation's next round runs on: the person's choice in the composer,
@@ -362,11 +361,11 @@ export function useRoundAgent(projectId: string, threadId: string, chosen?: Mode
 }
 
 const documentName = /\.(pdf|svg|txt|md|json)$/i;
-function Composer({projectId, threadId, branch, running, request, setRequest, canCritique, ensureGrant, t}: {projectId: string; threadId: string; branch: StudioBranch; running?: RoundSummary; request: string; setRequest: (text: string) => void; canCritique: boolean; ensureGrant: (then: () => void) => void; t: Copy}) {
+function Composer({projectId, threadId, branch, running, draft, canCritique, ensureGrant, t}: {projectId: string; threadId: string; branch: StudioBranch; running?: RoundSummary; draft: ComposerDraft; canCritique: boolean; ensureGrant: (then: () => void) => void; t: Copy}) {
   const queryClient = useQueryClient();
   const file = useRef<HTMLInputElement>(null);
   const activity = useRoundActivity(running?.id, true);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const {text: request, setText: setRequest, files: attachments} = draft;
   const [dragging, setDragging] = useState(false);
   const [chosen, setChosen] = useState<ModelChoice>();
   const [chosenSettings, setChosenSettings] = useState<ModelSettings>();
@@ -376,24 +375,28 @@ function Composer({projectId, threadId, branch, running, request, setRequest, ca
   const approvals = events.filter((event): event is ApprovalEvent => event.type === "approval" && !resolved.has(event.requestId));
   const approval = approvals[0];
   const start = useMutation({
-    mutationFn: (kind: "request" | "critique") => {
+    mutationFn: async (kind: "request" | "critique") => {
+      const sent = kind === "request" ? attachments : [];
       const data = new FormData();
       data.set("projectId", projectId); data.set("threadId", threadId); data.set("kind", kind);
       data.set("request", kind === "critique" ? t.critiqueRequest : request);
       data.set("provider", selection!.provider); data.set("model", selection!.model); data.set("settings", JSON.stringify(resolvedSettings));
-      if (kind === "request") for (const item of attachments) data.append("attachments", item.file);
-      return startRound({data});
+      for (const item of sent) data.append("attachments", item.file);
+      await startRound({data});
+      return sent;
     },
-    onSuccess: async (_value, kind) => {
-      if (kind === "request") {setRequest(""); for (const item of attachments) if (item.url) URL.revokeObjectURL(item.url); setAttachments([]);}
+    onSuccess: async (sent, kind) => {
+      // Sending is what clears a draft. Leaving the conversation keeps it.
+      if (kind === "request") clearComposerDraft(projectId, threadId, sent);
       await queryClient.invalidateQueries({queryKey: ["studio-rounds", projectId]});
       await queryClient.invalidateQueries({queryKey: ["studio-threads"]});
     },
   });
   const answer = useMutation({mutationFn: (value: {requestId: string; decision: "accept" | "decline"}) => answerApproval({data: {roundId: running!.id, ...value}}), onSuccess: () => activity.refetch()});
   const interrupt = useMutation({mutationFn: () => interruptRound({data: {roundId: running!.id}})});
-  const addFiles = (files: Iterable<File>) => setAttachments(current => [...current, ...[...files].filter(item => imageType.test(item.type) ? item.size <= 10 * 1024 * 1024 : documentName.test(item.name) && item.size <= 100 * 1024 * 1024).map(item => ({file: item, url: imageType.test(item.type) ? URL.createObjectURL(item) : null}))].slice(0, 20));
-  const removeAttachment = (attachment: Attachment) => {if (attachment.url) URL.revokeObjectURL(attachment.url); setAttachments(current => current.filter(item => item !== attachment));};
+  // At most 20 files. Thumbnails are made only for files that fit, so none leak.
+  const addFiles = (files: Iterable<File>) => draft.attach([...files].filter(item => imageType.test(item.type) ? item.size <= 10 * 1024 * 1024 : documentName.test(item.name) && item.size <= 100 * 1024 * 1024).slice(0, Math.max(0, 20 - attachments.length)).map((item): DraftAttachment => ({file: item, url: imageType.test(item.type) ? URL.createObjectURL(item) : null})));
+  const removeAttachment = draft.detach;
   const canSend = !running && !start.isPending && !!selection && !!request.trim();
   const send = () => {if (canSend) ensureGrant(() => start.mutate("request"));};
   const drop = (event: DragEvent) => {event.preventDefault(); setDragging(false); addFiles(event.dataTransfer.files);};

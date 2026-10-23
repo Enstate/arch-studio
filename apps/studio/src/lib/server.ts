@@ -1,6 +1,7 @@
 import { createMiddleware, createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { planEditsSchema } from "@arch/project-tools/hand-edits";
+import { projectFactsSchema, referenceExtensions } from "@arch/project";
 import { studioSession, studioSessionHeader } from "./browser-session";
 
 const localSession = createMiddleware({ type: "function" }).client(async ({ next }) => {
@@ -8,6 +9,15 @@ const localSession = createMiddleware({ type: "function" }).client(async ({ next
   const secret = studioSession();
   if (secret) current.set(studioSessionHeader, secret);
   return next({ headers: current });
+}).server(async ({ next, serverFnMeta }) => {
+  // Every server function fails through here: the failure goes to the local log.
+  try { return await next(); }
+  catch (error) {
+    const { recordFailure, reportedFailure } = await import("./studio-log.server");
+    // A window that is not paired yet polls until it is. That is not a failure worth keeping.
+    if (!(error instanceof Error && error.message === "ARCH_SESSION_REQUIRED")) void recordFailure(serverFnMeta.name, error);
+    throw reportedFailure(error);
+  }
 });
 const sha = z.string().regex(/^[a-f0-9]{64}$/);
 const id = z.string().min(1).max(200);
@@ -19,13 +29,12 @@ export const session = createServerFn({ method: "POST" }).middleware([localSessi
 export const catalog = createServerFn({ method: "GET" }).middleware([localSession]).handler(async () => { const operations = await import("./studio.server"); return operations.catalog(); });
 export const projectDetails = createServerFn({ method: "GET" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.projectDetails({ data }); });
 export const createClient = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ name }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.createClient({ data }); });
-const referenceFile = z.instanceof(File).refine(file => file.size > 0 && file.size <= 100 * 1024 * 1024 && /\.(pdf|png|jpe?g|webp|svg|txt|md|json)$/i.test(file.name), "ARCH_REFERENCE_FILES");
-const newProject = z.object({ name, client: z.union([z.object({ id }).strict(), z.object({ name }).strict()]).nullable(), brief: z.string().trim().max(4000), references: z.array(referenceFile).max(100) }).strict();
-export const createProject = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => {
-  if (!(input instanceof FormData)) throw new Error("Send the new project as form data.");
-  const client = input.get("clientId") ? { id: String(input.get("clientId")) } : input.get("clientName") ? { name: String(input.get("clientName")) } : null;
-  return newProject.parse({ name: input.get("name"), client, brief: input.get("brief") ?? "", references: input.getAll("references") });
-}).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.createProject({ data }); });
+const referenceFile = z.instanceof(File).refine(file => file.size > 0 && file.size <= 100 * 1024 * 1024 && referenceExtensions.some(extension => file.name.toLowerCase().endsWith(extension)), "ARCH_REFERENCE_FILES");
+export const createProject = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ name, clientId: id.optional(), facts: projectFactsSchema }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.createProject({ data }); });
+export const updateProjectFacts = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, branch, name, facts: projectFactsSchema, description: z.string().trim().max(4000).optional() }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./project-setup.server"); return operations.updateProjectFacts({ data }); });
+export const assignClient = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, client: z.union([z.object({ id }).strict(), z.object({ name }).strict()]) }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./project-setup.server"); return operations.assignClient({ data }); });
+// Sent to OpenStreetMap only when the user asks to search, never per keystroke.
+export const findLocation = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ query: z.string().trim().min(2).max(240), locale: z.enum(["de", "en", "es", "pt"]) }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./project-setup.server"); return operations.findLocation({ data }); });
 export const openProjectFolder = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ directory }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.openProjectFolder({ data }); });
 export const registerSource = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ directory, projectId: id }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.registerSource({ data }); });
 export const initializeSource = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ inputsDirectory: directory, directory, projectId: id }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.initializeSource({ data }); });
@@ -47,7 +56,7 @@ export const saveNote = createServerFn({ method: "POST" }).middleware([localSess
 export const createBranch = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, name: branch, from: sha }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.createBranch({ data }); });
 export const makePrimary = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, name: branch }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.makePrimary({ data }); });
 export const archiveBranch = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, name: branch, archived: z.boolean() }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.archiveBranch({ data }); });
-export const discardChanges = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, name: branch }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.discardChanges({ data }); });
+export const discardChanges = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, name: branch.optional() }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.discardChanges({ data }); });
 export const revealInFolder = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, branch, path: z.string().min(1).max(4096).optional() }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.revealInFolder({ data }); });
 export const compareVersions = createServerFn({ method: "GET" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, base: sha, target: sha }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.compareVersions({ data }); });
 export const projectEdits = createServerFn({ method: "GET" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, branch }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./studio.server"); return operations.projectEdits({ data }); });
@@ -84,4 +93,5 @@ const threadAction = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("snooze"), until: z.string().datetime() }).strict(),
   ...(["settle", "unsettle", "unsnooze", "visit", "unread", "archive"] as const).map(kind => z.object({ kind: z.literal(kind) }).strict()),
 ]);
+export const problemReport = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ appVersion: z.string().trim().min(1).max(40).nullable() }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./problem-report.server"); return operations.problemReport({ data }); });
 export const updateThread = createServerFn({ method: "POST" }).middleware([localSession]).validator((input: unknown) => z.object({ projectId: id, threadId: z.string().uuid(), action: threadAction }).strict().parse(input)).handler(async ({ data }) => { const operations = await import("./rounds.server"); return operations.updateThread({ data }); });
