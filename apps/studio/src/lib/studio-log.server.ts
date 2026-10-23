@@ -46,7 +46,8 @@ export async function appendStudioLog(file: string, line: string, limit = studio
 
 // Writes queue on the process so rotation never races, across development reloads too.
 const processState = globalThis as typeof globalThis & { archStudioLog?: { pending: Promise<void>; recent: Map<string, number> } };
-const log = processState.archStudioLog ??= { pending: Promise.resolve(), recent: new Map() };
+processState.archStudioLog ??= { pending: Promise.resolve(), recent: new Map() };
+const log = processState.archStudioLog;
 /** Record a server-side failure in `<store>/logs/studio.log`. Logging never fails the caller. */
 export function recordFailure(source: string, error: unknown, extra: { round?: string } = {}): Promise<void> {
   let line: string;

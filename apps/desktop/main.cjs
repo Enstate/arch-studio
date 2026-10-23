@@ -241,7 +241,8 @@ app.whenReady().then(async () => {
   const applyMenuLocale = locale => {
     if (locale === currentLocale || window.isDestroyed()) return;
     currentLocale = locale;
-    const labels = currentMenuLabels = menuLabels(locale);
+    currentMenuLabels = menuLabels(locale);
+    const labels = currentMenuLabels;
     applySpellingLanguage(locale);
     const checkForUpdates = { label: labels.checkForUpdates, click: () => { void updates.check(); } };
     const settings = { label: labels.settings, accelerator: 'CmdOrCtrl+,', click: () => { if (!window.isDestroyed()) window.webContents.send('desktop:open-settings'); } };

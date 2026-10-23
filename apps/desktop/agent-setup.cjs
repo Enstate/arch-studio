@@ -12,6 +12,7 @@ const installers = {
     : ['/bin/bash', ['-c', 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash']],
 };
 const signInHosts = new Set(['claude.com', 'claude.ai', 'platform.claude.com']);
+// biome-ignore lint/suspicious/noControlCharactersInRegex: these are the CLI's terminal escape codes to strip.
 const terminalCodes = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07/g;
 const outputLines = text => text.replace(terminalCodes, '').split(/\r\n|\r|\n/).map(line => line.trim()).filter(Boolean);
 /** The sign-in page `claude auth login` prints, when it is one of Anthropic's own. */
