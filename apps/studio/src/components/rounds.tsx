@@ -16,6 +16,7 @@ import { answerApproval, answerQuestion, cancelQueuedRequest, queueRequest, queu
 import type { RoundActivity, RoundEvent, RoundSummary, StudioBranch, StudioVersion } from "../lib/model";
 import type { studioText } from "../lib/messages";
 import { useStudioFormat } from "../lib/locale";
+import { failureCode } from "../lib/diagnostics";
 import { agentProvidersQuery, agentRunnable, openSettings, useDisabledAgents } from "../lib/settings";
 import { type ComposerDraft, type DraftAttachment, clearComposerDraft, useComposerDraft } from "../lib/composer-draft";
 import { requestThreadNotifications } from "../lib/thread-notifications";
@@ -434,7 +435,7 @@ function Composer({projectId, threadId, branch, running, draft, canCritique, ens
   const follow = useMutation({mutationFn: async (mode: "steer" | "queue") => {
     if (mode === "steer") {
       try { await steerRound({data: {roundId: running!.id, request}}); return; }
-      catch (error) { if (!(error instanceof Error && error.message.includes("ARCH_STEER_UNAVAILABLE"))) throw error; }
+      catch (error) { if (!(error instanceof Error && failureCode(error.message) === "ARCH_STEER_UNAVAILABLE")) throw error; }
     }
     await queueRequest({data: {projectId, threadId, request, provider: selection!.provider, model: selection!.model, settings: resolvedSettings}});
   }, onSuccess: async () => {clearComposerDraft(projectId, threadId, []); await Promise.all([queued.refetch(), activity.refetch()]);}});
