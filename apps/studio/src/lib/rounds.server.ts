@@ -544,6 +544,19 @@ export async function answerApproval({ data }: { data: { roundId: string; reques
   await round.turn.respond(data.requestId, data.decision);
   return { answered: true };
 }
+/**
+ * Adds the person's message to the agent's running turn. Between turns, while Studio builds,
+ * there is nothing to steer and the caller queues the message instead.
+ */
+export async function steerRound({ data }: { data: { roundId: string; request: string } }) {
+  requireStudio();
+  const round = active.get(data.roundId);
+  if (!round?.turn) throw new Error("ARCH_STEER_UNAVAILABLE");
+  try { await round.turn.steer(data.request); }
+  catch { throw new Error("ARCH_STEER_UNAVAILABLE"); }
+  append(data.roundId, { type: "steer", text: data.request });
+  return { steered: true };
+}
 export async function answerQuestion({ data }: { data: { roundId: string; requestId: string; answers: Record<string, string> } }) {
   requireStudio();
   const round = active.get(data.roundId);

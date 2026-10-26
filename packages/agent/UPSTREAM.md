@@ -2,9 +2,17 @@
 
 Source: <https://github.com/pingdotgg/t3code>
 
-Commit: `936593c2583c6640a07fc310f97bd5d0c27a7c31`.
+Commit: `936593c2583c6640a07fc310f97bd5d0c27a7c31` for the adapters, and
+`3f9448747bb8848050dc2cacf83affa6f94a66a1` for `src/codex-app-server/**`,
+`src/provider/CodexThreadRevert.ts` and the backports listed under
+"Backported from the v2 adapters".
 
-The source was read from `/Users/feldrok/workspace/t3code` at that commit.
+The adapters were read from `/Users/feldrok/workspace/t3code` at the first commit.
+t3code later deleted these v1 adapters (#2829, "introduce new orchestrator").
+Its fixes now land only in `apps/server/src/orchestration-v2/Adapters/*V2.ts`,
+which are built on its orchestrator (runs, attempts, nodes, rollback, fork) and
+pull in about 93k lines of contracts and source-control code. Studio keeps the
+v1 structure and backports the v2 behavior it needs, each with its source.
 `LICENSE-t3code` is a byte-for-byte copy of its MIT license. The files below
 retain upstream structure and names so fixes can be compared against that commit.
 The package entry point exposes only the Promise and AsyncIterable API in
@@ -97,6 +105,38 @@ The package entry point exposes only the Promise and AsyncIterable API in
   settings from the macOS/Linux login shell and adds per-user Windows CLI
   directories, following T3's `DesktopShellEnvironment`.
 
+## Backported from the v2 adapters
+
+Read from `apps/server/src/orchestration-v2/Adapters` at `3f9448747b`.
+
+- Steer: `ProviderAdapterShape.steerTurn`. Claude offers a `priority: "now"`
+  message to the live query (`ClaudeAdapterV2.steerTurn`) and ignores the
+  `aborted_tools` or `aborted_streaming` result of the step it interrupts
+  (`isClaudeActiveSteeringAbortResult`). Claude Code delivers the message once
+  a running tool returns; it does not kill the tool. Codex sends `turn/steer`
+  with the active turn as `expectedTurnId` (`CodexAdapterV2.steerTurn`).
+  Upstream also moves running subagents to the background before a steer;
+  Studio does not.
+- Plan limits: `claudeResultPlanLimit` follows `providerFailureFromResult`
+  (API 429, gateway 503 wrapping `rate_limit_error` with its reset), and
+  `codexUsageLimitFailure` follows `codexUsageLimitError`. Claude results
+  with `is_error` and `terminal_reason: "api_error"` fail the turn.
+- Codex file changes list every path of a patch (#22541).
+- Codex rollback uses `thread/revert` through `revertCodexThread`
+  (`apps/server/src/provider/CodexThreadRevert.ts`), since the protocol
+  dropped `thread/rollback`.
+
+Not ported, because Studio cannot hit the case they fix:
+
+- #25372, retrying a stalled `setMcpServers` on resumed sessions. Studio
+  passes its MCP server as query options and opens a new query each round.
+- #24654, forcing tool search when settings say `ENABLE_TOOL_SEARCH=auto`.
+  Its cost came from many large MCP schemas; Studio's MCP has a handful.
+- #22546, approval reasons. Studio's PreToolUse hook decides every call
+  before Claude Code's own check, so `decisionReason` never reaches it.
+- #21358, PDFs as documents. Studio saves attached PDFs as project references
+  on purpose, and the agent reads them from there.
+
 ## Sandboxed shell commands
 
 Edit turns enable Claude's OS sandbox with `autoAllowBashIfSandboxed: true` and
@@ -124,19 +164,18 @@ those stronger guarantees in Studio.
 
 ## Dependencies and verification
 
-Direct dependencies are `effect` 4.0.0-beta.102,
-`@anthropic-ai/claude-agent-sdk` ^0.3.170, and
-`@effect/platform-node` 4.0.0-beta.102. The latter supplies filesystem, crypto,
-path, and scoped child-process services for the original Effect adapters.
-The root override pins its transitive `@effect/platform-node-shared` to the same
-beta. Otherwise its prerelease caret range selects stable 4.0.5, whose Effect
-peer is incompatible with beta.102. After the single `bun install`, a targeted
-`bun update @effect/platform-node-shared` repaired that transitive resolution.
-No existing package versions were upgraded.
+Direct dependencies are `effect` 4.0.5, `@anthropic-ai/claude-agent-sdk`
+^0.3.305, and `@effect/platform-node` 4.0.5, matching t3code's catalog. The
+latter supplies filesystem, crypto, path, and scoped child-process services for
+the Effect adapters. The root override keeps `@effect/platform-node-shared` on
+the same 4.0.5. The move from 4.0.0-beta.102 changed only Effect API spellings:
+`Schema.TaggedError`, `effect/process`, `crypto.randomUUIDv4()` and closeable
+scopes passed explicitly.
 
 The root `check-types:agent` script checks the package's own config, and
 `bun run check-types` includes it.
-Verification is limited to that config and `tests/events.test.ts`. No real
-Claude or Codex turn, build, broad test suite, or development server was run.
+`tests/events.test.ts` covers event mapping, questions, plan limits and a
+Claude steer against an in-memory SDK. Real Claude and Codex turns were run for
+plain replies, questions, steering and a multi-file Codex patch.
 The parent must smoke-test local CLI initialization, authentication, image input,
 turn completion, resume, approval, interruption, and child-process cleanup.
