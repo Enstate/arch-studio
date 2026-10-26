@@ -5,7 +5,7 @@ import * as Schema from "effect/Schema";
 /**
  * ProviderAdapterValidationError - Invalid adapter API input.
  */
-export class ProviderAdapterValidationError extends Schema.TaggedErrorClass<ProviderAdapterValidationError>()(
+export class ProviderAdapterValidationError extends Schema.TaggedError<ProviderAdapterValidationError>()(
   "ProviderAdapterValidationError",
   {
     provider: Schema.String,
@@ -22,7 +22,7 @@ export class ProviderAdapterValidationError extends Schema.TaggedErrorClass<Prov
 /**
  * ProviderAdapterSessionNotFoundError - Adapter-owned session id is unknown.
  */
-export class ProviderAdapterSessionNotFoundError extends Schema.TaggedErrorClass<ProviderAdapterSessionNotFoundError>()(
+export class ProviderAdapterSessionNotFoundError extends Schema.TaggedError<ProviderAdapterSessionNotFoundError>()(
   "ProviderAdapterSessionNotFoundError",
   {
     provider: Schema.String,
@@ -38,7 +38,7 @@ export class ProviderAdapterSessionNotFoundError extends Schema.TaggedErrorClass
 /**
  * ProviderAdapterSessionClosedError - Adapter session exists but is closed.
  */
-export class ProviderAdapterSessionClosedError extends Schema.TaggedErrorClass<ProviderAdapterSessionClosedError>()(
+export class ProviderAdapterSessionClosedError extends Schema.TaggedError<ProviderAdapterSessionClosedError>()(
   "ProviderAdapterSessionClosedError",
   {
     provider: Schema.String,
@@ -54,7 +54,7 @@ export class ProviderAdapterSessionClosedError extends Schema.TaggedErrorClass<P
 /**
  * ProviderAdapterRequestError - Provider protocol request failed or timed out.
  */
-export class ProviderAdapterRequestError extends Schema.TaggedErrorClass<ProviderAdapterRequestError>()(
+export class ProviderAdapterRequestError extends Schema.TaggedError<ProviderAdapterRequestError>()(
   "ProviderAdapterRequestError",
   {
     provider: Schema.String,
@@ -71,7 +71,7 @@ export class ProviderAdapterRequestError extends Schema.TaggedErrorClass<Provide
 /**
  * ProviderAdapterProcessError - Provider process lifecycle failure.
  */
-export class ProviderAdapterProcessError extends Schema.TaggedErrorClass<ProviderAdapterProcessError>()(
+export class ProviderAdapterProcessError extends Schema.TaggedError<ProviderAdapterProcessError>()(
   "ProviderAdapterProcessError",
   {
     provider: Schema.String,

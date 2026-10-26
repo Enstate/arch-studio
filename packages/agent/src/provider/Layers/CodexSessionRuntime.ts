@@ -29,8 +29,9 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as CodexClient from "../../codex-app-server/client.ts";
+import { revertCodexThread } from "../CodexThreadRevert.ts";
 import * as CodexErrors from "../../codex-app-server/errors.ts";
 import * as CodexRpc from "../../codex-app-server/rpc.ts";
 import * as EffectCodexSchema from "../../codex-app-server/schema.ts";
@@ -89,7 +90,7 @@ export type CodexResumeCursor = typeof CodexResumeCursorSchema.Type;
 type CodexServiceTier = NonNullable<EffectCodexSchema.V2ThreadStartParams["serviceTier"]>;
 type CodexThreadItem =
   | EffectCodexSchema.V2ThreadReadResponse["thread"]["turns"][number]["items"][number]
-  | EffectCodexSchema.V2ThreadRollbackResponse["thread"]["turns"][number]["items"][number];
+  | EffectCodexSchema.V2ThreadRevertResponse["thread"]["turns"][number]["items"][number];
 
 export interface CodexSessionRuntimeOptions {
   readonly threadId: ThreadId;
@@ -158,7 +159,7 @@ export type CodexSessionRuntimeError =
   | CodexSessionRuntimeInvalidUserInputAnswersError
   | CodexSessionRuntimeThreadIdMissingError;
 
-export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedErrorClass<CodexSessionRuntimePendingApprovalNotFoundError>()(
+export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedError<CodexSessionRuntimePendingApprovalNotFoundError>()(
   "CodexSessionRuntimePendingApprovalNotFoundError",
   {
     requestId: Schema.String,
@@ -169,7 +170,7 @@ export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.Tagg
   }
 }
 
-export class CodexSessionRuntimePendingUserInputNotFoundError extends Schema.TaggedErrorClass<CodexSessionRuntimePendingUserInputNotFoundError>()(
+export class CodexSessionRuntimePendingUserInputNotFoundError extends Schema.TaggedError<CodexSessionRuntimePendingUserInputNotFoundError>()(
   "CodexSessionRuntimePendingUserInputNotFoundError",
   {
     requestId: Schema.String,
@@ -180,7 +181,7 @@ export class CodexSessionRuntimePendingUserInputNotFoundError extends Schema.Tag
   }
 }
 
-export class CodexSessionRuntimeInvalidUserInputAnswersError extends Schema.TaggedErrorClass<CodexSessionRuntimeInvalidUserInputAnswersError>()(
+export class CodexSessionRuntimeInvalidUserInputAnswersError extends Schema.TaggedError<CodexSessionRuntimeInvalidUserInputAnswersError>()(
   "CodexSessionRuntimeInvalidUserInputAnswersError",
   {
     questionId: Schema.String,
@@ -191,7 +192,7 @@ export class CodexSessionRuntimeInvalidUserInputAnswersError extends Schema.Tagg
   }
 }
 
-export class CodexSessionRuntimeThreadIdMissingError extends Schema.TaggedErrorClass<CodexSessionRuntimeThreadIdMissingError>()(
+export class CodexSessionRuntimeThreadIdMissingError extends Schema.TaggedError<CodexSessionRuntimeThreadIdMissingError>()(
   "CodexSessionRuntimeThreadIdMissingError",
   {
     threadId: Schema.String,
@@ -688,7 +689,7 @@ function updateSession(
 }
 
 function parseThreadSnapshot(
-  response: EffectCodexSchema.V2ThreadReadResponse | EffectCodexSchema.V2ThreadRollbackResponse,
+  response: EffectCodexSchema.V2ThreadReadResponse | EffectCodexSchema.V2ThreadRevertResponse,
 ): CodexThreadSnapshot {
   return {
     threadId: response.thread.id,
@@ -701,6 +702,7 @@ function parseThreadSnapshot(
 
 export const makeCodexSessionRuntime = (
   options: CodexSessionRuntimeOptions,
+  runtimeScope: Scope.Closeable,
 ): Effect.Effect<
   CodexSessionRuntimeShape,
   CodexErrors.CodexAppServerError,
@@ -708,7 +710,6 @@ export const makeCodexSessionRuntime = (
 > =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const runtimeScope = yield* Scope.Scope;
     const crypto = yield* Crypto.Crypto;
     const events = yield* Queue.unbounded<ProviderEvent>();
     const pendingApprovalsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingApproval>());
@@ -755,7 +756,7 @@ export const makeCodexSessionRuntime = (
     const serverNotifications = yield* Queue.unbounded<CodexServerNotification>();
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomUUIDv4 = (purpose: CodexErrors.CodexAppServerIdentifierPurpose) =>
-      crypto.randomUUIDv4.pipe(
+      crypto.randomUUIDv4().pipe(
         Effect.mapError(
           (cause) =>
             new CodexErrors.CodexAppServerIdentifierGenerationError({
@@ -1365,10 +1366,8 @@ export const makeCodexSessionRuntime = (
       rollbackThread: (numTurns) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
-          const response = yield* client.request("thread/rollback", {
-            threadId: providerThreadId,
-            numTurns,
-          });
+          // Codex replaced thread/rollback with thread/revert, as in T3 Code's CodexThreadRevert.
+          const response = yield* revertCodexThread(client, providerThreadId, numTurns);
           yield* updateSession(sessionRef, {
             status: "ready",
             activeTurnId: undefined,

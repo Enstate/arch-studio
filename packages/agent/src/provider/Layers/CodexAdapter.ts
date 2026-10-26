@@ -33,7 +33,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 import * as CodexErrors from "../../codex-app-server/errors.ts";
 import * as EffectCodexSchema from "../../codex-app-server/schema.ts";
 
@@ -75,6 +75,7 @@ export interface CodexAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
   readonly makeRuntime?: (
     options: CodexSessionRuntimeOptions,
+    runtimeScope: Scope.Closeable,
   ) => Effect.Effect<
     CodexSessionRuntimeShape,
     CodexSessionRuntimeError,
@@ -1401,7 +1402,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
         );
         const createRuntime = options?.makeRuntime ?? makeCodexSessionRuntime;
-        const runtime = yield* createRuntime(runtimeInput).pipe(
+        const runtime = yield* createRuntime(runtimeInput, sessionScope).pipe(
           Effect.provideService(Scope.Scope, sessionScope),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
           Effect.provideService(Crypto.Crypto, crypto),

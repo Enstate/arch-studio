@@ -7,7 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { AgentAccount, AgentProvider, AgentProviderStatus } from "./api.ts";
 import * as CodexClient from "./codex-app-server/client.ts";
 import type { V2GetAccountResponse, V2ModelListResponse } from "./codex-app-server/schema.ts";
