@@ -107,6 +107,12 @@ export interface ProviderAdapterShape<TError> {
   readonly readThread: (threadId: ThreadId) => Effect.Effect<ProviderThreadSnapshot, TError>;
 
   /**
+   * Add a message to the running turn, so the agent reads it at its next step
+   * instead of after the turn. Fails when no turn is running.
+   */
+  readonly steerTurn: (threadId: ThreadId, text: string) => Effect.Effect<void, TError>;
+
+  /**
    * Roll back a provider thread by N turns.
    */
   readonly rollbackThread: (

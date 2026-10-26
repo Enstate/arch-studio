@@ -12,10 +12,11 @@ import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { Dialog, DialogContent, DialogTitle } from "@arch/ui/components/dialog";
 import { Input } from "@arch/ui/components/input";
-import { answerApproval, answerQuestion, cancelQueuedRequest, queueRequest, queuedRequests, sendQueuedRequest, threadAgent, discardChanges, interruptRound, resumeRound, roundActivity, roundImage, roundTimeline, startRound } from "../lib/server";
+import { answerApproval, answerQuestion, cancelQueuedRequest, queueRequest, queuedRequests, sendQueuedRequest, steerRound, threadAgent, discardChanges, interruptRound, resumeRound, roundActivity, roundImage, roundTimeline, startRound } from "../lib/server";
 import type { RoundActivity, RoundEvent, RoundSummary, StudioBranch, StudioVersion } from "../lib/model";
 import type { studioText } from "../lib/messages";
 import { useStudioFormat } from "../lib/locale";
+import { failureCode } from "../lib/diagnostics";
 import { agentProvidersQuery, agentRunnable, openSettings, useDisabledAgents } from "../lib/settings";
 import { type ComposerDraft, type DraftAttachment, clearComposerDraft, useComposerDraft } from "../lib/composer-draft";
 import { requestThreadNotifications } from "../lib/thread-notifications";
@@ -31,7 +32,7 @@ type QuestionEvent = Extract<RoundEvent, { type: "question" }>;
 type LimitEvent = Extract<RoundEvent, { type: "limit" }>;
 type WorkEvent = Extract<RoundEvent, { type: "tool" | "approval-resolved" | "build" | "retry" | "approval" | "image" | "question" | "question-answered" }>;
 type ImageEvent = Extract<RoundEvent, { type: "image" }>;
-type Segment = { kind: "work"; events: WorkEvent[] } | { kind: "text"; itemId: string; text: string };
+type Segment = { kind: "work"; events: WorkEvent[] } | { kind: "text"; itemId: string; text: string } | { kind: "steer"; text: string };
 
 /** Versions reachable from a branch head, newest first. A branch shares its fork point's history. */
 export function branchVersions(versions: StudioVersion[], headId: string | null) {
@@ -138,10 +139,14 @@ function FoldRow({children}: {children: ReactNode}) {
 /** Text items stay prose; consecutive tool, approval and build events form one work group. */
 function segments(events: RoundEvent[]): Segment[] {
   const result: Segment[] = [];
+  // A steer can split a tool's start from its finish. A finished tool shows once, where it finished.
+  const finished = new Set(events.flatMap(event => event.type === "tool" && event.status !== "started" ? [event.itemId] : []));
   for (const event of events) {
     if (event.type === "session" || event.type === "completed" || event.type === "limit") continue;
+    if (event.type === "tool" && event.status === "started" && finished.has(event.itemId)) continue;
     const last = result.at(-1);
-    if (event.type === "text") {
+    if (event.type === "steer") result.push({kind: "steer", text: event.text});
+    else if (event.type === "text") {
       if (last?.kind === "text" && last.itemId === event.itemId) last.text += event.delta;
       else result.push({kind: "text", itemId: event.itemId, text: event.delta});
     } else if (last?.kind === "work") last.events.push(event);
@@ -165,7 +170,12 @@ function RoundTurn({projectId, round, resumable, ensureGrant, version, branch, l
   const limit = round.status === "failed" || round.status === "interrupted" ? (activity.data?.events ?? []).findLast((event): event is LimitEvent => event.type === "limit") : undefined;
   return <div data-studio-round={round.status}>
     <UserRow round={round} t={t} />
-    {parts.map((part, index) => part.kind === "text"
+    {parts.map((part, index) => part.kind === "steer"
+      ? <div key={`steer:${index}`} data-studio-steer className="flex flex-col items-end gap-1 pb-3">
+          <div className="max-w-[80%] rounded-2xl bg-accent/70 px-3 py-2"><p className="whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground">{part.text}</p></div>
+          <span className="pe-1 text-[11px] text-muted-foreground">{t.steered}</span>
+        </div>
+      : part.kind === "text"
       ? <div key={`text:${part.itemId}`} className={index === lastText && !live ? "pb-4" : "pb-2"}>
           <div className="relative min-w-0 px-1 py-0.5"><ChatMarkdown text={part.text} /></div>
         </div>
@@ -420,15 +430,23 @@ function Composer({projectId, threadId, branch, running, draft, canCritique, ens
   const reply = useMutation({mutationFn: (value: {requestId: string; answers: Record<string, string>}) => answerQuestion({data: {roundId: running!.id, ...value}}), onSuccess: () => activity.refetch()});
   const interrupt = useMutation({mutationFn: () => interruptRound({data: {roundId: running!.id}})});
   // Follow-ups typed while the agent works wait their turn. Files go with a message sent after it finishes.
-  const queue = useMutation({mutationFn: () => queueRequest({data: {projectId, threadId, request, provider: selection!.provider, model: selection!.model, settings: resolvedSettings}}), onSuccess: async () => {clearComposerDraft(projectId, threadId, []); await queued.refetch();}});
+  // A follow-up steers the running agent, as in T3 Code. While Studio builds between turns there is
+  // nothing to steer, so it waits in the queue instead, as it does when the person asks for that.
+  const follow = useMutation({mutationFn: async (mode: "steer" | "queue") => {
+    if (mode === "steer") {
+      try { await steerRound({data: {roundId: running!.id, request}}); return; }
+      catch (error) { if (!(error instanceof Error && failureCode(error.message) === "ARCH_STEER_UNAVAILABLE")) throw error; }
+    }
+    await queueRequest({data: {projectId, threadId, request, provider: selection!.provider, model: selection!.model, settings: resolvedSettings}});
+  }, onSuccess: async () => {clearComposerDraft(projectId, threadId, []); await Promise.all([queued.refetch(), activity.refetch()]);}});
   const unqueue = useMutation({mutationFn: (id: string) => cancelQueuedRequest({data: {projectId, threadId, id}}), onSuccess: () => queued.refetch()});
   const sendQueued = useMutation({mutationFn: (id: string) => sendQueuedRequest({data: {projectId, threadId, id}}), onSuccess: async () => {await queued.refetch(); await queryClient.invalidateQueries({queryKey: ["studio-rounds", projectId]}); await queryClient.invalidateQueries({queryKey: ["studio-threads"]});}});
   // At most 20 files. Thumbnails are made only for files that fit, so none leak.
   const addFiles = (files: Iterable<File>) => draft.attach([...files].filter(item => imageType.test(item.type) ? item.size <= 10 * 1024 * 1024 : documentName.test(item.name) && item.size <= 100 * 1024 * 1024).slice(0, Math.max(0, 20 - attachments.length)).map((item): DraftAttachment => ({file: item, url: imageType.test(item.type) ? URL.createObjectURL(item) : null})));
   const removeAttachment = draft.detach;
   const canSend = !running && !start.isPending && !!selection && !!request.trim();
-  const canQueue = !!running && !queue.isPending && !!selection && !!request.trim() && !attachments.length;
-  const send = () => {if (canQueue) queue.mutate(); else if (canSend) {requestThreadNotifications(); ensureGrant(() => start.mutate("request"));}};
+  const canFollow = !!running && !follow.isPending && !!selection && !!request.trim() && !attachments.length;
+  const send = () => {if (canFollow) follow.mutate("steer"); else if (canSend) {requestThreadNotifications(); ensureGrant(() => start.mutate("request"));}};
   const drop = (event: DragEvent) => {event.preventDefault(); setDragging(false); addFiles(event.dataTransfer.files);};
   return <form className="mx-auto w-full min-w-0 max-w-3xl" onSubmit={event => {event.preventDefault(); send();}} onDragOver={event => {event.preventDefault(); setDragging(true);}} onDragLeave={() => setDragging(false)} onDrop={drop}>
     {!!queued.data?.length && <ul aria-label={t.queued} className="mb-2 grid gap-1">{queued.data.map(item => <li key={item.id} data-studio-queued className="flex min-w-0 items-center gap-2 rounded-xl border border-border/65 bg-muted/20 py-1 pr-1 pl-3 text-xs">
@@ -459,7 +477,7 @@ function Composer({projectId, threadId, branch, running, draft, canCritique, ens
                 {item.url ? <img src={item.url} alt={item.file.name} className="h-full w-full object-cover" /> : <><FileTextIcon className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 truncate text-xs text-foreground/80" title={item.file.name}>{item.file.name}</span></>}
                 <Button type="button" variant="ghost" size="icon-xs" className="absolute right-1 top-1 bg-background/80 hover:bg-background/90" onClick={() => removeAttachment(item)} aria-label={`${t.removeFile}: ${item.file.name}`}><XIcon /></Button>
               </div>)}</div>}
-              <textarea aria-label={t.composerPlaceholder} placeholder={running ? t.queuePlaceholder : t.composerPlaceholder} value={request} onChange={event => setRequest(event.target.value)} onPaste={event => addFiles(event.clipboardData.files)} onKeyDown={event => {if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {event.preventDefault(); send();}}} rows={3} maxLength={20000} className="block max-h-50 min-h-17.5 w-full resize-none overflow-y-auto whitespace-pre-wrap bg-transparent text-[16px] leading-relaxed text-foreground placeholder:text-muted-foreground/35 focus:outline-none sm:text-[14px]" />
+              <textarea aria-label={t.composerPlaceholder} placeholder={running ? t.steerPlaceholder : t.composerPlaceholder} value={request} onChange={event => setRequest(event.target.value)} onPaste={event => addFiles(event.clipboardData.files)} onKeyDown={event => {if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {event.preventDefault(); send();}}} rows={3} maxLength={20000} className="block max-h-50 min-h-17.5 w-full resize-none overflow-y-auto whitespace-pre-wrap bg-transparent text-[16px] leading-relaxed text-foreground placeholder:text-muted-foreground/35 focus:outline-none sm:text-[14px]" />
             </div>}
             {!approval && question ? null : approval ? <div className="flex items-center justify-end gap-2 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
               <Button type="button" size="sm" variant="ghost" disabled={interrupt.isPending} onClick={() => interrupt.mutate()}>{t.interrupt}</Button>
@@ -478,8 +496,9 @@ function Composer({projectId, threadId, branch, running, draft, canCritique, ens
                 <Button type="button" size="sm" variant="ghost" className="rounded-full text-muted-foreground" disabled={!!running || start.isPending || !selection || !canCritique} onClick={() => start.mutate("critique")}><ScanSearchIcon />{t.critique}</Button>
               </div>
               <div className="flex shrink-0 items-center justify-end gap-2">
-                {running && !!request.trim() && <button type="submit" disabled={!canQueue} aria-label={t.queueMessage} title={attachments.length ? t.queueNoFiles : t.queueMessage} className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-primary/90 text-primary-foreground shadow-xs transition-all duration-150 hover:scale-105 hover:bg-primary disabled:pointer-events-none disabled:opacity-30">
-                  {queue.isPending ? <Spinner className="size-3.5" /> : <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                {running && !!request.trim() && <Button type="button" size="icon-sm" variant="ghost" className="rounded-full text-muted-foreground" disabled={!canFollow} aria-label={t.queueMessage} title={t.queueMessage} onClick={() => follow.mutate("queue")}><ClockIcon /></Button>}
+                {running && !!request.trim() && <button type="submit" disabled={!canFollow} aria-label={t.sendNow} title={attachments.length ? t.queueNoFiles : t.sendNow} className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-primary/90 text-primary-foreground shadow-xs transition-all duration-150 hover:scale-105 hover:bg-primary disabled:pointer-events-none disabled:opacity-30">
+                  {follow.isPending ? <Spinner className="size-3.5" /> : <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>}
                 </button>}
                 {running ? <button type="button" onClick={() => interrupt.mutate()} disabled={interrupt.isPending} aria-label={t.interrupt} className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs transition-all duration-150 hover:scale-105 hover:bg-destructive disabled:opacity-50">
                   <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><rect x="2" y="2" width="8" height="8" rx="1.5" /></svg>
@@ -494,7 +513,7 @@ function Composer({projectId, threadId, branch, running, draft, canCritique, ens
       </div>
     </div>
     {running && !!attachments.length && <p className="px-4 pt-2 text-xs text-muted-foreground">{t.queueNoFiles}</p>}
-    {(start.error ?? answer.error ?? reply.error ?? queue.error ?? unqueue.error ?? sendQueued.error) && <StudioFailure className="px-4 pt-2 text-xs text-destructive" error={(start.error ?? answer.error ?? reply.error ?? queue.error ?? unqueue.error ?? sendQueued.error)!} />}
+    {(start.error ?? answer.error ?? reply.error ?? follow.error ?? unqueue.error ?? sendQueued.error) && <StudioFailure className="px-4 pt-2 text-xs text-destructive" error={(start.error ?? answer.error ?? reply.error ?? follow.error ?? unqueue.error ?? sendQueued.error)!} />}
   </form>;
 }
 

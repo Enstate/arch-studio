@@ -41,7 +41,9 @@ export type RoundEvent =
   | { type: "build"; status: "started" | "completed" | "failed" | "skipped"; error: string | null; checkpointId: string | null }
   /** Sent back to the agent after a build: its error, or the built plan's storey warnings. */
   | { type: "retry"; attempt: number; prompt: string; reason?: "storeys" }
-  | { type: "image"; itemId: string; sha256: string; name: string };
+  | { type: "image"; itemId: string; sha256: string; name: string }
+  /** A message the person added while the agent worked. The agent read it at its next step. */
+  | { type: "steer"; text: string };
 export type RoundSummary = {
   id: string;
   branch: string;

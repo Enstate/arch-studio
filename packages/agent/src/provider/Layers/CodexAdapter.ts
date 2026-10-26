@@ -33,7 +33,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 import * as CodexErrors from "../../codex-app-server/errors.ts";
 import * as EffectCodexSchema from "../../codex-app-server/schema.ts";
 
@@ -75,6 +75,7 @@ export interface CodexAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
   readonly makeRuntime?: (
     options: CodexSessionRuntimeOptions,
+    runtimeScope: Scope.Closeable,
   ) => Effect.Effect<
     CodexSessionRuntimeShape,
     CodexSessionRuntimeError,
@@ -267,6 +268,16 @@ function itemTitle(itemType: CanonicalItemType, item?: CodexLifecycleItem): stri
 
 function itemDetail(itemType: CanonicalItemType, item: CodexLifecycleItem): string | undefined {
   const itemRecord = item as Record<string, unknown>;
+  // From T3 Code's CodexAdapterV2 (#22541): every path of a multi-file patch, a move as old → new.
+  if (itemType === "file_change" && Array.isArray(itemRecord.changes)) {
+    const paths = itemRecord.changes.flatMap((change: { path?: unknown; kind?: { type?: unknown; move_path?: unknown } }) =>
+      typeof change?.path !== "string"
+        ? []
+        : [change.kind?.type === "update" && typeof change.kind.move_path === "string" ? `${change.path} → ${change.kind.move_path}` : change.path],
+    );
+    const listed = trimText(paths.join("\n"));
+    if (listed) return listed;
+  }
   const action = itemRecord.action as Record<string, unknown> | undefined;
   const actionQueries = Array.isArray(action?.queries) ? action.queries : [];
   const candidates = [
@@ -1401,7 +1412,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
         );
         const createRuntime = options?.makeRuntime ?? makeCodexSessionRuntime;
-        const runtime = yield* createRuntime(runtimeInput).pipe(
+        const runtime = yield* createRuntime(runtimeInput, sessionScope).pipe(
           Effect.provideService(Scope.Scope, sessionScope),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
           Effect.provideService(Crypto.Crypto, crypto),
@@ -1554,6 +1565,21 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       })),
     );
 
+  const steerTurn: CodexAdapterShape["steerTurn"] = Effect.fn("steerTurn")(function* (threadId, text) {
+    const session = yield* requireSession(threadId);
+    const { activeTurnId } = yield* session.runtime.getSession;
+    if (!activeTurnId) {
+      return yield* new ProviderAdapterValidationError({
+        provider: PROVIDER,
+        operation: "steerTurn",
+        issue: "No turn is running.",
+      });
+    }
+    yield* session.runtime
+      .steerTurn(activeTurnId, text)
+      .pipe(Effect.mapError((cause) => mapCodexRuntimeError(threadId, "turn/steer", cause)));
+  });
+
   const rollbackThread: CodexAdapterShape["rollbackThread"] = (threadId, numTurns) => {
     if (!Number.isInteger(numTurns) || numTurns < 1) {
       return Effect.fail(
@@ -1658,6 +1684,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     interruptTurn,
     readThread,
     rollbackThread,
+    steerTurn,
     respondToRequest,
     respondToUserInput,
     stopSession,
