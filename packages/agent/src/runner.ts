@@ -92,6 +92,7 @@ export async function startTurn(uncheckedInput: AgentTurnInput): Promise<AgentTu
   const pendingQuestions = new Set<string>();
   let adapter: ProviderAdapterShape<ProviderAdapterError> | undefined;
   let interrupted = false;
+  let turnSent = false;
   let finished = false;
   let terminal: CompletedEvent | undefined;
   let resolveCompletion!: (value: CompletedEvent) => void;
@@ -205,6 +206,7 @@ export async function startTurn(uncheckedInput: AgentTurnInput): Promise<AgentTu
           }),
           { signal: startup.signal },
         );
+      turnSent = true;
       await completion;
     } catch (error) {
       finish(
@@ -274,6 +276,12 @@ export async function startTurn(uncheckedInput: AgentTurnInput): Promise<AgentTu
         if (pendingApprovals.has(requestId)) pendingApprovals.set(requestId, false);
         throw error;
       }
+    },
+    async steer(text) {
+      if (typeof text !== "string" || !text.trim() || text.length > 120_000)
+        throw new Error("A steer needs text within provider limits.");
+      if (finished || terminal || !adapter || !turnSent) throw new Error("No turn is running.");
+      await runtime.runPromise(adapter.steerTurn(threadId, text));
     },
     async answer(requestId, answers) {
       if (

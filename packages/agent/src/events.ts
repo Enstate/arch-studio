@@ -143,6 +143,11 @@ export class TurnEvents {
               ),
             )
           : [];
+      case "runtime.error": {
+        if (this.limited || !codexUsageLimitFailure(event.payload.detail)) return [];
+        this.limited = true;
+        return [{ type: "limit", resetsAt: null }];
+      }
       case "account.rate-limits.updated": {
         if (this.limited) return [];
         const limit = planLimit(event.payload.rateLimits);
@@ -210,6 +215,19 @@ export function planLimit(rateLimits: unknown): { resetsAt: string | null } | nu
   if (!full.length && !codex.rateLimitReachedType) return null;
   const resets = full.map((window) => resetTime(window.resetsAt)).filter((value): value is string => value !== null).sort();
   return { resetsAt: resets.at(-1) ?? null };
+}
+
+/**
+ * A Codex turn error the plan limit caused, from T3 Code's CodexAdapterV2 codexUsageLimitError:
+ * usageLimitExceeded, rateLimitExceeded, or retries that ran out on HTTP 429.
+ */
+export function codexUsageLimitFailure(detail: unknown): boolean {
+  const info = (detail as { error?: { codexErrorInfo?: unknown } } | null | undefined)?.error?.codexErrorInfo;
+  const code = typeof info === "string" ? info : typeof info === "object" && info !== null ? Object.keys(info)[0] : undefined;
+  const exhausted = typeof info === "object" && info !== null && "responseTooManyFailedAttempts" in info
+    ? (info as { responseTooManyFailedAttempts?: { httpStatusCode?: unknown } }).responseTooManyFailedAttempts?.httpStatusCode
+    : undefined;
+  return code === "usageLimitExceeded" || code === "rateLimitExceeded" || exhausted === 429;
 }
 
 /** A single-consumer stream. It also buffers provider startup events. */

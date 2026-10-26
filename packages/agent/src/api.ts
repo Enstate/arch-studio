@@ -96,4 +96,6 @@ export type AgentTurn = {
   interrupt(): Promise<void>;
   respond(requestId: string, decision: "accept" | "decline"): Promise<void>;
   answer(requestId: string, answers: Record<string, string>): Promise<void>;
+  /** Adds a message the agent reads at its next step. Rejects before the turn starts and after it ends. */
+  steer(text: string): Promise<void>;
 };

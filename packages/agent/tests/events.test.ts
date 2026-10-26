@@ -9,7 +9,7 @@ import * as Fiber from "effect/Fiber";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentEvent } from "../src/index.ts";
 import {
   ApprovalRequestId,
@@ -20,8 +20,8 @@ import {
   RuntimeRequestId,
   ThreadId,
 } from "../src/contracts/index.ts";
-import { EventQueue, TurnEvents, planLimit } from "../src/events.ts";
-import { makeClaudeAdapter } from "../src/provider/Layers/ClaudeAdapter.ts";
+import { EventQueue, TurnEvents, codexUsageLimitFailure, planLimit } from "../src/events.ts";
+import { claudeResultPlanLimit, makeClaudeAdapter } from "../src/provider/Layers/ClaudeAdapter.ts";
 import { buildTurnStartParams } from "../src/provider/Layers/CodexSessionRuntime.ts";
 import { claudeToolPermission } from "../src/provider/permissions.ts";
 
@@ -309,4 +309,70 @@ test("agent questions reach the person once, and plan limits say when they reset
   const limit = { ...base, type: "account.rate-limits.updated" as const, payload: { rateLimits: { rate_limit_info: { status: "rejected" } } } };
   expect(mapping.accept(limit)).toEqual([{ type: "limit", resetsAt: null }]);
   expect(mapping.accept(limit)).toEqual([]);
+});
+
+test("a steer reaches Claude at its next step, and the step it aborts does not end the turn", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "arch-steer-"));
+  const runtime = ManagedRuntime.make(NodeServices.layer);
+  const scope = await runtime.runPromise(Scope.make());
+  const sdkEvents = new EventQueue<SDKMessage>();
+  const sent: SDKUserMessage[] = [];
+  let reader: Fiber.Fiber<void, never> | undefined;
+  try {
+    const adapter = await runtime.runPromise(
+      makeClaudeAdapter(
+        { binaryPath: "claude", launchArgs: "" },
+        {
+          createQuery(input) {
+            void (async () => { for await (const message of input.prompt as AsyncIterable<SDKUserMessage>) sent.push(message); })();
+            return {
+              [Symbol.asyncIterator]: () => sdkEvents[Symbol.asyncIterator](),
+              async interrupt() {},
+              async setModel() {},
+              async setPermissionMode() {},
+              async setMaxThinkingTokens() {},
+              close() { sdkEvents.close(); },
+            };
+          },
+        },
+      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    );
+    const threadId = ThreadId.make("steer-thread");
+    const mapping = new TurnEvents();
+    const seen: AgentEvent[] = [];
+    reader = runtime.runFork(Stream.runForEach(adapter.streamEvents, (event) => Effect.sync(() => { seen.push(...mapping.accept(event)); })));
+    await runtime.runPromise(adapter.startSession({ threadId, cwd, modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "sonnet" }, runtimeMode: "full-access", instructions: "" }));
+    await runtime.runPromise(adapter.sendTurn({ threadId, input: "Draw the ground floor.", attachments: [] }));
+    await runtime.runPromise(adapter.steerTurn(threadId, "Make the kitchen open plan."));
+    while (sent.length < 2) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(sent[1]).toMatchObject({ priority: "now" });
+    const stamp = { session_id: "s", uuid: crypto.randomUUID(), user_message_uuids: sent.map((message) => message.uuid) };
+    const result = (terminal_reason: string, text: string) => ({ type: "result", subtype: "success", is_error: false, result: text, terminal_reason, duration_ms: 1, duration_api_ms: 1, num_turns: 1, total_cost_usd: 0, usage: {}, modelUsage: {}, permission_denials: [], ...stamp }) as unknown as SDKMessage;
+    sdkEvents.push(result("aborted_tools", ""));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(seen.some((event) => event.type === "completed")).toBe(false);
+    sdkEvents.push(result("completed", "Open plan kitchen drawn."));
+    while (!seen.some((event) => event.type === "completed")) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(seen.find((event) => event.type === "completed")).toMatchObject({ status: "completed", summary: "Open plan kitchen drawn." });
+  } finally {
+    await runtime.runPromise(Scope.close(scope, Exit.void));
+    if (reader) await runtime.runPromise(Fiber.interrupt(reader));
+    await runtime.dispose();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("plan limits are read from Claude API errors and Codex turn errors, as T3 Code classifies them", () => {
+  const result = (fields: Record<string, unknown>) => ({ type: "result", subtype: "success", is_error: true, terminal_reason: "api_error", result: "", ...fields }) as unknown as Parameters<typeof claudeResultPlanLimit>[0];
+  expect(claudeResultPlanLimit(result({ api_error_status: 429 }))).toEqual({});
+  expect(claudeResultPlanLimit(result({ api_error_status: 500 }))).toBeNull();
+  const gateway = 'API Error: 503 [gateway] [429]: {"type":"error","error":{"type":"rate_limit_error","message":"limit"}} (reset after 1h 2m 3s)';
+  expect(claudeResultPlanLimit(result({ api_error_status: 503, result: gateway }), 1_000_000)).toEqual({ resetsAt: 1_000 + 3_723 });
+  expect(codexUsageLimitFailure({ error: { message: "x", codexErrorInfo: "usageLimitExceeded" } })).toBe(true);
+  expect(codexUsageLimitFailure({ error: { message: "x", codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 429 } } } })).toBe(true);
+  expect(codexUsageLimitFailure({ error: { message: "x", codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 500 } } } })).toBe(false);
+  expect(codexUsageLimitFailure({ error: { message: "x", codexErrorInfo: "contextWindowExceeded" } })).toBe(false);
+  const mapping = new TurnEvents();
+  const error = { eventId: EventId.make("e"), threadId: ThreadId.make("t"), provider: ProviderDriverKind.make("codex"), createdAt: new Date().toISOString(), type: "runtime.error" as const, payload: { message: "limit", detail: { error: { message: "limit", codexErrorInfo: "usageLimitExceeded" } } } };
+  expect(mapping.accept(error)).toEqual([{ type: "limit", resetsAt: null }]);
 });

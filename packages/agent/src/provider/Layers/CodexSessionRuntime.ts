@@ -140,6 +140,10 @@ export interface CodexSessionRuntimeShape {
   readonly rollbackThread: (
     numTurns: number,
   ) => Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
+  readonly steerTurn: (
+    turnId: TurnId,
+    text: string,
+  ) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly respondToRequest: (
     requestId: ApprovalRequestId,
     decision: ProviderApprovalDecision,
@@ -1363,6 +1367,16 @@ export const makeCodexSessionRuntime = (
         });
         return parseThreadSnapshot(response);
       }),
+      // From T3 Code's CodexAdapterV2.steerTurn: Codex checks the turn it adds to is still the active one.
+      steerTurn: (turnId, text) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          yield* client.request("turn/steer", {
+            threadId: providerThreadId,
+            expectedTurnId: turnId,
+            input: [{ type: "text", text }],
+          });
+        }),
       rollbackThread: (numTurns) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;

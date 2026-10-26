@@ -127,6 +127,8 @@ interface ClaudeTurnState {
    * steered instead (the queued message continues the same turn).
    */
   readonly synthetic?: boolean;
+  /** Set by a steer. Its "now" message aborts the current step, and that abort's result does not end the turn. */
+  steered?: boolean;
   readonly items: Array<unknown>;
   readonly assistantTextBlocks: Map<number, AssistantTextBlockState>;
   readonly assistantTextBlockOrder: Array<AssistantTextBlockState>;
@@ -982,9 +984,31 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
   return buildUserMessage({ sdkContent });
 });
 
+/**
+ * A result the plan limit stopped, from T3 Code's ClaudeAdapterV2 providerFailureFromResult:
+ * an API 429, or a gateway 503 that wraps a rate_limit_error and says when it resets.
+ */
+export function claudeResultPlanLimit(result: SDKResultMessage, now = Date.now()): { resetsAt?: number } | null {
+  if (result.subtype !== "success") return null;
+  const gateway =
+    result.is_error && result.terminal_reason === "api_error" && result.api_error_status === 503
+      ? /^API Error: 503 \[[^\]\r\n]+\] \[429\]: \{"type":"error","error":\{"type":"rate_limit_error",[^\r\n]*\} \(reset after (?:(\d+)h ?)?(?:(\d+)m ?)?(?:(\d+)s)?\)/.exec(result.result)
+      : null;
+  if (gateway) {
+    const seconds = Number(gateway[1] ?? 0) * 3_600 + Number(gateway[2] ?? 0) * 60 + Number(gateway[3] ?? 0);
+    return seconds > 0 ? { resetsAt: Math.floor(now / 1000) + seconds } : {};
+  }
+  return result.api_error_status === 429 ? {} : null;
+}
+
+/** An API error the CLI reports as a successful result, as T3 Code's ClaudeAdapterV2 reads it. */
+function isApiErrorResult(result: SDKResultMessage): boolean {
+  return result.subtype === "success" && result.is_error && result.terminal_reason === "api_error";
+}
+
 function turnStatusFromResult(result: SDKResultMessage): ProviderRuntimeTurnStatus {
   if (result.subtype === "success") {
-    return "completed";
+    return isApiErrorResult(result) ? "failed" : "completed";
   }
 
   const errors = resultErrorsText(result);
@@ -2463,8 +2487,26 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
+    // From T3 Code's ClaudeAdapterV2: the steered message is answered after this abort.
+    if (context.turnState?.steered && (message.terminal_reason === "aborted_streaming" || message.terminal_reason === "aborted_tools")) {
+      return;
+    }
+    const limit = claudeResultPlanLimit(message);
+    if (limit) {
+      const stamp = yield* makeEventStamp();
+      yield* offerRuntimeEvent({
+        type: "account.rate-limits.updated",
+        eventId: stamp.eventId,
+        provider: PROVIDER,
+        createdAt: stamp.createdAt,
+        threadId: context.session.threadId,
+        ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+        providerRefs: nativeProviderRefs(context),
+        payload: { rateLimits: { type: "rate_limit_event", rate_limit_info: { status: "rejected", ...limit } } },
+      });
+    }
     const status = turnStatusFromResult(message);
-    const errorMessage = message.subtype === "success" ? undefined : message.errors[0];
+    const errorMessage = message.subtype === "success" ? (isApiErrorResult(message) ? message.result.slice(0, 500) : undefined) : message.errors[0];
 
     // On resume, Claude Code can first run a turn of its own, such as the notice
     // that a background task of the stopped turn ended, and report its empty
@@ -3795,6 +3837,31 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     };
   });
 
+  // From T3 Code's ClaudeAdapterV2.steerTurn: a "now" message reaches the agent at its next
+  // step, where a plain queued one would wait for the turn to end.
+  const steerTurn: ClaudeAdapterShape["steerTurn"] = Effect.fn("steerTurn")(function* (threadId, text) {
+    const context = yield* requireSession(threadId);
+    const turnState = context.turnState;
+    if (!turnState || turnState.synthetic === true) {
+      return yield* new ProviderAdapterValidationError({
+        provider: PROVIDER,
+        operation: "steerTurn",
+        issue: "No turn is running.",
+      });
+    }
+    const promptUuid = yield* randomUUIDv4;
+    turnState.promptUuids?.add(promptUuid);
+    turnState.steered = true;
+    const message: SDKUserMessage = {
+      ...(yield* buildUserMessageEffect({ threadId, input: text, attachments: [] }, { fileSystem, boundInstanceId })),
+      uuid: promptUuid as SDKUserMessage["uuid"],
+      priority: "now",
+    };
+    yield* Queue.offer(context.promptQueue, { type: "message", message }).pipe(
+      Effect.mapError((cause) => toRequestError(threadId, "turn/steer", cause)),
+    );
+  });
+
   const interruptTurn: ClaudeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
     function* (threadId, _turnId) {
       const context = yield* requireSession(threadId);
@@ -3910,6 +3977,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     interruptTurn,
     readThread,
     rollbackThread,
+    steerTurn,
     respondToRequest,
     respondToUserInput,
     stopSession,
