@@ -75,7 +75,8 @@ export type StudioThread = {
   headId: string | null;
   title: string;
   createdAt: string;
-  status: "working" | "approval" | "failed" | "ready";
+  /** `waiting`: the agent needs an approval or an answer. */
+  status: "working" | "waiting" | "failed" | "ready";
   workingSince: string | null;
   latestRequestAt: string | null;
   latestCompletedAt: string | null;
@@ -86,6 +87,7 @@ export type StudioThread = {
   snoozedUntil: string | null;
   snoozedAt: string | null;
   lastVisitedAt: string | null;
+  archivedAt: string | null;
 };
 /** What one branch in a project file becomes in the project already here. */
 export type ProjectFileVariant = { name: string; outcome: "added" | "updated" | "unchanged" | "kept-separately"; as?: string };

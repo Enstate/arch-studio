@@ -50,6 +50,14 @@ export type AgentTurnInput = {
   /** MCP servers the agent may call, by name, such as `arch`. */
   mcpServers?: Record<string, AgentMcpServer>;
 };
+/** A question the agent asks mid-turn. Answers are keyed by `id`; options are suggestions, free text is allowed. */
+export type AgentQuestion = {
+  id: string;
+  header: string;
+  question: string;
+  options: { label: string; description: string }[];
+  multiSelect: boolean;
+};
 export type AgentEvent =
   | { type: "session"; resumeCursor: string }
   | { type: "text"; itemId: string; delta: string }
@@ -72,6 +80,11 @@ export type AgentEvent =
       requestId: string;
       decision: "accept" | "decline";
     }
+  | { type: "question"; requestId: string; questions: AgentQuestion[] }
+  /** Empty answers mean the question was dismissed, for example when the turn stopped. */
+  | { type: "question-answered"; requestId: string; answers: Record<string, string> }
+  /** The account's plan limit stopped the agent. `resetsAt` is an ISO time when the provider says. */
+  | { type: "limit"; resetsAt: string | null }
   | {
       type: "completed";
       status: "completed" | "failed" | "interrupted";
@@ -82,4 +95,5 @@ export type AgentTurn = {
   events: AsyncIterable<AgentEvent>;
   interrupt(): Promise<void>;
   respond(requestId: string, decision: "accept" | "decline"): Promise<void>;
+  answer(requestId: string, answers: Record<string, string>): Promise<void>;
 };

@@ -98,7 +98,8 @@ function migrate(database: DatabaseSync) {
     CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, branch TEXT NOT NULL, title TEXT NOT NULL, created_at TEXT NOT NULL, settled_override TEXT, settled_at TEXT, snoozed_until TEXT, snoozed_at TEXT, last_visited_at TEXT, archived_at TEXT);
     CREATE TABLE IF NOT EXISTS thread_sessions (thread_id TEXT NOT NULL, provider TEXT NOT NULL, resume_cursor TEXT NOT NULL, PRIMARY KEY(thread_id, provider));
     CREATE TABLE IF NOT EXISTS thread_agents (thread_id TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL, settings TEXT NOT NULL DEFAULT '{}');
-    CREATE TABLE IF NOT EXISTS build_grants (source_id TEXT NOT NULL, fingerprint TEXT NOT NULL, granted_at TEXT NOT NULL, PRIMARY KEY(source_id, fingerprint));`);
+    CREATE TABLE IF NOT EXISTS build_grants (source_id TEXT NOT NULL, fingerprint TEXT NOT NULL, granted_at TEXT NOT NULL, PRIMARY KEY(source_id, fingerprint));
+    CREATE TABLE IF NOT EXISTS queued_requests (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, request TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, settings TEXT NOT NULL, created_at TEXT NOT NULL);`);
   // Columns added after the first release of these tables.
   for (const statement of ["ALTER TABLE branch_agents ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'", "ALTER TABLE rounds ADD COLUMN thread_id TEXT"]) {
     try { database.exec(statement); }
@@ -165,11 +166,11 @@ function requireThread(sourceId: string, threadId: string): ThreadRow {
   if (!row) throw new Error("ARCH_ITEM_MISSING");
   return row as unknown as ThreadRow;
 }
-/** Approval requests the running round on a branch is waiting on. */
-export function pendingApprovals(roundId: string) {
+/** Approvals and questions the running round is waiting on the person for. */
+export function waitingRequests(roundId: string) {
   const events = active.get(roundId)?.events ?? [];
-  const resolved = new Set(events.flatMap(event => event.type === "approval-resolved" ? [event.requestId] : []));
-  return events.filter(event => event.type === "approval" && !resolved.has(event.requestId)).length;
+  const resolved = new Set(events.flatMap(event => event.type === "approval-resolved" || event.type === "question-answered" ? [event.requestId] : []));
+  return events.filter(event => (event.type === "approval" || event.type === "question") && !resolved.has(event.requestId)).length;
 }
 /** Agent CLIs run as child processes. Stop them before the server's own shutdown listener exits. */
 function bindShutdown() {
@@ -205,9 +206,12 @@ async function buildFingerprint(directory: string) {
 }
 export async function buildGrant({ data }: { data: { projectId: string; branch: string } }) {
   requireStudio();
-  const sourceId = await sourceOf(data.projectId);
-  const fingerprint = await buildFingerprint((await branchLine(sourceId, data.branch)).directory);
-  return { granted: !!rounds().prepare("SELECT 1 FROM build_grants WHERE source_id=? AND fingerprint=?").get(sourceId, fingerprint) };
+  return { granted: await buildsGranted(data.projectId, data.branch) };
+}
+async function buildsGranted(projectId: string, branch: string) {
+  const sourceId = await sourceOf(projectId);
+  const fingerprint = await buildFingerprint((await branchLine(sourceId, branch)).directory);
+  return !!rounds().prepare("SELECT 1 FROM build_grants WHERE source_id=? AND fingerprint=?").get(sourceId, fingerprint);
 }
 export async function grantBuilds({ data }: { data: { projectId: string; branch: string } }) {
   requireStudio();
@@ -313,14 +317,18 @@ export function threadTitle(request: string) {
   return line.length > 50 ? `${line.slice(0, 49).trimEnd()}…` : line;
 }
 
+type RoundStart = { projectId: string; threadId: string; kind: "request" | "critique"; request: string; provider: AgentProvider; model: string; settings: Record<string, string | boolean>; attachments: File[] };
 /** One request, one agent turn, then a build and checkpoint on the same branch. */
-export async function startRound({ data }: { data: { projectId: string; threadId: string; kind: "request" | "critique"; request: string; provider: AgentProvider; model: string; settings: Record<string, string | boolean>; attachments: File[] } }) {
-  const origin = requireStudio();
+export async function startRound({ data }: { data: RoundStart }) {
+  return beginRound(requireStudio(), data);
+}
+/** `origin` is where the round's agent reaches Studio's MCP: the page's own, or the finished round's for a queued one. */
+async function beginRound(origin: string, data: RoundStart) {
   const sourceId = await sourceOf(data.projectId);
   const thread = requireThread(sourceId, data.threadId);
   const branch = thread.branch;
   let line = await branchLine(sourceId, branch);
-  if (data.kind === "request" && !(await buildGrant({ data: { projectId: data.projectId, branch } })).granted) throw new Error("ARCH_BUILDS_REQUIRED");
+  if (data.kind === "request" && !(await buildsGranted(data.projectId, branch))) throw new Error("ARCH_BUILDS_REQUIRED");
   if (data.kind === "critique" && !line.headId) throw new Error("ARCH_VERSION_REQUIRED");
   const key = thread.id;
   // Checked and claimed without an await in between, so a hold never misses a starting round.
@@ -358,7 +366,7 @@ export async function startRound({ data }: { data: { projectId: string; threadId
     active.set(id, { turn: null, events: [], interrupted: false });
     // Request rounds reach the asset catalog and furniture tools through Studio's MCP until they end.
     const mcp = data.kind === "request" ? grantRoundMcp(origin, line.directory) : null;
-    void runRound({ ...data, branch, threadId: thread.id, prompt: request, id, sourceId, line, startedAt, attachments, mcpUrl: mcp?.url ?? null }).finally(() => { mcp?.revoke(); activeThreads.delete(key); active.delete(id); });
+    void runRound({ ...data, branch, threadId: thread.id, prompt: request, id, sourceId, line, startedAt, attachments, mcpUrl: mcp?.url ?? null }).finally(() => { mcp?.revoke(); activeThreads.delete(key); active.delete(id); void sendNextQueued(origin, data.projectId, thread.id, id); });
     return { roundId: id };
   } catch (error) { activeThreads.delete(key); throw error; }
 }
@@ -477,6 +485,50 @@ export async function resumeRound({ data }: { data: { projectId: string; roundId
   const request = `Continue where you stopped. The previous round ended before it finished, and its edits are still in the folder. Pick up from there.\n\nOriginal request:\n\n${original}`;
   return startRound({ data: { projectId: data.projectId, threadId: String(row.thread_id), kind: "request", request, provider: previous.provider!, model: previous.model!, settings: agent ? JSON.parse(String(agent.settings)) as Record<string, string | boolean> : {}, attachments: [] } });
 }
+type QueuedRow = { id: string; thread_id: string; request: string; provider: AgentProvider; model: string; settings: string; created_at: string };
+/** Follow-ups typed while the agent works. Each starts as its own request once the one before it finishes. */
+export async function queuedRequests({ data }: { data: { projectId: string; threadId: string } }) {
+  requireStudio();
+  requireThread(await sourceOf(data.projectId), data.threadId);
+  return rounds().prepare("SELECT id, request, created_at FROM queued_requests WHERE thread_id=? ORDER BY created_at").all(data.threadId)
+    .map(row => ({ id: String(row.id), request: String(row.request), createdAt: String(row.created_at) }));
+}
+export async function queueRequest({ data }: { data: { projectId: string; threadId: string; request: string; provider: AgentProvider; model: string; settings: Record<string, string | boolean> } }) {
+  requireStudio();
+  requireThread(await sourceOf(data.projectId), data.threadId);
+  const id = randomUUID();
+  rounds().prepare("INSERT INTO queued_requests(id,thread_id,request,provider,model,settings,created_at) VALUES(?,?,?,?,?,?,?)").run(id, data.threadId, data.request, data.provider, data.model, JSON.stringify(data.settings), new Date().toISOString());
+  return { id };
+}
+export async function cancelQueuedRequest({ data }: { data: { projectId: string; threadId: string; id: string } }) {
+  requireStudio();
+  requireThread(await sourceOf(data.projectId), data.threadId);
+  rounds().prepare("DELETE FROM queued_requests WHERE id=? AND thread_id=?").run(data.id, data.threadId);
+  return { cancelled: true };
+}
+/** Sends a queued follow-up now, for when the round before it stopped or failed. */
+export async function sendQueuedRequest({ data }: { data: { projectId: string; threadId: string; id: string } }) {
+  const origin = requireStudio();
+  requireThread(await sourceOf(data.projectId), data.threadId);
+  const row = rounds().prepare("SELECT * FROM queued_requests WHERE id=? AND thread_id=?").get(data.id, data.threadId) as QueuedRow | undefined;
+  if (!row) throw new Error("ARCH_ITEM_MISSING");
+  return startQueued(origin, data.projectId, row);
+}
+async function startQueued(origin: string, projectId: string, row: QueuedRow) {
+  const started = await beginRound(origin, { projectId, threadId: row.thread_id, kind: "request", request: row.request, provider: row.provider, model: row.model, settings: JSON.parse(row.settings) as Record<string, string | boolean>, attachments: [] });
+  rounds().prepare("DELETE FROM queued_requests WHERE id=?").run(row.id);
+  return started;
+}
+/** Only a round that finished well moves the queue. After a stop or failure the person decides. */
+async function sendNextQueued(origin: string, projectId: string, threadId: string, finishedRound: string) {
+  const status = rounds().prepare("SELECT status FROM rounds WHERE id=?").get(finishedRound)?.status;
+  if (status !== "completed") return;
+  const next = rounds().prepare("SELECT * FROM queued_requests WHERE thread_id=? ORDER BY created_at LIMIT 1").get(threadId) as QueuedRow | undefined;
+  if (!next) return;
+  // A revoked build grant or a busy project leaves it queued, where Send now asks again.
+  try { await startQueued(origin, projectId, next); }
+  catch (error) { void recordFailure("queued request", error instanceof Error ? error.message : String(error), { round: finishedRound }); }
+}
 export async function interruptRound({ data }: { data: { roundId: string } }) {
   requireStudio();
   const round = active.get(data.roundId);
@@ -490,6 +542,13 @@ export async function answerApproval({ data }: { data: { roundId: string; reques
   const round = active.get(data.roundId);
   if (!round?.turn) throw new Error("ARCH_NO_APPROVAL");
   await round.turn.respond(data.requestId, data.decision);
+  return { answered: true };
+}
+export async function answerQuestion({ data }: { data: { roundId: string; requestId: string; answers: Record<string, string> } }) {
+  requireStudio();
+  const round = active.get(data.roundId);
+  if (!round?.turn) throw new Error("ARCH_NO_QUESTION");
+  await round.turn.answer(data.requestId, data.answers);
   return { answered: true };
 }
 
@@ -538,7 +597,8 @@ export async function threadList(): Promise<StudioThread[]> {
     // Each project keeps at least one thread on its primary branch.
     if (!rounds().prepare("SELECT 1 FROM threads WHERE source_id=? AND archived_at IS NULL").get(project.sourceId))
       rounds().prepare("INSERT INTO threads(id,source_id,branch,title,created_at) VALUES(?,?,?,?,?)").run(randomUUID(), project.sourceId, lines.primary, "New thread", project.createdAt);
-    const rows = rounds().prepare("SELECT * FROM threads WHERE source_id=? AND archived_at IS NULL").all(project.sourceId);
+    // Archived threads come along so the sidebar can restore them.
+    const rows = rounds().prepare("SELECT * FROM threads WHERE source_id=?").all(project.sourceId);
     for (const row of rows) {
       const id = String(row.id);
       const line = lines.branches.find(item => item.name === row.branch);
@@ -551,11 +611,11 @@ export async function threadList(): Promise<StudioThread[]> {
         id, projectId: project.id, projectName: project.name, clientId: project.clientId, clientName: client?.name ?? project.clientId,
         branch: String(row.branch), branchMissing: !line || line.archived, primary: lines.primary === row.branch, headId: line?.headId ?? null,
         title: String(row.title), createdAt: String(row.created_at),
-        status: running ? (pendingApprovals(running.id) ? "approval" : "working") : latestRound?.status === "failed" ? "failed" : "ready",
+        status: running ? (waitingRequests(running.id) ? "waiting" : "working") : latestRound?.status === "failed" ? "failed" : "ready",
         workingSince: running?.startedAt ?? null, latestRequestAt: latestRound?.startedAt ?? null, latestCompletedAt: latestRound?.completedAt ?? null,
         provider: agent ? String(agent.provider) as AgentProvider : null, model: agent ? String(agent.model) : null,
         settledOverride: text(row.settled_override) as StudioThread["settledOverride"], settledAt: text(row.settled_at),
-        snoozedUntil: text(row.snoozed_until), snoozedAt: text(row.snoozed_at), lastVisitedAt: text(row.last_visited_at),
+        snoozedUntil: text(row.snoozed_until), snoozedAt: text(row.snoozed_at), lastVisitedAt: text(row.last_visited_at), archivedAt: text(row.archived_at),
       });
     }
   }
@@ -579,7 +639,7 @@ export async function createThread({ data }: { data: { projectId: string; branch
   rounds().prepare("INSERT INTO threads(id,source_id,branch,title,created_at,last_visited_at) VALUES(?,?,?,?,?,?)").run(id, sourceId, branch, "New thread", new Date().toISOString(), new Date().toISOString());
   return { threadId: id, branch };
 }
-export type ThreadAction = { kind: "rename"; title: string } | { kind: "settle" } | { kind: "unsettle" } | { kind: "snooze"; until: string } | { kind: "unsnooze" } | { kind: "visit" } | { kind: "unread" } | { kind: "archive" };
+export type ThreadAction = { kind: "rename"; title: string } | { kind: "settle" } | { kind: "unsettle" } | { kind: "snooze"; until: string } | { kind: "unsnooze" } | { kind: "visit" } | { kind: "unread" } | { kind: "archive" } | { kind: "unarchive" };
 export async function updateThread({ data }: { data: { projectId: string; threadId: string; action: ThreadAction } }) {
   requireStudio();
   requireThread(await sourceOf(data.projectId), data.threadId);
@@ -594,6 +654,7 @@ export async function updateThread({ data }: { data: { projectId: string; thread
   else if (action.kind === "visit") run("UPDATE threads SET last_visited_at=? WHERE id=?", now);
   // Unread means the latest completion is newer than the last visit.
   else if (action.kind === "unread") run("UPDATE threads SET last_visited_at='1970-01-01T00:00:00.000Z' WHERE id=?");
+  else if (action.kind === "unarchive") run("UPDATE threads SET archived_at=NULL WHERE id=?");
   else {
     if (activeThreads.has(data.threadId)) throw new Error("ARCH_STOP_TO_ARCHIVE");
     run("UPDATE threads SET archived_at=? WHERE id=?", now);

@@ -5,18 +5,20 @@ import { Button } from "@arch/ui/components/button";
 import { Spinner } from "@arch/ui/components/spinner";
 import { cn } from "@arch/ui/lib/utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BotIcon, BoxIcon, CheckIcon, PlayIcon, ChevronDownIcon, CircleAlertIcon, EyeIcon, FileTextIcon, GitBranchIcon, GlobeIcon, HammerIcon, ImageIcon, MessageCircleIcon, PaperclipIcon, ScanSearchIcon, SquarePenIcon, TerminalIcon, WrenchIcon, XIcon } from "lucide-react";
+import { BotIcon, BoxIcon, CheckIcon, ClockIcon, MessageCircleQuestionIcon, PlayIcon, ChevronDownIcon, CircleAlertIcon, EyeIcon, FileTextIcon, GitBranchIcon, GlobeIcon, HammerIcon, ImageIcon, MessageCircleIcon, PaperclipIcon, ScanSearchIcon, SquarePenIcon, TerminalIcon, WrenchIcon, XIcon } from "lucide-react";
 import { type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { Dialog, DialogContent, DialogTitle } from "@arch/ui/components/dialog";
-import { answerApproval, threadAgent, discardChanges, interruptRound, resumeRound, roundActivity, roundImage, roundTimeline, startRound } from "../lib/server";
+import { Input } from "@arch/ui/components/input";
+import { answerApproval, answerQuestion, cancelQueuedRequest, queueRequest, queuedRequests, sendQueuedRequest, threadAgent, discardChanges, interruptRound, resumeRound, roundActivity, roundImage, roundTimeline, startRound } from "../lib/server";
 import type { RoundActivity, RoundEvent, RoundSummary, StudioBranch, StudioVersion } from "../lib/model";
 import type { studioText } from "../lib/messages";
 import { useStudioFormat } from "../lib/locale";
 import { agentProvidersQuery, agentRunnable, openSettings, useDisabledAgents } from "../lib/settings";
 import { type ComposerDraft, type DraftAttachment, clearComposerDraft, useComposerDraft } from "../lib/composer-draft";
+import { requestThreadNotifications } from "../lib/thread-notifications";
 import { type ModelChoice, type ModelSettings, ModelPicker, settingValue, TraitsPicker } from "./model-picker";
 
 // The timeline and composer follow T3 Code's MessagesTimeline and ChatComposer
@@ -25,7 +27,9 @@ import { type ModelChoice, type ModelSettings, ModelPicker, settingValue, Traits
 type Copy = typeof studioText.en;
 type Entry = { kind: "round"; round: RoundSummary; at: string } | { kind: "version"; version: StudioVersion; at: string };
 type ApprovalEvent = Extract<RoundEvent, { type: "approval" }>;
-type WorkEvent = Extract<RoundEvent, { type: "tool" | "approval-resolved" | "build" | "retry" | "approval" | "image" }>;
+type QuestionEvent = Extract<RoundEvent, { type: "question" }>;
+type LimitEvent = Extract<RoundEvent, { type: "limit" }>;
+type WorkEvent = Extract<RoundEvent, { type: "tool" | "approval-resolved" | "build" | "retry" | "approval" | "image" | "question" | "question-answered" }>;
 type ImageEvent = Extract<RoundEvent, { type: "image" }>;
 type Segment = { kind: "work"; events: WorkEvent[] } | { kind: "text"; itemId: string; text: string };
 
@@ -135,7 +139,7 @@ function FoldRow({children}: {children: ReactNode}) {
 function segments(events: RoundEvent[]): Segment[] {
   const result: Segment[] = [];
   for (const event of events) {
-    if (event.type === "session" || event.type === "completed") continue;
+    if (event.type === "session" || event.type === "completed" || event.type === "limit") continue;
     const last = result.at(-1);
     if (event.type === "text") {
       if (last?.kind === "text" && last.itemId === event.itemId) last.text += event.delta;
@@ -157,6 +161,8 @@ function RoundTurn({projectId, round, resumable, ensureGrant, version, branch, l
   const parts = segments(activity.data?.events ?? []);
   const lastText = parts.findLastIndex(part => part.kind === "text");
   const stills = version?.outputs.filter(output => output.kind === "still").slice(0, 4) ?? [];
+  // A plan limit explains the failure better than the provider's error text.
+  const limit = round.status === "failed" || round.status === "interrupted" ? (activity.data?.events ?? []).findLast((event): event is LimitEvent => event.type === "limit") : undefined;
   return <div data-studio-round={round.status}>
     <UserRow round={round} t={t} />
     {parts.map((part, index) => part.kind === "text"
@@ -165,7 +171,7 @@ function RoundTurn({projectId, round, resumable, ensureGrant, version, branch, l
         </div>
       : <div key={`work:${index}`} className="pb-2"><WorkGroup roundId={round.id} events={part.events} live={live} cwd={branch.directory} t={t} /></div>)}
     {live && <WorkingRow startedAt={round.startedAt} t={t} />}
-    {round.error && <div className="pb-2"><WorkGroup roundId={round.id} events={[{type: "build", status: "failed", error: round.error, checkpointId: null}]} live={false} cwd={branch.directory} heading={t.roundFailed} t={t} /></div>}
+    {limit ? <LimitNotice limit={limit} provider={round.provider} t={t} /> : round.error && <div className="pb-2"><WorkGroup roundId={round.id} events={[{type: "build", status: "failed", error: round.error, checkpointId: null}]} live={false} cwd={branch.directory} heading={t.roundFailed} t={t} /></div>}
     {!live && <div className="group/assistant pb-6">
       {!!stills.length && <div className="mb-2 grid max-w-[560px] grid-cols-2 gap-2 px-1">{stills.map(still => <button type="button" key={still.id} onClick={() => openVersion(version!.id)} className="overflow-hidden rounded-lg border border-border/80 bg-background/70"><img src={still.url} alt={still.label} loading="lazy" className="block aspect-video w-full object-cover" /></button>)}</div>}
       <div className="flex flex-wrap items-center gap-0.5 px-1 text-xs tabular-nums text-muted-foreground">
@@ -182,6 +188,14 @@ function RoundTurn({projectId, round, resumable, ensureGrant, version, branch, l
       {(discard.error ?? resume.error) && <StudioFailure className="px-1 pt-1 text-xs text-destructive" error={(discard.error ?? resume.error)!} />}
     </div>}
   </div>;
+}
+
+const planNames: Record<AgentProvider, string> = {claude: "Claude", codex: "ChatGPT"};
+function LimitNotice({limit, provider, t}: {limit: LimitEvent; provider: AgentProvider | null; t: Copy}) {
+  const format = useStudioFormat();
+  const text = (limit.resetsAt ? t.limitReached.replace("{time}", format.date(limit.resetsAt, {weekday: "short", hour: "numeric", minute: "2-digit"})) : t.limitReachedSoon)
+    .replace("{provider}", provider ? planNames[provider] : "").replace("{continue}", t.continueRound);
+  return <div className="pb-2"><p role="status" data-studio-limit className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:text-amber-200"><ClockIcon className="mt-0.5 size-3.5 shrink-0" />{text}</p></div>;
 }
 
 function UserRow({round, t}: {round: RoundSummary; t: Copy}) {
@@ -259,6 +273,8 @@ function workEntries(events: WorkEvent[], live: boolean, cwd: string, t: Copy): 
   for (const [index, event] of events.entries()) {
     if (event.type === "tool") {
       const {name, preview, body} = toolPreview(event.detail, cwd);
+      // The question and its answer get their own row below.
+      if (name === "AskUserQuestion") continue;
       const previous = entries.get(event.itemId);
       entries.set(event.itemId, {id: event.itemId, icon: toolIcon(name, event.title), heading: name || event.title, preview: preview ?? previous?.preview ?? null, body: body ?? previous?.body ?? null, state: event.status === "started" ? live ? "running" : "none" : event.status === "failed" ? "failed" : "done"});
     } else if (event.type === "approval-resolved") {
@@ -266,6 +282,11 @@ function workEntries(events: WorkEvent[], live: boolean, cwd: string, t: Copy): 
       const request = events.find((item): item is ApprovalEvent => item.type === "approval" && item.requestId === event.requestId);
       const {preview, body} = toolPreview(request?.detail ?? null, cwd);
       entries.set(`approval:${event.requestId}`, {id: `approval:${event.requestId}`, icon: TerminalIcon, heading: event.decision === "accept" ? t.approved : t.declined, preview, body, state: event.decision === "accept" ? "done" : "failed"});
+    } else if (event.type === "question-answered") {
+      // Open questions live in the composer. The timeline records what was asked and the answer.
+      const asked = events.find((item): item is QuestionEvent => item.type === "question" && item.requestId === event.requestId)?.questions ?? [];
+      const answers = Object.values(event.answers).filter(Boolean);
+      entries.set(`question:${event.requestId}`, {id: `question:${event.requestId}`, icon: MessageCircleQuestionIcon, heading: answers.length ? t.answered : t.questionClosed, preview: answers.join(" · ") || asked[0]?.question || null, body: asked.length ? asked.map(question => `${question.question}\n→ ${event.answers[question.id] || "—"}`).join("\n\n") : null, state: answers.length ? "done" : "none"});
     } else if (event.type === "build") {
       if (event.status === "started") build = index;
       entries.set(`build:${build}`, {id: `build:${build}`, icon: event.status === "failed" ? CircleAlertIcon : HammerIcon, heading: event.status === "started" ? t.buildStarted : event.status === "completed" ? t.buildCompleted : event.status === "skipped" ? t.buildSkipped : t.buildFailed, preview: event.error?.split("\n")[0] ?? null, body: event.error && event.error.includes("\n") ? event.error : null, state: event.status === "started" ? live ? "running" : "none" : event.status === "failed" ? "failed" : "done", error: event.status === "failed"});
@@ -374,6 +395,9 @@ function Composer({projectId, threadId, branch, running, draft, canCritique, ens
   const resolved = new Set(events.flatMap(event => event.type === "approval-resolved" ? [event.requestId] : []));
   const approvals = events.filter((event): event is ApprovalEvent => event.type === "approval" && !resolved.has(event.requestId));
   const approval = approvals[0];
+  const answeredQuestions = new Set(events.flatMap(event => event.type === "question-answered" ? [event.requestId] : []));
+  const question = events.find((event): event is QuestionEvent => event.type === "question" && !answeredQuestions.has(event.requestId));
+  const queued = useQuery({queryKey: ["studio-queued", projectId, threadId], queryFn: () => queuedRequests({data: {projectId, threadId}}), refetchInterval: running ? 2000 : false});
   const start = useMutation({
     mutationFn: async (kind: "request" | "critique") => {
       const sent = kind === "request" ? attachments : [];
@@ -393,14 +417,26 @@ function Composer({projectId, threadId, branch, running, draft, canCritique, ens
     },
   });
   const answer = useMutation({mutationFn: (value: {requestId: string; decision: "accept" | "decline"}) => answerApproval({data: {roundId: running!.id, ...value}}), onSuccess: () => activity.refetch()});
+  const reply = useMutation({mutationFn: (value: {requestId: string; answers: Record<string, string>}) => answerQuestion({data: {roundId: running!.id, ...value}}), onSuccess: () => activity.refetch()});
   const interrupt = useMutation({mutationFn: () => interruptRound({data: {roundId: running!.id}})});
+  // Follow-ups typed while the agent works wait their turn. Files go with a message sent after it finishes.
+  const queue = useMutation({mutationFn: () => queueRequest({data: {projectId, threadId, request, provider: selection!.provider, model: selection!.model, settings: resolvedSettings}}), onSuccess: async () => {clearComposerDraft(projectId, threadId, []); await queued.refetch();}});
+  const unqueue = useMutation({mutationFn: (id: string) => cancelQueuedRequest({data: {projectId, threadId, id}}), onSuccess: () => queued.refetch()});
+  const sendQueued = useMutation({mutationFn: (id: string) => sendQueuedRequest({data: {projectId, threadId, id}}), onSuccess: async () => {await queued.refetch(); await queryClient.invalidateQueries({queryKey: ["studio-rounds", projectId]}); await queryClient.invalidateQueries({queryKey: ["studio-threads"]});}});
   // At most 20 files. Thumbnails are made only for files that fit, so none leak.
   const addFiles = (files: Iterable<File>) => draft.attach([...files].filter(item => imageType.test(item.type) ? item.size <= 10 * 1024 * 1024 : documentName.test(item.name) && item.size <= 100 * 1024 * 1024).slice(0, Math.max(0, 20 - attachments.length)).map((item): DraftAttachment => ({file: item, url: imageType.test(item.type) ? URL.createObjectURL(item) : null})));
   const removeAttachment = draft.detach;
   const canSend = !running && !start.isPending && !!selection && !!request.trim();
-  const send = () => {if (canSend) ensureGrant(() => start.mutate("request"));};
+  const canQueue = !!running && !queue.isPending && !!selection && !!request.trim() && !attachments.length;
+  const send = () => {if (canQueue) queue.mutate(); else if (canSend) {requestThreadNotifications(); ensureGrant(() => start.mutate("request"));}};
   const drop = (event: DragEvent) => {event.preventDefault(); setDragging(false); addFiles(event.dataTransfer.files);};
   return <form className="mx-auto w-full min-w-0 max-w-3xl" onSubmit={event => {event.preventDefault(); send();}} onDragOver={event => {event.preventDefault(); setDragging(true);}} onDragLeave={() => setDragging(false)} onDrop={drop}>
+    {!!queued.data?.length && <ul aria-label={t.queued} className="mb-2 grid gap-1">{queued.data.map(item => <li key={item.id} data-studio-queued className="flex min-w-0 items-center gap-2 rounded-xl border border-border/65 bg-muted/20 py-1 pr-1 pl-3 text-xs">
+      <span className="shrink-0 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t.queued}</span>
+      <span className="min-w-0 flex-1 truncate text-foreground/85" title={item.request}>{item.request}</span>
+      {!running && <Button type="button" size="xs" variant="ghost" disabled={sendQueued.isPending} onClick={() => ensureGrant(() => sendQueued.mutate(item.id))}>{t.sendNow}</Button>}
+      <Button type="button" size="icon-xs" variant="ghost" aria-label={`${t.removeQueued}: ${item.request}`} title={t.removeQueued} disabled={unqueue.isPending} onClick={() => unqueue.mutate(item.id)}><XIcon /></Button>
+    </li>)}</ul>}
     <div className="chat-composer-glass-shell relative mx-auto w-full max-w-3xl">
       <div className="chat-composer-glass-host relative z-10 w-full rounded-[22px]">
         <div className="group relative z-10 rounded-[22px] p-px">
@@ -417,14 +453,15 @@ function Composer({projectId, threadId, branch, running, draft, canCritique, ens
                 </div>}
               </div>
             </div>}
-            {!approval && <div className="relative px-3 pb-2 pt-3.5 sm:px-4 sm:pt-4">
+            {!approval && question && <QuestionCard key={question.requestId} question={question} pending={reply.isPending} stopping={interrupt.isPending} answer={answers => reply.mutate({requestId: question.requestId, answers})} stop={() => interrupt.mutate()} t={t} />}
+            {!approval && !question && <div className="relative px-3 pb-2 pt-3.5 sm:px-4 sm:pt-4">
               {!!attachments.length && <div className="mb-3 flex flex-wrap gap-2">{attachments.map(item => <div key={`${item.file.name}:${item.file.size}:${item.file.lastModified}`} className={cn("relative h-16 overflow-hidden rounded-lg border border-border/80 bg-background", item.url ? "w-16" : "flex w-40 items-center gap-2 px-2.5 pr-7")}>
                 {item.url ? <img src={item.url} alt={item.file.name} className="h-full w-full object-cover" /> : <><FileTextIcon className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 truncate text-xs text-foreground/80" title={item.file.name}>{item.file.name}</span></>}
                 <Button type="button" variant="ghost" size="icon-xs" className="absolute right-1 top-1 bg-background/80 hover:bg-background/90" onClick={() => removeAttachment(item)} aria-label={`${t.removeFile}: ${item.file.name}`}><XIcon /></Button>
               </div>)}</div>}
-              <textarea aria-label={t.composerPlaceholder} placeholder={running ? t.roundBusy : t.composerPlaceholder} value={request} onChange={event => setRequest(event.target.value)} onPaste={event => addFiles(event.clipboardData.files)} onKeyDown={event => {if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {event.preventDefault(); send();}}} rows={3} maxLength={20000} className="block max-h-50 min-h-17.5 w-full resize-none overflow-y-auto whitespace-pre-wrap bg-transparent text-[16px] leading-relaxed text-foreground placeholder:text-muted-foreground/35 focus:outline-none sm:text-[14px]" />
+              <textarea aria-label={t.composerPlaceholder} placeholder={running ? t.queuePlaceholder : t.composerPlaceholder} value={request} onChange={event => setRequest(event.target.value)} onPaste={event => addFiles(event.clipboardData.files)} onKeyDown={event => {if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {event.preventDefault(); send();}}} rows={3} maxLength={20000} className="block max-h-50 min-h-17.5 w-full resize-none overflow-y-auto whitespace-pre-wrap bg-transparent text-[16px] leading-relaxed text-foreground placeholder:text-muted-foreground/35 focus:outline-none sm:text-[14px]" />
             </div>}
-            {approval ? <div className="flex items-center justify-end gap-2 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
+            {!approval && question ? null : approval ? <div className="flex items-center justify-end gap-2 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
               <Button type="button" size="sm" variant="ghost" disabled={interrupt.isPending} onClick={() => interrupt.mutate()}>{t.interrupt}</Button>
               <Button type="button" size="sm" variant="outline" disabled={answer.isPending} onClick={() => answer.mutate({requestId: approval.requestId, decision: "decline"})}>{t.decline}</Button>
               <Button type="button" size="sm" disabled={answer.isPending} onClick={() => answer.mutate({requestId: approval.requestId, decision: "accept"})}>{t.approve}</Button>
@@ -441,6 +478,9 @@ function Composer({projectId, threadId, branch, running, draft, canCritique, ens
                 <Button type="button" size="sm" variant="ghost" className="rounded-full text-muted-foreground" disabled={!!running || start.isPending || !selection || !canCritique} onClick={() => start.mutate("critique")}><ScanSearchIcon />{t.critique}</Button>
               </div>
               <div className="flex shrink-0 items-center justify-end gap-2">
+                {running && !!request.trim() && <button type="submit" disabled={!canQueue} aria-label={t.queueMessage} title={attachments.length ? t.queueNoFiles : t.queueMessage} className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-primary/90 text-primary-foreground shadow-xs transition-all duration-150 hover:scale-105 hover:bg-primary disabled:pointer-events-none disabled:opacity-30">
+                  {queue.isPending ? <Spinner className="size-3.5" /> : <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                </button>}
                 {running ? <button type="button" onClick={() => interrupt.mutate()} disabled={interrupt.isPending} aria-label={t.interrupt} className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs transition-all duration-150 hover:scale-105 hover:bg-destructive disabled:opacity-50">
                   <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><rect x="2" y="2" width="8" height="8" rx="1.5" /></svg>
                 </button>
@@ -453,6 +493,43 @@ function Composer({projectId, threadId, branch, running, draft, canCritique, ens
         </div>
       </div>
     </div>
-    {(start.error || answer.error) && <StudioFailure className="px-4 pt-2 text-xs text-destructive" error={(start.error ?? answer.error)!} />}
+    {running && !!attachments.length && <p className="px-4 pt-2 text-xs text-muted-foreground">{t.queueNoFiles}</p>}
+    {(start.error ?? answer.error ?? reply.error ?? queue.error ?? unqueue.error ?? sendQueued.error) && <StudioFailure className="px-4 pt-2 text-xs text-destructive" error={(start.error ?? answer.error ?? reply.error ?? queue.error ?? unqueue.error ?? sendQueued.error)!} />}
   </form>;
+}
+
+/**
+ * A question the agent asked mid-turn, following T3 Code's ComposerPendingUserInputPanel (MIT).
+ * Options are suggestions; a typed answer replaces them.
+ */
+function QuestionCard({question, pending, stopping, answer, stop, t}: {question: QuestionEvent; pending: boolean; stopping: boolean; answer: (answers: Record<string, string>) => void; stop: () => void; t: Copy}) {
+  const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const [typed, setTyped] = useState<Record<string, string>>({});
+  const answers = Object.fromEntries(question.questions.map(item => [item.id, typed[item.id]?.trim() || (picked[item.id] ?? []).join(", ")]));
+  const complete = question.questions.every(item => answers[item.id]);
+  const pick = (id: string, label: string, multiple: boolean) => setPicked(current => {
+    const chosen = current[id] ?? [];
+    return {...current, [id]: chosen.includes(label) ? chosen.filter(value => value !== label) : multiple ? [...chosen, label] : [label]};
+  });
+  const submit = () => {if (complete && !pending) answer(answers);};
+  return <div data-studio-question>
+    <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20 px-4 py-3.5 sm:px-5 sm:py-4">
+      <span className="flex items-center gap-1.5 text-sm uppercase tracking-[0.2em]"><MessageCircleQuestionIcon className="size-4" aria-hidden />{t.agentQuestion}</span>
+      {question.questions.map(item => <fieldset key={item.id} className="mt-3 grid min-w-0 gap-2">
+        <legend className="mb-2 text-sm font-medium text-foreground">{item.question}</legend>
+        {!!item.options.length && <div className="grid gap-1">{item.options.map(option => {
+          const selected = (picked[item.id] ?? []).includes(option.label) && !typed[item.id]?.trim();
+          return <button type="button" key={option.label} aria-pressed={selected} onClick={() => {setTyped(current => ({...current, [item.id]: ""})); pick(item.id, option.label, item.multiSelect);}} className={cn("flex w-full min-w-0 flex-col items-start rounded-lg border px-3 py-2 text-left transition-colors", selected ? "border-primary/70 bg-primary/8" : "border-border/65 bg-background/70 hover:bg-accent/40")}>
+            <span className="text-sm text-foreground">{option.label}</span>
+            {option.description && <span className="text-xs text-muted-foreground">{option.description}</span>}
+          </button>;
+        })}</div>}
+        <Input aria-label={`${item.header}: ${t.ownAnswer}`} placeholder={t.ownAnswer} value={typed[item.id] ?? ""} maxLength={4000} onChange={event => setTyped(current => ({...current, [item.id]: event.target.value}))} onKeyDown={event => {if (event.key === "Enter" && !event.nativeEvent.isComposing) {event.preventDefault(); submit();}}} />
+      </fieldset>)}
+    </div>
+    <div className="flex items-center justify-end gap-2 px-2.5 py-2.5 sm:px-3 sm:pb-3">
+      <Button type="button" size="sm" variant="ghost" disabled={stopping} onClick={stop}>{t.interrupt}</Button>
+      <Button type="button" size="sm" disabled={!complete || pending} onClick={submit}>{t.sendAnswer}</Button>
+    </div>
+  </div>;
 }
