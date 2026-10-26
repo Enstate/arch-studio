@@ -2,7 +2,7 @@ import { threadTitle } from "../lib/thread-title";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger, ContextMenuTrigger } from "@arch/ui/components/context-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@arch/ui/components/popover";
 import { cn } from "@arch/ui/lib/utils";
-import { AlarmClockIcon, AlarmClockOffIcon, CheckIcon, ChevronDownIcon, CircleCheckIcon, CircleDashedIcon, Undo2Icon } from "lucide-react";
+import { AlarmClockIcon, AlarmClockOffIcon, ArchiveRestoreIcon, CheckIcon, ChevronDownIcon, CircleCheckIcon, CircleDashedIcon, Undo2Icon } from "lucide-react";
 import { type MouseEvent, type ReactNode, useState } from "react";
 import type { StudioThread } from "../lib/model";
 import type { studioText } from "../lib/messages";
@@ -20,14 +20,14 @@ const lastActivity = (thread: StudioThread) => Math.max(time(thread.latestReques
 /** A snoozed thread wakes early when it needs the user: an approval, a failure or a finished round. */
 function wokeAt(thread: StudioThread) {
   if (!thread.snoozedAt) return null;
-  if (thread.status === "approval") return Date.now();
+  if (thread.status === "waiting") return Date.now();
   return time(thread.latestCompletedAt) > time(thread.snoozedAt) ? time(thread.latestCompletedAt) : null;
 }
 export function threadSnoozed(thread: StudioThread, now: number) {
   return time(thread.snoozedUntil) > now && wokeAt(thread) === null;
 }
 export function threadSettled(thread: StudioThread, now: number) {
-  if (thread.status === "approval" || thread.status === "working") return false;
+  if (thread.status === "waiting" || thread.status === "working") return false;
   if (thread.settledOverride === "settled") return true;
   if (thread.settledOverride === "active") return false;
   return now - lastActivity(thread) > autoSettleDays * 24 * 60 * 60 * 1000;
@@ -76,11 +76,12 @@ function ProviderMark({thread}: {thread: StudioThread}) {
   return <span className="inline-flex shrink-0 items-center opacity-60" title={thread.model ?? undefined}><Icon className="size-3.5" /></span>;
 }
 
-export type ThreadActionHandler = (thread: StudioThread, action: {kind: "rename"; title: string} | {kind: "settle"} | {kind: "unsettle"} | {kind: "snooze"; until: string} | {kind: "unsnooze"} | {kind: "unread"} | {kind: "archive"} | {kind: "newThread"}) => void;
+export type ThreadActionHandler = (thread: StudioThread, action: {kind: "rename"; title: string} | {kind: "settle"} | {kind: "unsettle"} | {kind: "snooze"; until: string} | {kind: "unsnooze"} | {kind: "unread"} | {kind: "archive"} | {kind: "unarchive"} | {kind: "newThread"}) => void;
 
-/** Live threads as cards, then Snoozed and Settled shelves, across every project. */
-export function ThreadList({threads, selectedId, select, act, now, t}: {threads: StudioThread[]; selectedId?: string; select: (thread: StudioThread) => void; act: ThreadActionHandler; now: number; t: Copy}) {
+/** Live threads as cards, then Snoozed, Settled and Archived shelves, across every project. */
+export function ThreadList({threads, archived, selectedId, select, act, now, t}: {threads: StudioThread[]; archived: StudioThread[]; selectedId?: string; select: (thread: StudioThread) => void; act: ThreadActionHandler; now: number; t: Copy}) {
   const [snoozedOpen, setSnoozedOpen] = useState(false);
+  const [archivedOpen, setArchivedOpen] = useState(false);
   const [settledOpen, setSettledOpen] = useState(true);
   const [settledLimit, setSettledLimit] = useState(10);
   const snoozed = threads.filter(thread => threadSnoozed(thread, now)).sort((a, b) => time(a.snoozedUntil) - time(b.snoozedUntil));
@@ -99,6 +100,10 @@ export function ThreadList({threads, selectedId, select, act, now, t}: {threads:
       <ShelfHeader label={settledOpen ? t.settled : `${t.settled} (${settled.length})`} open={settledOpen} toggle={() => setSettledOpen(value => !value)} tone="muted" />
       <ul className="flex flex-col gap-px">{(settledOpen ? visibleSettled.slice(0, settledLimit) : visibleSettled).map(thread => <SlimRow key={thread.id} thread={thread} selected={thread.id === selectedId} select={select} act={act} now={now} t={t} kind="settled" />)}</ul>
       {settledOpen && settled.length > settledLimit && <button type="button" className="mt-1 px-2.5 text-left text-xs text-muted-foreground hover:text-foreground" onClick={() => setSettledLimit(limit => limit + 25)}>{t.showMore.replace("{count}", String(Math.min(25, settled.length - settledLimit)))}</button>}
+    </>}
+    {!!archived.length && <>
+      <ShelfHeader label={archivedOpen ? t.archivedThreads : `${t.archivedThreads} (${archived.length})`} open={archivedOpen} toggle={() => setArchivedOpen(value => !value)} tone="muted" />
+      {archivedOpen && <ul className="flex flex-col gap-px">{[...archived].sort((a, b) => time(b.archivedAt) - time(a.archivedAt)).map(thread => <ArchivedRow key={thread.id} thread={thread} act={act} now={now} t={t} />)}</ul>}
     </>}
   </div>;
 }
@@ -125,11 +130,11 @@ function ThreadMenu({thread, act, rename, t, children}: {thread: StudioThread; a
       <ContextMenuSeparator />
       {settled ? <ContextMenuItem onClick={() => act(thread, {kind: "unsettle"})}>{t.unsettleThread}</ContextMenuItem> : <ContextMenuItem onClick={() => act(thread, {kind: "settle"})}>{t.settleThread}</ContextMenuItem>}
       {snoozed ? <ContextMenuItem onClick={() => act(thread, {kind: "unsnooze"})}>{t.wakeThread}</ContextMenuItem>
-        : <ContextMenuSub><ContextMenuSubTrigger disabled={thread.status === "approval"}>{t.snooze}</ContextMenuSubTrigger><ContextMenuSubContent>{snoozePresets(t).map(preset => <ContextMenuItem key={preset.label} onClick={() => act(thread, {kind: "snooze", until: preset.until.toISOString()})}>{preset.label}</ContextMenuItem>)}</ContextMenuSubContent></ContextMenuSub>}
+        : <ContextMenuSub><ContextMenuSubTrigger disabled={thread.status === "waiting"}>{t.snooze}</ContextMenuSubTrigger><ContextMenuSubContent>{snoozePresets(t).map(preset => <ContextMenuItem key={preset.label} onClick={() => act(thread, {kind: "snooze", until: preset.until.toISOString()})}>{preset.label}</ContextMenuItem>)}</ContextMenuSubContent></ContextMenuSub>}
       <ContextMenuItem onClick={rename}>{t.renameThread}</ContextMenuItem>
       <ContextMenuItem onClick={() => act(thread, {kind: "unread"})}>{t.markUnread}</ContextMenuItem>
       <ContextMenuSeparator />
-      <ContextMenuItem variant="destructive" disabled={thread.status === "working" || thread.status === "approval"} onClick={() => act(thread, {kind: "archive"})}>{t.archiveThread}</ContextMenuItem>
+      <ContextMenuItem variant="destructive" disabled={thread.status === "working" || thread.status === "waiting"} onClick={() => act(thread, {kind: "archive"})}>{t.archiveThread}</ContextMenuItem>
     </ContextMenuContent>
   </ContextMenu>;
 }
@@ -157,8 +162,8 @@ function ThreadCard({thread, selected, select, act, now, t}: {thread: StudioThre
   const unread = !selected && threadUnread(thread);
   const woke = !selected && threadWoke(thread);
   const inFlight = thread.status === "working";
-  const receded = !unread && !woke && thread.status !== "approval" && thread.status !== "failed";
-  const status = thread.status === "approval" ? <span className="inline-flex items-center gap-1 font-medium text-amber-700 dark:text-amber-300">{t.statusApproval}</span>
+  const receded = !unread && !woke && thread.status !== "waiting" && thread.status !== "failed";
+  const status = thread.status === "waiting" ? <span className="inline-flex items-center gap-1 font-medium text-amber-700 dark:text-amber-300">{t.statusWaiting}</span>
     : thread.status === "working" ? <span className="inline-flex items-center gap-1 font-medium text-sky-600 dark:text-sky-400"><CircleDashedIcon className="size-3.5" />{t.statusWorking} <span className="font-mono tabular-nums">{duration(thread.workingSince, now, format)}</span></span>
     : thread.status === "failed" ? <span className="inline-flex items-center gap-1 font-medium text-red-700 dark:text-red-300">{t.statusFailed}</span>
     : woke ? <span className="inline-flex items-center gap-1 font-medium text-amber-700 dark:text-amber-300"><AlarmClockIcon className="size-3.5" />{t.statusWoke}</span>
@@ -176,14 +181,14 @@ function ThreadCard({thread, selected, select, act, now, t}: {thread: StudioThre
             <span className="group/v2-status-slot relative ml-auto flex h-5 min-w-8 shrink-0 items-stretch justify-end text-xs">
               <span className="self-center tabular-nums text-muted-foreground/65 transition-opacity group-hover/v2-row:absolute group-hover/v2-row:right-0 group-hover/v2-row:opacity-0">{status ?? relativeTime(lastActivity(thread), now, format)}</span>
               <span className="absolute inset-y-0 right-0 flex items-center gap-0.5 opacity-0 transition-opacity focus-within:static focus-within:opacity-100 group-hover/v2-row:static group-hover/v2-row:opacity-100">
-                {thread.status !== "approval" && <SnoozeButton thread={thread} act={act} t={t} />}
-                <button type="button" onClick={event => {event.stopPropagation(); act(thread, {kind: "settle"});}} disabled={thread.status === "working" || thread.status === "approval"} className="inline-flex h-5 items-center gap-1 rounded px-1.5 text-muted-foreground hover:bg-foreground/8 hover:text-foreground disabled:opacity-40"><CheckIcon className="size-3.5" />{t.settle}</button>
+                {thread.status !== "waiting" && <SnoozeButton thread={thread} act={act} t={t} />}
+                <button type="button" onClick={event => {event.stopPropagation(); act(thread, {kind: "settle"});}} disabled={thread.status === "working" || thread.status === "waiting"} className="inline-flex h-5 items-center gap-1 rounded px-1.5 text-muted-foreground hover:bg-foreground/8 hover:text-foreground disabled:opacity-40"><CheckIcon className="size-3.5" />{t.settle}</button>
               </span>
             </span>
           </div>
           <div className="mt-1 flex min-w-0">{editing ? <TitleEditor t={t} thread={thread} act={act} done={() => setEditing(false)} className="text-sm font-medium" /> : <>{/* biome-ignore lint/a11y/noStaticElementInteractions: double-click rename is a shortcut; keyboard users rename from the thread menu. */}<span onDoubleClick={event => {event.stopPropagation(); setEditing(true);}} className={cn("min-w-0 flex-1 truncate text-sm font-medium", unread || woke ? "text-foreground" : receded ? "text-muted-foreground/80" : "text-foreground/90")}>{threadTitle(thread.title, t)}</span></>}</div>
           <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/75">
-            <span className="min-w-0 flex-1 truncate whitespace-nowrap">{thread.branch === "main" ? t.mainDesign : thread.branch}{thread.primary && ` · ${t.primaryBranch}`}</span>
+            <span className="min-w-0 flex-1 truncate whitespace-nowrap">{thread.branch === "main" ? t.mainDesign : thread.branch}{thread.primary && thread.branch !== "main" && ` · ${t.primaryBranch}`}</span>
             <span className="pointer-events-none ml-auto inline-flex shrink-0 items-center gap-1"><ProviderMark thread={thread} /></span>
           </div>
         </div>
@@ -209,5 +214,18 @@ function SlimRow({thread, selected, select, act, now, t, kind}: {thread: StudioT
         </span>
       </div>
     </ThreadMenu>
+  </li>;
+}
+
+/** An archived conversation can only be restored; it opens again from the live list. */
+function ArchivedRow({thread, act, now, t}: {thread: StudioThread; act: ThreadActionHandler; now: number; t: Copy}) {
+  const format = useStudioFormat();
+  return <li className="group/v2-row flex h-9 list-none items-center gap-2.5 rounded-md px-2.5 text-muted-foreground/75 hover:bg-foreground/5" data-studio-thread={thread.id}>
+    <ProjectBadge name={thread.projectName} className="opacity-40 grayscale" />
+    <span className="min-w-0 flex-1 truncate text-sm" title={`${thread.projectName} · ${threadTitle(thread.title, t)}`}>{threadTitle(thread.title, t)}</span>
+    <span className="relative flex h-6 shrink-0 items-center justify-end text-xs">
+      <span className="tabular-nums text-muted-foreground/65 transition-opacity group-focus-within/v2-row:opacity-0 group-hover/v2-row:opacity-0">{relativeTime(time(thread.archivedAt), now, format)}</span>
+      <button type="button" aria-label={`${t.unarchive}: ${threadTitle(thread.title, t)}`} onClick={() => act(thread, {kind: "unarchive"})} className="absolute inset-y-0 right-0 inline-flex items-center gap-1 rounded px-1.5 text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/8 hover:text-foreground focus-visible:opacity-100 group-hover/v2-row:opacity-100"><ArchiveRestoreIcon className="size-3.5" />{t.unarchive}</button>
+    </span>
   </li>;
 }

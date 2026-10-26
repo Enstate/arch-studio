@@ -73,9 +73,14 @@ The package entry point exposes only the Promise and AsyncIterable API in
   path. Read-only turns decline file-change and write-permission grants.
 - Moved the Codex adapter event fiber into the session scope. It must survive
   the scoped `startSession` call and end when that session is disposed.
-- Structured chat questions have no representation in the requested API.
-  Claude AskUserQuestion/ExitPlanMode are denied with an instruction to finish
-  with text. Codex structured questions receive empty answers. Unsupported
+- Structured questions reach the caller as `question` events and are answered
+  through `AgentTurn.answer`, keyed by question id. Claude AskUserQuestion uses
+  upstream's handler in every mode, including full access; the PreToolUse hook
+  carries the answers back as `updatedInput`, because `bypassPermissions` never
+  consults `canUseTool`. Questions still open when a turn ends are dismissed
+  with empty answers. ExitPlanMode stays denied with an instruction to finish
+  with text. Plan-limit stops from either provider's rate-limit updates become
+  `limit` events with the reset time when the provider gives one. Unsupported
   server tool calls fail through the upstream method-not-found response;
   there are no success-returning placeholder services.
 - Retained SDK event exhaustiveness checks. Added explicit handling for the

@@ -38,7 +38,7 @@ export function ProjectHome({projectName, clientName, threads, openThread, start
     <section className="grid gap-2">
       <SectionHeader title={t.threads} count={threads.length} />
       {sorted.length ? <ul className="-mx-2.5 grid gap-px">{sorted.map(thread => <li key={thread.id} className="list-none"><button type="button" onClick={() => openThread(thread)} className="flex h-9 w-full items-center gap-2.5 rounded-md px-2.5 text-left outline-none hover:bg-foreground/5 focus-visible:ring-1 focus-visible:ring-ring/50">
-        {thread.status === "working" ? <Spinner className="size-4 text-sky-600 dark:text-sky-400" /> : thread.status === "approval" || thread.status === "failed" ? <CircleAlertIcon className="size-4 text-amber-600 dark:text-amber-300" /> : <MessageCircleIcon className="size-4 text-muted-foreground" />}
+        {thread.status === "working" ? <Spinner className="size-4 text-sky-600 dark:text-sky-400" /> : thread.status === "waiting" || thread.status === "failed" ? <CircleAlertIcon className="size-4 text-amber-600 dark:text-amber-300" /> : <MessageCircleIcon className="size-4 text-muted-foreground" />}
         <span className="min-w-0 flex-1 truncate">{threadTitle(thread.title, t)}</span>
         {thread.branch !== "main" && <span className="max-w-32 shrink-0 truncate text-xs text-muted-foreground">{thread.branch}</span>}
         <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{relativeTime(Date.parse(recent(thread)), now, format)}</span>

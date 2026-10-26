@@ -1,4 +1,5 @@
 import { threadTitle } from "../lib/thread-title";
+import { notifyThreadOutcomes } from "../lib/thread-notifications";
 import { StudioFailure } from "./studio-failure";
 import { failureLine } from "../lib/studio-errors";
 import { ProjectRecovery } from "./project-recovery";
@@ -54,7 +55,11 @@ type Filter = {kind: "all"} | {kind: "client"; id: string} | {kind: "project"; i
 function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale: (locale: Locale) => void}) {
   const queryClient = useQueryClient();
   const studio = useQuery({queryKey: ["studio-catalog"], queryFn: () => catalog(), refetchInterval: 5000});
-  const threads = useQuery({queryKey: ["studio-threads"], queryFn: () => threadList(), refetchInterval: 2000});
+  const threads = useQuery({queryKey: ["studio-threads"], queryFn: async () => {
+    const next = await threadList();
+    notifyThreadOutcomes(queryClient.getQueryData<StudioThread[]>(["studio-threads"]), next, t, select);
+    return next;
+  }, refetchInterval: 2000});
   // `home` opens the project itself rather than one of its conversations.
   const [selection, setSelection] = useState<{threadId?: string; projectId?: string; home?: boolean}>({});
   const [sections, setSections] = useState<Record<string, Section>>({});
@@ -72,7 +77,8 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
   const isMobile = useIsMobile();
   const searchInput = useRef<HTMLInputElement>(null);
   const data = studio.data;
-  const all = threads.data ?? [];
+  // Archived threads only appear on their own shelf, where they can be restored.
+  const all = (threads.data ?? []).filter(item => !item.archivedAt);
   const now = Date.now();
   // A selected project without a thread id opens its oldest thread once the list has it.
   // With nothing chosen yet, open the most recently active thread, as T3 Code opens recent work.
@@ -122,7 +128,9 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
   // A plain letter would fire while moving around the 3D view with the keyboard, creating stray threads.
   useHotkey("mod+shift+o", event => {if (!(event.target instanceof Element && event.target.closest("[role=dialog],[role=menu],[role=listbox]"))) {if (targetProject) newThread(targetProject); else openNewProject();}});
   const query = search.trim().toLocaleLowerCase();
-  const visible = all.filter(item => (filter.kind === "all" || (filter.kind === "client" ? item.clientId === filter.id : item.projectId === filter.id)) && (!query || `${threadTitle(item.title, t)} ${item.projectName} ${item.clientName}`.toLocaleLowerCase().includes(query)));
+  const shown = (item: StudioThread) => (filter.kind === "all" || (filter.kind === "client" ? item.clientId === filter.id : item.projectId === filter.id)) && (!query || `${threadTitle(item.title, t)} ${item.projectName} ${item.clientName}`.toLocaleLowerCase().includes(query));
+  const visible = all.filter(shown);
+  const archived = (threads.data ?? []).filter(item => item.archivedAt && shown(item));
   const unconnected = (data?.projects ?? []).filter(item => !item.sourceId && (filter.kind === "all" || (filter.kind === "client" ? item.clientId === filter.id : item.id === filter.id)) && (!query || item.name.toLocaleLowerCase().includes(query)));
   const filterLabel = filter.kind === "all" ? t.allProjects : filter.kind === "client" ? data?.clients.find(item => item.id === filter.id)?.name ?? t.allProjects : data?.projects.find(item => item.id === filter.id)?.name ?? t.allProjects;
   const sourceProjects = (data?.projects ?? []).filter(item => item.sourceId);
@@ -161,7 +169,7 @@ function Shell({t, locale, changeLocale}: {t: Copy; locale: Locale; changeLocale
     {!folderOpen && (openFolder.error ? <StudioFailure className="px-2 py-1 text-xs text-destructive" error={openFolder.error} /> : folderError && <p role="alert" className="px-2 py-1 text-xs text-destructive">{t.error}</p>)}
     {create.error && <StudioFailure className="px-2 py-1 text-xs text-destructive" error={create.error} />}
     <nav className="mt-1 min-h-0 flex-1 overflow-y-auto" aria-label={t.threads}>
-      <ThreadList threads={visible} selectedId={thread?.id} select={select} act={handle} now={now} t={t} />
+      <ThreadList threads={visible} archived={archived} selectedId={thread?.id} select={select} act={handle} now={now} t={t} />
       {!!unconnected.length && <>
         <div className="mt-3 mb-1 flex items-center gap-2 px-2.5"><span className="text-xs font-medium text-muted-foreground/50">{t.withoutSource}</span><span className="h-px flex-1 bg-border/60" /></div>
         <ul className="flex flex-col gap-px">{unconnected.map(item => <li key={item.id} className="list-none"><button type="button" aria-current={!thread && project?.id === item.id ? "page" : undefined} onClick={() => {setSelection({projectId: item.id}); setMobileOpen(false);}} className="flex h-9 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-muted-foreground/75 hover:bg-foreground/5 aria-[current=page]:bg-foreground/9"><ProjectBadge name={item.name} className="opacity-40 grayscale" /><span className="min-w-0 flex-1 truncate">{item.name}</span></button></li>)}</ul>
@@ -317,13 +325,13 @@ function Project({project, thread, threads, openThread, openHome, starting, open
     <DropdownMenu><DropdownMenuTrigger className={projectIconButton} aria-label={t.projectSections} title={t.projectSections}><MoreHorizontalIcon /></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-60"><DropdownMenuRadioGroup value={section} onValueChange={value => setSection(value as Section)}>{toolSections.map(value => <DropdownMenuRadioItem closeOnClick key={value} value={value} className="studio-choice">{t[value]}</DropdownMenuRadioItem>)}</DropdownMenuRadioGroup><DropdownMenuSeparator /><DropdownMenuItem render={<a href="https://arch.enstate-labs.workers.dev/staff" target="_blank" rel="noreferrer" />}><ArrowUpRightIcon />{t.hosted}</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
   </>;
   const tool = (content: ReactNode) => <ScrollPage><h2 className="text-lg font-medium">{t[view as typeof toolSections[number]]}</h2>{content}</ScrollPage>;
-  const content = details.isError ? <ProjectRecovery projectId={project.id} error={details.error} retry={() => {void details.refetch();}} busy={build.isPending || threads.some(item => item.status === "working" || item.status === "approval")} t={t} />
+  const content = details.isError ? <ProjectRecovery projectId={project.id} error={details.error} retry={() => {void details.refetch();}} busy={build.isPending || threads.some(item => item.status === "working" || item.status === "waiting")} t={t} />
     : view === "preview" && version ? <VersionPreview key={version.id} version={version} editing={editing} editsPending={edits.isLoading || library.isLoading} rebuild={source && branch ? () => ensureGrant(() => build.mutate()) : undefined} rebuilding={build.isPending} t={t} />
     : view === "rounds" && branch && thread ? <Rounds projectId={project.id} threadId={thread.id} startedAt={thread.createdAt} branch={branch} versions={allVersions} versionLabel={versionLabel} openVersion={showVersion} compare={compare} forkFrom={checkpointId => newThread({fromCheckpoint: checkpointId})} ensureGrant={ensureGrant} t={t} />
     : view === "compare" ? <Compare projectId={project.id} versions={versions} base={compared?.base} target={compared?.target} select={(base, target) => setCompared({base, target})} versionLabel={versionLabel} t={t} />
     : details.isPending ? <p role="status" className="m-auto text-ui text-muted-foreground">{t.loading}</p>
     : view === "intake" ? <ScrollPage>
-      {source ? <ProjectHome projectName={project.name} clientName={client} threads={threads} openThread={openThread} startConversation={request => newThread(request ? {draft: request} : {})} starting={starting} share={() => setExportOpen(true)} setup={branch && source.manifest.schemaVersion === 2 && <ProjectSetup projectId={project.id} projectName={project.name} clientId={project.clientId} manifest={source.manifest} branch={branch} busy={build.isPending || threads.some(item => item.status === "working" || item.status === "approval")} openConversation={threadId => showThread(threadId, "rounds")} t={t} />} t={t} /> : <h2 className="sr-only">{t.intake}</h2>}
+      {source ? <ProjectHome projectName={project.name} clientName={client} threads={threads} openThread={openThread} startConversation={request => newThread(request ? {draft: request} : {})} starting={starting} share={() => setExportOpen(true)} setup={branch && source.manifest.schemaVersion === 2 && <ProjectSetup projectId={project.id} projectName={project.name} clientId={project.clientId} manifest={source.manifest} branch={branch} busy={build.isPending || threads.some(item => item.status === "working" || item.status === "waiting")} openConversation={threadId => showThread(threadId, "rounds")} t={t} />} t={t} /> : <h2 className="sr-only">{t.intake}</h2>}
       {!source && <header className="grid gap-1"><h3 className="text-lg font-medium">{t.connectSource}</h3><p className="text-muted-foreground">{t.noSources}</p></header>}
       <SourceSetup projectId={project.id} attached={!!source} confirmationOnly={!!source} t={t} />
       {source && <IntakeOverview intake={intake} error={intakeError} assumptions={assumptions} files={allFiles} {...filesSource} openFile={openFile} openFiles={() => setSection("files")} openWork={() => setSection("work")} t={t} />}

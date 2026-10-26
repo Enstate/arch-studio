@@ -6,6 +6,7 @@ export class TurnEvents {
   private readonly resolved = new Set<string>();
   private finalAssistantMessage: string | null = null;
   private cursor: string | null = null;
+  private limited = false;
 
   session(cursor: string): AgentEvent[] {
     if (cursor === this.cursor) return [];
@@ -29,6 +30,12 @@ export class TurnEvents {
     if (this.resolved.has(requestId)) return [];
     this.resolved.add(requestId);
     return [{ type: "approval-resolved", requestId, decision }];
+  }
+
+  answeredQuestion(requestId: string, answers: Record<string, string>): AgentEvent[] {
+    if (this.resolved.has(requestId)) return [];
+    this.resolved.add(requestId);
+    return [{ type: "question-answered", requestId, answers }];
   }
 
   accept(event: ProviderRuntimeEvent): AgentEvent[] {
@@ -108,6 +115,41 @@ export class TurnEvents {
                 : "decline",
             )
           : [];
+      case "user-input.requested":
+        return event.requestId
+          ? [
+              {
+                type: "question",
+                requestId: event.requestId,
+                questions: event.payload.questions.map((question) => ({
+                  id: question.id,
+                  header: question.header,
+                  question: question.question,
+                  options: question.options.map((option) => ({ label: option.label, description: option.description })),
+                  multiSelect: question.multiSelect ?? false,
+                })),
+              },
+            ]
+          : [];
+      case "user-input.resolved":
+        return event.requestId
+          ? this.answeredQuestion(
+              event.requestId,
+              Object.fromEntries(
+                Object.entries(event.payload.answers).flatMap(([id, value]) => {
+                  const text = answerText(value);
+                  return text === null ? [] : [[id, text]];
+                }),
+              ),
+            )
+          : [];
+      case "account.rate-limits.updated": {
+        if (this.limited) return [];
+        const limit = planLimit(event.payload.rateLimits);
+        if (!limit) return [];
+        this.limited = true;
+        return [{ type: "limit", resetsAt: limit.resetsAt }];
+      }
       case "turn.completed":
         if (event.payload.summary !== undefined) this.finalAssistantMessage = event.payload.summary;
         return [
@@ -129,6 +171,45 @@ export class TurnEvents {
         return [];
     }
   }
+}
+
+/** Claude answers are strings; Codex wraps them as `{ answers: [...] }`. */
+function answerText(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  const list = Array.isArray(value)
+    ? value
+    : typeof value === "object" && value !== null && Array.isArray((value as { answers?: unknown }).answers)
+      ? (value as { answers: unknown[] }).answers
+      : null;
+  return list ? list.filter((entry): entry is string => typeof entry === "string").join(", ") : null;
+}
+
+const resetTime = (seconds: unknown) =>
+  typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 && seconds < 8.64e12
+    ? new Date(seconds * 1000).toISOString()
+    : null;
+/**
+ * The plan limit that stops the agent, from Claude's `rate_limit_event` or Codex's rate-limit
+ * snapshot. Warnings and limits covered by overage credits are not stops.
+ */
+export function planLimit(rateLimits: unknown): { resetsAt: string | null } | null {
+  if (typeof rateLimits !== "object" || rateLimits === null) return null;
+  const claude = (rateLimits as { rate_limit_info?: unknown }).rate_limit_info;
+  if (typeof claude === "object" && claude !== null) {
+    const info = claude as { status?: unknown; resetsAt?: unknown; overageStatus?: unknown; isUsingOverage?: unknown };
+    if (info.status !== "rejected" || info.isUsingOverage === true) return null;
+    if (info.overageStatus === "allowed" || info.overageStatus === "allowed_warning") return null;
+    return { resetsAt: resetTime(info.resetsAt) };
+  }
+  const codex = rateLimits as { rateLimitReachedType?: unknown; primary?: unknown; secondary?: unknown };
+  const windows = [codex.primary, codex.secondary].filter(
+    (window): window is { usedPercent: number; resetsAt?: unknown } =>
+      typeof window === "object" && window !== null && typeof (window as { usedPercent?: unknown }).usedPercent === "number",
+  );
+  const full = windows.filter((window) => window.usedPercent >= 100);
+  if (!full.length && !codex.rateLimitReachedType) return null;
+  const resets = full.map((window) => resetTime(window.resetsAt)).filter((value): value is string => value !== null).sort();
+  return { resetsAt: resets.at(-1) ?? null };
 }
 
 /** A single-consumer stream. It also buffers provider startup events. */

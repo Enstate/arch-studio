@@ -89,6 +89,7 @@ export async function startTurn(uncheckedInput: AgentTurnInput): Promise<AgentTu
   // Ultrathink is a prompt keyword in Claude Code, not an API effort level.
   const prompt = input.provider === "claude" && input.settings?.effort === "ultrathink" ? `ultrathink\n\n${input.prompt}` : input.prompt;
   const pendingApprovals = new Map<string, boolean>();
+  const pendingQuestions = new Set<string>();
   let adapter: ProviderAdapterShape<ProviderAdapterError> | undefined;
   let interrupted = false;
   let finished = false;
@@ -105,13 +106,15 @@ export async function startTurn(uncheckedInput: AgentTurnInput): Promise<AgentTu
     resolveCompletion(event);
   }
   function emit(event: AgentEvent): void {
-    if (terminal && event.type !== "approval-resolved") return;
+    if (terminal && event.type !== "approval-resolved" && event.type !== "question-answered") return;
     if (event.type === "completed") {
       finish(event);
       return;
     }
     if (event.type === "approval") pendingApprovals.set(event.requestId, false);
     if (event.type === "approval-resolved") pendingApprovals.delete(event.requestId);
+    if (event.type === "question") pendingQuestions.add(event.requestId);
+    if (event.type === "question-answered") pendingQuestions.delete(event.requestId);
     queue.push(event);
   }
   async function interrupt(): Promise<void> {
@@ -146,16 +149,7 @@ export async function startTurn(uncheckedInput: AgentTurnInput): Promise<AgentTu
       adapter = activeAdapter;
       eventFiber = runtime.runFork(
         Stream.runForEach(activeAdapter.streamEvents, (event) =>
-          Effect.gen(function* () {
-            if (event.type === "user-input.requested" && event.requestId) {
-              // The API deliberately has no conversational answer channel.
-              yield* activeAdapter.respondToUserInput(
-                threadId,
-                ApprovalRequestId.make(event.requestId),
-                {},
-              );
-              return;
-            }
+          Effect.sync(() => {
             for (const mapped of mapping.accept(event)) emit(mapped);
           }),
         ).pipe(
@@ -240,6 +234,9 @@ export async function startTurn(uncheckedInput: AgentTurnInput): Promise<AgentTu
       for (const requestId of pendingApprovals.keys())
         for (const event of mapping.resolvedApproval(requestId, "decline")) queue.push(event);
       pendingApprovals.clear();
+      for (const requestId of pendingQuestions)
+        for (const event of mapping.answeredQuestion(requestId, {})) queue.push(event);
+      pendingQuestions.clear();
       if (cleanupError)
         terminal = mapping.completed(
           "failed",
@@ -277,6 +274,27 @@ export async function startTurn(uncheckedInput: AgentTurnInput): Promise<AgentTu
         if (pendingApprovals.has(requestId)) pendingApprovals.set(requestId, false);
         throw error;
       }
+    },
+    async answer(requestId, answers) {
+      if (
+        typeof answers !== "object" ||
+        answers === null ||
+        Object.values(answers).some((value) => typeof value !== "string")
+      )
+        throw new Error("Answers must be text.");
+      if (finished || terminal || !adapter || !pendingQuestions.has(requestId))
+        throw new Error(`Question is no longer open: ${requestId}`);
+      // Claiming it first keeps a double submit from answering twice.
+      pendingQuestions.delete(requestId);
+      try {
+        await runtime.runPromise(
+          adapter.respondToUserInput(threadId, ApprovalRequestId.make(requestId), answers),
+        );
+      } catch (error) {
+        pendingQuestions.add(requestId);
+        throw error;
+      }
+      for (const event of mapping.answeredQuestion(requestId, answers)) emit(event);
     },
   };
 }

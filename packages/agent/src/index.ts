@@ -9,6 +9,7 @@ export type {
   AgentProviderWarning,
   AgentTurnInput,
   AgentEvent,
+  AgentQuestion,
   AgentTurn,
   AgentModel,
   AgentModelOption,

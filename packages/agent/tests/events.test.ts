@@ -20,7 +20,7 @@ import {
   RuntimeRequestId,
   ThreadId,
 } from "../src/contracts/index.ts";
-import { EventQueue, TurnEvents } from "../src/events.ts";
+import { EventQueue, TurnEvents, planLimit } from "../src/events.ts";
 import { makeClaudeAdapter } from "../src/provider/Layers/ClaudeAdapter.ts";
 import { buildTurnStartParams } from "../src/provider/Layers/CodexSessionRuntime.ts";
 import { claudeToolPermission } from "../src/provider/permissions.ts";
@@ -280,4 +280,33 @@ test("one round preserves text, approvals and sandbox boundaries and closes its 
     await runtime.dispose();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("agent questions reach the person once, and plan limits say when they reset", () => {
+  const mapping = new TurnEvents();
+  const base = {
+    eventId: EventId.make("event"),
+    threadId: ThreadId.make("thread"),
+    provider: ProviderDriverKind.make("claudeAgent"),
+    createdAt: new Date().toISOString(),
+  };
+  const requestId = RuntimeRequestId.make("question");
+  const question = { id: "How many storeys?", header: "Storeys", question: "How many storeys?", options: [{ label: "2", description: "Two" }], multiSelect: false };
+  expect(mapping.accept({ ...base, type: "user-input.requested", requestId, payload: { questions: [question] } })).toEqual([
+    { type: "question", requestId: "question", questions: [question] },
+  ]);
+  // Codex wraps answers as lists; both read as text.
+  expect(mapping.accept({ ...base, type: "user-input.resolved", requestId, payload: { answers: { "How many storeys?": { answers: ["2", "basement"] } } } })).toEqual([
+    { type: "question-answered", requestId: "question", answers: { "How many storeys?": "2, basement" } },
+  ]);
+  expect(mapping.answeredQuestion("question", {})).toEqual([]);
+
+  expect(planLimit({ type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", resetsAt: 1_900_000_000 } })).toBeNull();
+  expect(planLimit({ type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 1_900_000_000, overageStatus: "allowed" } })).toBeNull();
+  expect(planLimit({ type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 1_900_000_000 } })).toEqual({ resetsAt: "2030-03-17T17:46:40.000Z" });
+  expect(planLimit({ primary: { usedPercent: 40, resetsAt: 1_900_000_000 } })).toBeNull();
+  expect(planLimit({ primary: { usedPercent: 100, resetsAt: 1_900_000_000 }, secondary: { usedPercent: 20 } })).toEqual({ resetsAt: "2030-03-17T17:46:40.000Z" });
+  const limit = { ...base, type: "account.rate-limits.updated" as const, payload: { rateLimits: { rate_limit_info: { status: "rejected" } } } };
+  expect(mapping.accept(limit)).toEqual([{ type: "limit", resetsAt: null }]);
+  expect(mapping.accept(limit)).toEqual([]);
 });

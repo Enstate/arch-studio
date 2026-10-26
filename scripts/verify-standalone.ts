@@ -366,6 +366,19 @@ try {
   await viewer(page);
   assert.equal(await page.locator("[data-studio-version]").getAttribute("data-studio-version"), checkpoint);
   passed("threads fork a branch from a version, build under the existing grant, compare, and keep the primary line");
+  // Archiving hides a conversation; the Archived shelf brings it back.
+  const variantThread = page.locator(`li[data-studio-thread]:not([data-studio-thread="${mainThread}"])`);
+  const variantThreadId = (await variantThread.getAttribute("data-studio-thread"))!;
+  await variantThread.locator('[role="button"]').first().click({ button: "right" });
+  await page.getByRole("menuitem", { name: studioText.en.archiveThread, exact: true }).click();
+  await page.getByRole("button", { name: `${studioText.en.archivedThreads} (1)`, exact: true }).click();
+  await page.getByRole("button", { name: `${studioText.en.unarchive}: ${studioText.en.newThread}`, exact: true }).waitFor();
+  await page.screenshot({ path: path.join(evidence, "archived.png") });
+  await page.getByRole("button", { name: `${studioText.en.unarchive}: ${studioText.en.newThread}`, exact: true }).click();
+  await page.locator(`li[data-studio-thread="${variantThreadId}"] [role="button"]`).waitFor();
+  await page.getByRole("button", { name: studioText.en.archivedThreads, exact: true }).waitFor({ state: "detached" });
+  assert.equal(await page.locator("li[data-studio-thread]").count(), 2, "The restored conversation is live again");
+  passed("an archived conversation is restored from the Archived shelf");
   await writeFile(intakePath, "{");
   await section(page, "Project overview");
   await page.getByText(studioText.en.intakeInvalid, { exact: true }).waitFor();

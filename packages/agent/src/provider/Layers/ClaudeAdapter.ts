@@ -3145,6 +3145,138 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
 
+      /**
+       * Handle AskUserQuestion tool calls by emitting a `user-input.requested`
+       * runtime event and waiting for the user to respond via `respondToUserInput`.
+       */
+      const handleAskUserQuestion = Effect.fn("handleAskUserQuestion")(function* (
+        context: ClaudeSessionContext,
+        toolInput: Record<string, unknown>,
+        callbackOptions: {
+          readonly signal: AbortSignal;
+          readonly toolUseID?: string;
+        },
+      ) {
+        const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
+
+        // Parse questions from the SDK's AskUserQuestion input.
+        // `id` MUST equal the full question text — Claude SDK >= 2.1.121 looks
+        // up answers by question text in `mapToolResultToToolResultBlockParam`,
+        // so the key the UI uses to keep its draft answer must match the SDK's
+        // expected lookup key. See https://github.com/pingdotgg/t3code/issues/2388
+        const rawQuestions = Array.isArray(toolInput.questions) ? toolInput.questions : [];
+        const questions: Array<UserInputQuestion> = rawQuestions.map(
+          (q: Record<string, unknown>, idx: number) => ({
+            id: typeof q.question === "string" && q.question.length > 0 ? q.question : `q-${idx}`,
+            header: typeof q.header === "string" ? q.header : `Question ${idx + 1}`,
+            question: typeof q.question === "string" ? q.question : "",
+            options: Array.isArray(q.options)
+              ? q.options.map((opt: Record<string, unknown>) => ({
+                  label: typeof opt.label === "string" ? opt.label : "",
+                  description: typeof opt.description === "string" ? opt.description : "",
+                }))
+              : [],
+            multiSelect: typeof q.multiSelect === "boolean" ? q.multiSelect : false,
+          }),
+        );
+
+        const answersDeferred = yield* Deferred.make<ProviderUserInputAnswers>();
+        let aborted = false;
+        const pendingInput: PendingUserInput = {
+          questions,
+          answers: answersDeferred,
+        };
+
+        // Emit user-input.requested so the UI can present the questions.
+        const requestedStamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          type: "user-input.requested",
+          eventId: requestedStamp.eventId,
+          provider: PROVIDER,
+          createdAt: requestedStamp.createdAt,
+          threadId: context.session.threadId,
+          ...(context.turnState
+            ? {
+                turnId: asCanonicalTurnId(context.turnState.turnId),
+              }
+            : {}),
+          requestId: asRuntimeRequestId(requestId),
+          payload: { questions },
+          providerRefs: nativeProviderRefs(context, {
+            providerItemId: callbackOptions.toolUseID,
+          }),
+          raw: {
+            source: "claude.sdk.permission",
+            method: "canUseTool/AskUserQuestion",
+            payload: {
+              toolName: "AskUserQuestion",
+              input: toolInput,
+            },
+          },
+        });
+
+        pendingUserInputs.set(requestId, pendingInput);
+
+        // Handle abort (e.g. turn interrupted while waiting for user input).
+        const onAbort = () => {
+          if (!pendingUserInputs.has(requestId)) {
+            return;
+          }
+          aborted = true;
+          pendingUserInputs.delete(requestId);
+          runFork(Deferred.succeed(answersDeferred, {} as ProviderUserInputAnswers));
+        };
+        callbackOptions.signal.addEventListener("abort", onAbort, {
+          once: true,
+        });
+
+        // Block until the user provides answers.
+        const answers = yield* Deferred.await(answersDeferred);
+        pendingUserInputs.delete(requestId);
+
+        // Emit user-input.resolved so the UI knows the interaction completed.
+        const resolvedStamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          type: "user-input.resolved",
+          eventId: resolvedStamp.eventId,
+          provider: PROVIDER,
+          createdAt: resolvedStamp.createdAt,
+          threadId: context.session.threadId,
+          ...(context.turnState
+            ? {
+                turnId: asCanonicalTurnId(context.turnState.turnId),
+              }
+            : {}),
+          requestId: asRuntimeRequestId(requestId),
+          payload: { answers },
+          providerRefs: nativeProviderRefs(context, {
+            providerItemId: callbackOptions.toolUseID,
+          }),
+          raw: {
+            source: "claude.sdk.permission",
+            method: "canUseTool/AskUserQuestion/resolved",
+            payload: { answers },
+          },
+        });
+
+        if (aborted) {
+          return {
+            behavior: "deny",
+            message: "User cancelled tool execution.",
+          } satisfies PermissionResult;
+        }
+
+        // Return the answers to the SDK in the expected format:
+        // { questions: [...], answers: { questionText: selectedLabel } }
+        return {
+          behavior: "allow",
+          updatedInput: {
+            questions: toolInput.questions,
+            answers,
+          },
+        } satisfies PermissionResult;
+      });
+
       const canUseToolEffect = Effect.fn("canUseTool")(function* (
         toolName: Parameters<CanUseTool>[0],
         toolInput: Parameters<CanUseTool>[1],
@@ -3159,12 +3291,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         }
 
         if (callbackOptions.signal.aborted) return { behavior: "deny", message: "Turn interrupted." } satisfies PermissionResult;
+        // Questions reach the person in every mode, including full access, as upstream does.
+        if (toolName === "AskUserQuestion") return yield* handleAskUserQuestion(context, toolInput, callbackOptions);
         const permission = yield* Effect.promise(() => claudeToolPermission(input.cwd ?? process.cwd(), input.runtimeMode, toolName, toolInput));
         if (permission === "deny") return { behavior: "deny", message: "This turn does not permit file writes." } satisfies PermissionResult;
         if (permission === "allow") return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
 
-        if (toolName === "AskUserQuestion" || toolName === "ExitPlanMode") {
-          return { behavior: "deny", message: "Finish this round with a text response. Interactive chat questions and mode changes are unavailable." } satisfies PermissionResult;
+        if (toolName === "ExitPlanMode") {
+          return { behavior: "deny", message: "Finish this round with a text response. Mode changes are unavailable." } satisfies PermissionResult;
         }
 
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
@@ -3294,6 +3428,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           hookSpecificOutput: {
             hookEventName: "PreToolUse",
             permissionDecision: result.behavior === "allow" ? "allow" : "deny",
+            // Carries the person's answers into AskUserQuestion.
+            ...(result.behavior === "allow" && result.updatedInput && result.updatedInput !== hookInput.tool_input ? { updatedInput: result.updatedInput } : {}),
             permissionDecisionReason: result.behavior === "deny"
               ? result.message
               : "Approved for this round",
